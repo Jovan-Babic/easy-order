@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 3 tested end-to-end (backend + frontend). All 5 new pytest cases pass; all UI scenarios pass. Per-product discount is fixed/read-only in catalog (no discount input, only discount-value-<id> labels), product search filters by name AND manufacturer with clear button, chips still work, invoice shows PIB + Adresa + Telefon + Email, admin form-discount saves and persists. Full order math verified: 450*4*(1-0.05)=1710 net, VAT 20% -> grand 2.052,00.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "shadow* style props", "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' emitted by RN Web layer. Reference: /app/frontend/src/theme.ts (shadow.card usage in index.tsx, admin.tsx, invoice.tsx). Non-blocking on web preview."},
+      {"component": "props.pointerEvents", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents.' Non-blocking; likely from a dependency (BlurView/Modal)."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/test_reports/pytest/iteration3_results.xml"
+  ],
+  "action_items": [
+    "(Optional/minor) Migrate shadow* styles to boxShadow to silence RN Web deprecation warnings.",
+    "(Optional) Audit uses of props.pointerEvents and switch to style.pointerEvents to silence warning."
+  ],
+  "critical_code_review_comments": [
+    "Backend Product / OrderItem models correctly expose discount (default 0). Seed migration backfills discount for legacy docs.",
+    "Frontend catalog: discount is read-only (Text inside discountValueBox, no TextInput) and passed via product.discount into order items on confirm — matches spec.",
+    "invoice.tsx correctly reads customer phone/address/email/pib from listCustomers() lookup and renders rows conditionally; buildInvoiceText/Html mirror the same fields."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3.py (new)"
+  ],
+  "success_rate": {"backend": "100% (5/5)", "frontend": "100% (all scenarios green)"},
+  "seed_data_creation": "None persistent. TEST_ products created and deleted within tests.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 3 fully verified. Existing test_easy_order.py (iteration 2) still relevant; test_iteration3.py adds discount + contact + order-line-discount coverage. Use EXPO_PUBLIC_BACKEND_URL from frontend/.env."
+}

@@ -1,0 +1,160 @@
+{
+  "app_name": "Easy Order",
+  "personality": "1 iOS-Native Clean with B2B structural clarity",
+  "personality_one_liner": "A highly functional, trust-inspiring B2B wholesale ordering tool built on crisp iOS-native foundations with scannable data density and ergonomic inputs.",
+  "color": {
+    "surface": "#F3F4F6",
+    "onSurface": "#111827",
+    "surfaceSecondary": "#FFFFFF",
+    "onSurfaceSecondary": "#374151",
+    "surfaceTertiary": "#E5E7EB",
+    "onSurfaceTertiary": "#4B5563",
+    "surfaceInverse": "#1F2937",
+    "onSurfaceInverse": "#F9FAFB",
+    "brand": "#1A4D2E",
+    "brandPrimary": "#1A4D2E",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#E8F3EB",
+    "onBrandSecondary": "#1A4D2E",
+    "brandTertiary": "#D1EAE0",
+    "onBrandTertiary": "#1A4D2E",
+    "success": "#059669",
+    "onSuccess": "#FFFFFF",
+    "warning": "#D97706",
+    "onWarning": "#FFFFFF",
+    "error": "#DC2626",
+    "onError": "#FFFFFF",
+    "info": "#3B82F6",
+    "onInfo": "#FFFFFF",
+    "border": "#E5E7EB",
+    "borderStrong": "#9CA3AF",
+    "divider": "#E5E7EB"
+  },
+  "typography": {
+    "displayFontFamily": "Geist",
+    "textFontFamily": "Geist",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "For B2B data density, use slightly tighter vertical spacing inside product cards to prevent endless scrolling, but maintain generous padding around the screen edges and between separate cards.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 10,
+    "lg": 16,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Use glass on the bottom sticky 'Potvrdi' (Confirm) button container so the product list visibly scrolls underneath.",
+      "Use glass for sticky header navigation and customer picker dropdowns."
+    ],
+    "dont's": [
+      "Do not use glass inside the product cards; they must remain solid white for maximum readability of small text and input fields."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Order Catalog",
+      "purpose": "The core sales rep tool to select a customer and rapidly enter wholesale quantities for products.",
+      "states": {
+        "loading": "Centered spinner with 'Loading catalog...'",
+        "empty": "Illustration of warehouse boxes + 'No products available.'",
+        "error": "Error message with 'Retry' button"
+      },
+      "layout": "Header: A sticky customer picker (button that opens a Bottom Sheet). Body: Scrollable list of product cards. Each card (surfaceSecondary) uses a row layout: Left side has an 80x80 product image and bold title; Right side is a tight vertical grid of metadata (Cena bez PDV-a, Komada u pakovanju, Transportno pakovanje) as small text, accompanied by two visible, tap-friendly numeric input fields for 'Popust' (Discount) and 'Naruceno komada' (Ordered pieces). Background is surface. Bottom: A sticky glass container holding the primary 'Potvrdi' (Confirm) button, anchored above the safe area."
+    },
+    {
+      "name": "Customer Picker (Bottom Sheet)",
+      "purpose": "Quickly switch the active customer for the current order.",
+      "states": {
+        "loading": "Spinner",
+        "empty": "No customers found. Add one in Admin.",
+        "error": "Failed to load customers."
+      },
+      "layout": "A drag-handled bottom sheet. Contains a search bar at the top, followed by a flat list of customers. Each row uses a customer avatar (or initials inside a brandTertiary circle) and their company name. Tapping selects and closes the sheet."
+    },
+    {
+      "name": "Invoice Summary",
+      "purpose": "Review the completed order and share the invoice.",
+      "states": {
+        "loading": "Generating invoice...",
+        "empty": "N/A",
+        "error": "Failed to generate invoice."
+      },
+      "layout": "A clean, receipt-like view. A card containing the order details, total calculations, and selected customer. Bottom sticky container with two buttons: 'Send to Email' (brandPrimary) and 'Copy Invoice' (brandSecondary)."
+    },
+    {
+      "name": "Admin Panel",
+      "purpose": "Manage inventory and customer database.",
+      "states": {
+        "loading": "Spinner",
+        "empty": "No items to manage.",
+        "error": "Error loading admin data."
+      },
+      "layout": "Segmented control at the top to toggle between 'Products' and 'Customers'. List view below with 'Edit' actions. Floating Action Button (FAB) at the bottom right to 'Add New'. Forms should be simple, single-column, with an image picker block for product photos."
+    }
+  ],
+  "images": {
+    "warehouse_empty_state": {
+      "url": "https://images.pexels.com/photos/4487383/pexels-photo-4487383.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Two workers handle a package in a spacious warehouse surrounded by shelves stocked with boxes and products."
+    },
+    "sample_grocery_product": {
+      "url": "https://images.unsplash.com/photo-1604719312566-8912e9227c6a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNDR8MHwxfHNlYXJjaHwxfHx3aG9sZXNhbGUlMjBncm9jZXJ5JTIwaXRlbXN8ZW58MHx8fHwxNzgyOTM2NDYxfDA&ixlib=rb-4.1.0&q=85",
+      "alt": "grocery store aisle with stocked shelves"
+    },
+    "customer_avatar_fallback": {
+      "url": "https://images.unsplash.com/photo-1740252117044-2af197eea287?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDN8MHwxfHNlYXJjaHwxfHxjdXN0b21lciUyMGF2YXRhciUyMHBvcnRyYWl0fGVufDB8fHx8MTc4MjkzNjQ2MXww&ixlib=rb-4.1.0&q=85",
+      "alt": "A cartoon character wearing a blue shirt and a blue hat"
+    }
+  },
+  "haptics": {
+    "events": {
+      "product_quantity_increment": "light",
+      "product_quantity_decrement": "light",
+      "confirm_order_tap": "medium",
+      "customer_select": "selection",
+      "tab_switch": "selection",
+      "invoice_copied": "success"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the color palette. No indigo, blue, or purple; use the provided Forest Green (#1A4D2E) as the primary brand color to communicate professional wholesale operations.",
+    "Implement the app exclusively in Light mode as per B2B utility preferences, using the `#F3F4F6` surface for the background and `#FFFFFF` for the product cards.",
+    "For the main Order Catalog, keyboard ergonomics are critical. The 'Ordered pieces' (Naruceno komada) input must trigger a numeric keypad. Wrap the main screen in a KeyboardAvoidingView and provide a way to dismiss the keyboard easily (or a 'Done' accessory).",
+    "Product cards must be dense but legible. Place the image on the left, and stack the read-only metadata (Price, pieces per pkg) compactly on the right, accompanied by explicit text input fields for 'Discount' and 'Ordered pieces'.",
+    "Anchor the 'Potvrdi' (Confirm) button in a fixed container at the bottom of the Order Catalog, overlaid with glassmorphism so the product list scrolls underneath it.",
+    "Use Phosphor icons. Do not use emojis anywhere in the UI.",
+    "Always wrap interactive icons or controls within a minimum 44x44pt hitSlop or Pressable area."
+  ]
+}

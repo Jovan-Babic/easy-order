@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 2 testing complete for NEW features. Backend: 15/15 pytest tests pass - Product model persists manufacturer + vat_rate, Customer model persists pib, OrderItem preserves manufacturer/vat_rate snapshot on create+get, seeded products have correct manufacturers (Bački Dukat x2, Zdrava Hrana x1), seeded customers have PIBs (101234567, 107654321). Frontend: All new UI flows work on 390x844 mobile viewport - manufacturer filter chips (manu-chip-__all__, manu-chip-Bački Dukat, manu-chip-Zdrava Hrana) correctly filter products (All=3, BackiDukat=2, ZdravaHrana=1). Full end-to-end order flow verified with the spec math: customer=Delikates, product Ulje Bundeve (price 450, vat 20%), qty=10, discount=5% => Iznos 4.275,00, Osnovica 4.275,00, PDV 855,00, Ukupno (grand-total) 5.130,00 - EXACTLY matches spec. Invoice shows PIB 107654321 and manufacturer Bački Dukat. Buttons present and clickable without crashes: send-email-button, export-pdf-button (shows expected pdfError toast in web preview since expo-print is device-only), copy-invoice-button. Admin forms: form-manufacturer + form-vat fields render + persist on product; form-pib renders + persists on customer (verified value 987654321 via list API and UI display 'PIB 987654321'). Console warnings persist from iteration 1 (shadow* / pointerEvents deprecated) - non-blocking. One minor data-migration nit: legacy DB products get vat_rate defaulted to 20 by migration even when seed intended 10 for Jabukovo sirce (fresh installs are unaffected).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "startup seed_data()", "issue": "Migration sets vat_rate=20 for ALL existing products missing the field; on databases seeded before iteration 2 the Jabukovo sirce 1L ends up with vat_rate=20 instead of intended 10. Fresh installs are correct. Consider a per-product mapping like the manufacturer backfill."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow*", "issue": "Console warning still present: 'shadow*' style props are deprecated. Use boxShadow. Reference: /app/frontend/src/theme.ts (shadow.card)"},
+      {"component": "pointerEvents prop", "issue": "Console warning: props.pointerEvents is deprecated. Use style.pointerEvents. Likely from BlurView/Pressable."}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_easy_order.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "(Optional / polish) Update seed_data() vat_rate backfill to per-product mapping so Jabukovo sirce 1L becomes vat_rate=10 on already-seeded DBs",
+    "(Polish carried from iter 1) Migrate deprecated RN Web props: shadow* -> boxShadow in src/theme.ts and props.pointerEvents -> style.pointerEvents",
+    "No blocking issues - new features (percentage discount totals, per-product VAT, manufacturer field + filter chips, PDF export button, customer PIB) all work as specified."
+  ],
+  "critical_code_review_comments": [
+    "calc.ts computes line net = price*qty*(1-discount/100) and lineVat uses per-item vat_rate - matches spec exactly (verified end-to-end producing 4275/855/5130 for 450x10@5%,20%)",
+    "OrderItem model on backend snapshots manufacturer + vat_rate at order-create time so historical invoices are stable even if product master data changes later - good design",
+    "invoice.tsx exportPdf gracefully handles unsupported Print/Sharing on web with pdfError toast (no crash)",
+    "Seed migration correctly backfills manufacturer via per-name mapping but vat_rate migration is a single default value (see minor backend issue)"
+  ],
+  "updated_files": ["/app/backend/tests/test_easy_order.py", "/app/test_reports/iteration_2.json", "/app/test_reports/pytest/pytest_results.xml"],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100%"},
+  "seed_data_creation": "None persistent - test-created TEST_ prefixed items were cleaned up via DELETE.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend 15/15 green. Frontend verified end-to-end for all new iteration-2 features with exact spec math. PDF/email are device-only in web preview and the app correctly no-ops with a pdfError toast rather than crashing. Only real backend nit is the vat_rate migration default (per minor issue above)."
+}

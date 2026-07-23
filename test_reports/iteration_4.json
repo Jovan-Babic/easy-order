@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 4 fully tested (backend + frontend). Backend: 6/6 pytest pass in test_iteration4.py — seeded products expose correct discounts arrays (Ulje Bundeve [0,5,10]/def 5, Kokosovo [0,3,7]/def 0, Jabukovo [0,10,15]/def 10); POST/PUT of `discounts` persist and round-trip; orders correctly store the chosen non-default discount (10% on Ulje Bundeve → line 1.620,00, gross 1.944,00 ✓) and preserve default when untouched. Frontend UI (mobile viewport 390x844): image-zoom-overlay opens on product-image tap and dismisses on overlay tap; discount-dropdown-<id> opens with correct options 0/5/10, selecting discount-option-10 updates discount-value-<id> to 10%; confirm creates order and invoice renders 1.944,00 grand total (chosen discount applied). Admin form supports multi-discount: form-discount-input + form-add-discount adds disc-chip-<v>, tapping a chip sets it as default (star), disc-remove-<v> removes chip, save persists discounts array + default to backend (verified via GET: {discount:15, discounts:[0,15]} for TEST product). send-email-button exists on invoice, clicks without crash (mailto fallback in web preview expected — native MailComposer attachments only run on device). PDF attach in composeAsync is device-only; web-preview fallback is mailto text as designed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "shadow* style props", "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Non-blocking. Reference: /app/frontend/src/theme.ts (shadow.card usage across screens)."},
+      {"component": "props.pointerEvents", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents.' Non-blocking; likely from BlurView/Modal dependency."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/pytest/iteration4_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Migrate shadow* style props to boxShadow to silence RN Web deprecation warnings.",
+    "(Optional) Audit uses of props.pointerEvents; switch to style.pointerEvents to silence the warning."
+  ],
+  "critical_code_review_comments": [
+    "Backend Product model correctly exposes discounts:List[float] alongside discount:float; PUT and POST both round-trip the array; seed migration back-fills sensible values ({0,default}) for legacy docs so old products keep working (server.py:230-235).",
+    "Frontend catalog: discount picker Modal children are properly guarded with `{discountPickerFor && (...)}` (index.tsx:389). Confirmed no crash when the modal opens/closes; also verified image zoom Modal renders and dismisses cleanly.",
+    "Order confirmation correctly uses `discountSel[p.id] ?? p.discount ?? 0` so an unchanged dropdown sends the product default while a chosen value overrides it (index.tsx:118).",
+    "Admin form (admin.tsx:165-183) correctly manages the chips list, promotes first-added chip to default automatically, keeps `discount` in-sync when the default chip is removed by falling back to next[0] ?? 0, and prevents duplicate values."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration4.py (new)"
+  ],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "100% (all iteration-4 scenarios green)"},
+  "seed_data_creation": "None persistent. TEST_MultiDisc / TEST_NoDiscArr / TEST_UIProd created and deleted during test runs.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 4 features fully verified (multi-discount array, discount dropdown chosen-value flow, image zoom overlay, admin chip UI, email button integrity). Cumulative tests: /app/backend/tests/test_easy_order.py (it2), test_iteration3.py (it3), test_iteration4.py (it4) — 6/6 latest pass. UI testIDs relied upon: product-image-<id>, image-zoom-overlay, discount-dropdown-<id>, discount-option-<v>, discount-value-<id>, disc-chip-<v>, disc-remove-<v>, form-discount-input, form-add-discount, send-email-button, export-pdf-button, copy-invoice-button."
+}
