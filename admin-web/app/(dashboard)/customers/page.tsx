@@ -7,6 +7,7 @@ type Customer = {
   id: string;
   client_id: string;
   name: string;
+  address?: string;
   email?: string;
   phone?: string;
   pib?: string;
@@ -14,7 +15,7 @@ type Customer = {
 
 type Client = { id: string; name: string };
 
-const emptyForm = { name: "", email: "", phone: "", pib: "", client_id: "" };
+const emptyForm = { name: "", address: "", email: "", phone: "", pib: "", client_id: "" };
 
 export default function CustomersPage() {
   const session = useSession();
@@ -53,6 +54,7 @@ export default function CustomersPage() {
     try {
       const payload: Record<string, unknown> = {
         name: form.name,
+        address: form.address,
         email: form.email,
         phone: form.phone,
         pib: form.pib,
@@ -97,6 +99,12 @@ export default function CustomersPage() {
             placeholder="Name"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
+            className="rounded-md border border-border px-3 py-2"
+          />
+          <input
+            placeholder="Address"
+            value={form.address}
+            onChange={(e) => setForm({ ...form, address: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
           />
           <input
@@ -153,6 +161,7 @@ export default function CustomersPage() {
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
                 <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Address</th>
                 <th className="px-4 py-3">Email</th>
                 <th className="px-4 py-3">Phone</th>
                 {isSuperAdmin && <th className="px-4 py-3">Client</th>}
@@ -163,6 +172,7 @@ export default function CustomersPage() {
               {customers.map((c) => (
                 <tr key={c.id} className="border-b border-border last:border-0">
                   <td className="px-4 py-3 font-semibold text-onSurface">{c.name}</td>
+                  <td className="px-4 py-3 text-onSurfaceSecondary">{c.address || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.email || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.phone || "-"}</td>
                   {isSuperAdmin && <td className="px-4 py-3 text-onSurfaceSecondary">{clientName(c.client_id)}</td>}

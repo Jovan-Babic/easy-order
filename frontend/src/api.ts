@@ -6,6 +6,7 @@ export type User = {
   id: string;
   email: string;
   name: string;
+  phone?: string;
   role: Role;
   client_id?: string | null;
   active: boolean;
@@ -79,11 +80,16 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
 }
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const isFormData = typeof FormData !== "undefined" && options?.body instanceof FormData;
+  const headers: Record<string, string> = {};
+  if (!isFormData) headers["Content-Type"] = "application/json";
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
   const res = await fetch(`${BASE}/api${path}`, {
-    headers,
     ...options,
+    headers: {
+      ...headers,
+      ...(options?.headers as Record<string, string> | undefined),
+    },
   });
   if (res.status === 401) {
     onUnauthorized?.();
@@ -119,6 +125,15 @@ export const api = {
     req<Product>(`/products/${id}`, { method: "PUT", body: JSON.stringify(p) }),
   deleteProduct: (id: string) =>
     req<{ ok: boolean }>(`/products/${id}`, { method: "DELETE" }),
+  uploadProductImage: async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await req<{ url: string }>('/upload-image', {
+      method: 'POST',
+      body: formData,
+    });
+    return response.url;
+  },
 
   // orders
   listOrders: (customerId?: string) =>

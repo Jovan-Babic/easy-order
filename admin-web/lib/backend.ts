@@ -10,11 +10,13 @@ const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 export async function backendFetch(path: string, init?: RequestInit) {
   const store = await cookies();
   const token = store.get(COOKIE_NAME)?.value;
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
+  const headers: Record<string, string> = {};
+  if (!isFormData) headers["Content-Type"] = "application/json";
   if (token) headers.Authorization = `Bearer ${token}`;
   return fetch(`${BACKEND_URL}/api${path}`, {
     ...init,
-    headers: { ...headers, ...(init?.headers as Record<string, string>) },
+    headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) },
     cache: "no-store",
   });
 }

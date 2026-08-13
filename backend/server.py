@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, File, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -15,6 +15,8 @@ import uuid
 import bcrypt
 import jwt
 from datetime import datetime, timezone, timedelta
+import cloudinary
+import cloudinary.uploader
 
 from calc import compute_order_totals
 
@@ -35,6 +37,13 @@ CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
 
 mongo_client: AsyncIOMotorClient = None
 db = None  # AsyncIOMotorDatabase
+
+cloudinary.config(
+    cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.environ.get("CLOUDINARY_API_KEY"),
+    api_secret=os.environ.get("CLOUDINARY_API_SECRET"),
+    secure=True,
+)
 
 
 @asynccontextmanager
@@ -92,6 +101,7 @@ class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     email: EmailStr
     name: str
+    phone: Optional[str] = ""
     role: Role
     client_id: Optional[str] = None  # None only for SUPERADMIN
     active: bool = True
@@ -106,6 +116,7 @@ class ClientCreateResponse(BaseModel):
 class UserInput(BaseModel):
     email: EmailStr
     name: str
+    phone: Optional[str] = ""
     password: str
     role: Role
     client_id: Optional[str] = None
@@ -113,6 +124,7 @@ class UserInput(BaseModel):
 
 class UserUpdateInput(BaseModel):
     name: Optional[str] = None
+    phone: Optional[str] = None
     password: Optional[str] = None
     active: Optional[bool] = None
     role: Optional[Role] = None
@@ -242,6 +254,14 @@ def create_access_token(user: dict) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 
+def cloudinary_available() -> bool:
+    return bool(
+        os.environ.get("CLOUDINARY_CLOUD_NAME")
+        and os.environ.get("CLOUDINARY_API_KEY")
+        and os.environ.get("CLOUDINARY_API_SECRET")
+    )
+
+
 async def find_user_by_email(email: str) -> Optional[dict]:
     return await db.users.find_one(
         {"email": re.compile(f"^{re.escape(email)}$", re.IGNORECASE)},
@@ -323,6 +343,27 @@ async def me(current_user: User = Depends(get_current_user)):
 @api_router.post("/auth/logout")
 async def logout(current_user: User = Depends(get_current_user)):
     return {"ok": True}
+
+
+@api_router.post("/upload-image")
+async def upload_product_image(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+    if not cloudinary_available():
+        raise HTTPException(status_code=500, detail="Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.")
+
+    try:
+        result = cloudinary.uploader.upload(
+            file.file,
+            folder="easy-order/products",
+            resource_type="image",
+            transformation=[{"quality": "auto"}, {"fetch_format": "auto"}],
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Image upload failed: {str(exc)}") from exc
+
+    return {
+        "url": result.get("secure_url") or result.get("url"),
+        "public_id": result.get("public_id"),
+    }
 
 
 # ---------------- Clients (tenant companies) ----------------
@@ -410,7 +451,7 @@ async def create_user(inp: UserInput, current_user: User = Depends(get_current_u
                 raise HTTPException(status_code=400, detail="Valid client_id is required for this role")
             client_id = inp.client_id
 
-    obj = User(email=inp.email, name=inp.name, role=role, client_id=client_id)
+    obj = User(email=inp.email, name=inp.name, phone=inp.phone, role=role, client_id=client_id)
     raw = obj.dict()
     raw["password_hash"] = hash_password(inp.password)
     await db.users.insert_one({**raw, "_id": obj.id})
@@ -428,6 +469,8 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
     updated = {**target}
     if inp.name is not None:
         updated["name"] = inp.name
+    if inp.phone is not None:
+        updated["phone"] = inp.phone
     if inp.active is not None:
         updated["active"] = inp.active
     if inp.role is not None:

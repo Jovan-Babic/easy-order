@@ -27,6 +27,101 @@ import { Button } from "@/src/components/Button";
 
 type Tab = "products" | "customers";
 
+type CountryCodeOption = {
+  code: string;
+  flag: string;
+  label: string;
+};
+
+const DEFAULT_COUNTRY_CODES: CountryCodeOption[] = [
+  { code: "+381", flag: "🇷🇸", label: "Serbia" },
+  { code: "+385", flag: "🇭🇷", label: "Croatia" },
+  { code: "+387", flag: "🇧🇦", label: "Bosnia and Herzegovina" },
+  { code: "+421", flag: "🇸🇰", label: "Slovakia" },
+  { code: "+386", flag: "🇸🇮", label: "Slovenia" },
+];
+
+const COUNTRY_CODE_LOOKUP: Record<string, CountryCodeOption> = {
+  "+381": { code: "+381", flag: "🇷🇸", label: "Serbia" },
+  "+1": { code: "+1", flag: "🇺🇸", label: "United States" },
+  "+7": { code: "+7", flag: "🇷🇺", label: "Russia" },
+  "+44": { code: "+44", flag: "🇬🇧", label: "United Kingdom" },
+  "+49": { code: "+49", flag: "🇩🇪", label: "Germany" },
+  "+33": { code: "+33", flag: "🇫🇷", label: "France" },
+  "+61": { code: "+61", flag: "🇦🇺", label: "Australia" },
+  "+91": { code: "+91", flag: "🇮🇳", label: "India" },
+  "+52": { code: "+52", flag: "🇲🇽", label: "Mexico" },
+  "+54": { code: "+54", flag: "🇦🇷", label: "Argentina" },
+  "+41": { code: "+41", flag: "🇨🇭", label: "Switzerland" },
+  "+43": { code: "+43", flag: "🇦🇹", label: "Austria" },
+  "+385": { code: "+385", flag: "🇭🇷", label: "Croatia" },
+  "+387": { code: "+387", flag: "🇧🇦", label: "Bosnia and Herzegovina" },
+  "+421": { code: "+421", flag: "🇸🇰", label: "Slovakia" },
+  "+386": { code: "+386", flag: "🇸🇮", label: "Slovenia" },
+};
+
+function parseCountryCodeConfig(rawValue?: string): CountryCodeOption[] {
+  const value = (rawValue || "").trim();
+  if (!value) return DEFAULT_COUNTRY_CODES;
+
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => {
+          if (typeof item === "string") {
+            const normalized = item.trim();
+            return COUNTRY_CODE_LOOKUP[normalized] || { code: normalized, flag: "🌍", label: normalized };
+          }
+          if (item && typeof item === "object" && typeof item.code === "string") {
+            return {
+              code: item.code,
+              flag: item.flag || "🌍",
+              label: item.label || item.code,
+            };
+          }
+          return null;
+        })
+        .filter(Boolean) as CountryCodeOption[];
+    }
+  } catch {
+    // fallback to CSV parsing below
+  }
+
+  const codes = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (!codes.length) return DEFAULT_COUNTRY_CODES;
+
+  return codes.map((code) => COUNTRY_CODE_LOOKUP[code] || { code, flag: "🌍", label: code });
+}
+
+const COUNTRY_CODES = parseCountryCodeConfig((globalThis as any).process?.env?.EXPO_PUBLIC_COUNTRY_CODES);
+
+function parsePhone(rawPhone?: string) {
+  const value = (rawPhone || "").trim();
+  if (!value) {
+    return { countryCode: "+381", phoneNumber: "" };
+  }
+
+  const match = value.match(/^\s*(\+\d{1,4})\s*(.*)$/);
+  if (match) {
+    const countryCode = COUNTRY_CODES.some((item) => item.code === match[1]) ? match[1] : "+381";
+    const phoneNumber = match[2].replace(/\D/g, "");
+    return { countryCode, phoneNumber };
+  }
+
+  return { countryCode: "+381", phoneNumber: value.replace(/\D/g, "") };
+}
+
+function formatPhone(countryCode: string, phoneNumber: string) {
+  const normalized = (phoneNumber || "").replace(/\D/g, "");
+  if (!normalized) return "";
+  return `${countryCode || "+381"} ${normalized}`;
+}
+
 export default function AdminScreen() {
   const { t, showToast } = useApp();
   const insets = useSafeAreaInsets();
@@ -38,6 +133,7 @@ export default function AdminScreen() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [form, setForm] = useState<any>({});
+  const [countryCodeOpen, setCountryCodeOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [permMsg, setPermMsg] = useState(false);
   const [newDisc, setNewDisc] = useState("");
@@ -63,13 +159,15 @@ export default function AdminScreen() {
     setEditing(null);
     setForm(tab === "products"
       ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: 0, discounts: [0], pieces_per_package: "", boxes_per_transport: "" }
-      : { name: "", address: "", email: "", phone: "", pib: "" });
+      : { name: "", address: "", email: "", phone: "", countryCode: "+381", phoneNumber: "", pib: "" });
     setNewDisc("");
+    setCountryCodeOpen(false);
     setPermMsg(false);
     setFormOpen(true);
   };
 
   const openEdit = (item: any) => {
+    const customerPhone = parsePhone(item.phone || "");
     setEditing(item);
     setForm(
       tab === "products"
@@ -84,9 +182,18 @@ export default function AdminScreen() {
             pieces_per_package: String(item.pieces_per_package ?? ""),
             boxes_per_transport: String(item.boxes_per_transport ?? ""),
           }
-        : { name: item.name, address: item.address || "", email: item.email || "", phone: item.phone || "", pib: item.pib || "" }
+        : {
+            name: item.name,
+            address: item.address || "",
+            email: item.email || "",
+            phone: item.phone || "",
+            countryCode: customerPhone.countryCode,
+            phoneNumber: customerPhone.phoneNumber,
+            pib: item.pib || "",
+          }
     );
     setNewDisc("");
+    setCountryCodeOpen(false);
     setPermMsg(false);
     setFormOpen(true);
   };
@@ -107,12 +214,23 @@ export default function AdminScreen() {
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
       quality: 0.5,
-      base64: true,
       allowsEditing: true,
       aspect: [1, 1],
     });
-    if (!res.canceled && res.assets?.[0]?.base64) {
-      setForm((f: any) => ({ ...f, image: `data:image/jpeg;base64,${res.assets[0].base64}` }));
+    if (res.canceled || !res.assets?.[0]?.uri) return;
+
+    const file = {
+      uri: res.assets[0].uri,
+      name: res.assets[0].fileName || `product-${Date.now()}.jpg`,
+      type: res.assets[0].mimeType || "image/jpeg",
+    } as any;
+
+    try {
+      const remoteUrl = await api.uploadProductImage(file as File);
+      setForm((f: any) => ({ ...f, image: remoteUrl }));
+    } catch (error) {
+      console.error("Image upload failed", error);
+      showToast?.("Image upload failed");
     }
   };
 
@@ -139,7 +257,7 @@ export default function AdminScreen() {
           name: form.name.trim(),
           address: form.address,
           email: form.email,
-          phone: form.phone,
+          phone: formatPhone(form.countryCode || "+381", form.phoneNumber || ""),
           pib: form.pib,
         };
         if (editing) await api.updateCustomer(editing.id, payload);
@@ -344,7 +462,53 @@ export default function AdminScreen() {
                   <FormField label={t("pib")} value={form.pib} onChangeText={(v) => setForm((f: any) => ({ ...f, pib: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-pib" />
                   <FormField label={t("address")} value={form.address} onChangeText={(v) => setForm((f: any) => ({ ...f, address: v }))} testID="form-address" />
                   <FormField label={t("email")} value={form.email} onChangeText={(v) => setForm((f: any) => ({ ...f, email: v }))} keyboardType="email-address" testID="form-email" />
-                  <FormField label={t("phone")} value={form.phone} onChangeText={(v) => setForm((f: any) => ({ ...f, phone: v }))} keyboardType="phone-pad" testID="form-phone" />
+                  <View style={{ marginBottom: spacing.md }}>
+                    <Text style={styles.fieldLabel}>{t("phone")}</Text>
+                    <View style={styles.phoneRow}>
+                      <Pressable
+                        onPress={() => setCountryCodeOpen((open) => !open)}
+                        style={styles.countryCodeButton}
+                        testID="phone-country-code"
+                      >
+                        <Text style={styles.countryCodeText}>
+                          {COUNTRY_CODES.find((item) => item.code === (form.countryCode || "+381"))?.flag ?? "🇷🇸"}
+                          {` ${form.countryCode || "+381"}`}
+                        </Text>
+                        <Ionicons name="chevron-down" size={16} color={colors.muted} />
+                      </Pressable>
+
+                      <TextInput
+                        testID="form-phone"
+                        value={form.phoneNumber || ""}
+                        onChangeText={(v) => setForm((f: any) => ({ ...f, phoneNumber: v.replace(/\D/g, "") }))}
+                        keyboardType="phone-pad"
+                        style={[styles.input, { flex: 1 }]}
+                      />
+                    </View>
+
+                    {countryCodeOpen && (
+                      <View style={styles.countryCodeDropdown}>
+                        {COUNTRY_CODES.map((item) => (
+                          <Pressable
+                            key={item.code}
+                            onPress={() => {
+                              setForm((f: any) => ({ ...f, countryCode: item.code }));
+                              setCountryCodeOpen(false);
+                            }}
+                            style={[
+                              styles.countryCodeOption,
+                              (form.countryCode || "+381") === item.code && styles.countryCodeOptionSelected,
+                            ]}
+                          >
+                            <Text style={[
+                              styles.countryCodeOptionText,
+                              (form.countryCode || "+381") === item.code && styles.countryCodeOptionTextSelected,
+                            ]}>{item.flag} {item.code} {item.label}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    )}
+                  </View>
                 </>
               )}
 
@@ -481,6 +645,54 @@ const styles = StyleSheet.create({
   discChipDefault: { backgroundColor: colors.brand, borderColor: colors.brand },
   discChipText: { fontSize: font.base, fontWeight: "700", color: colors.onSurfaceSecondary },
   discChipTextDefault: { color: "#fff" },
+  phoneRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  countryCodeButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 92,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.surface,
+  },
+  countryCodeText: {
+    fontSize: font.lg,
+    color: colors.onSurface,
+    fontWeight: "700",
+    marginRight: spacing.xs,
+  },
+  countryCodeDropdown: {
+    marginTop: spacing.sm,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    overflow: "hidden",
+  },
+  countryCodeOption: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  countryCodeOptionSelected: {
+    backgroundColor: colors.brandTertiary,
+  },
+  countryCodeOptionText: {
+    fontSize: font.base,
+    fontWeight: "600",
+    color: colors.onSurface,
+  },
+  countryCodeOptionTextSelected: {
+    color: colors.brand,
+  },
   input: {
     borderWidth: 1.5,
     borderColor: colors.border,
