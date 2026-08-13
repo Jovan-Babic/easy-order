@@ -1,0 +1,33 @@
+# Dependencies and package manager caches
+node_modules/
+.yarn/
+.pnp.*
+
+# Expo / Metro caches and generated files
+.expo/
+.metro-cache/
+.expo-shared/
+dist/
+web-build/
+
+# Android build outputs
+android/.gradle/
+android/build/
+android/app/build/
+
+# iOS build outputs if the folder exists later
+ios/Pods/
+ios/build/
+
+# Logs and local noise
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.log
+.DS_Store
+
+# Local environment files
+.env*
+
+# TypeScript build artifacts
+*.tsbuildinfo

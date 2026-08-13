@@ -16,7 +16,10 @@ const NAV_ITEMS = [
   { href: "/products", label: "Products", roles: ["superadmin", "admin"] },
   { href: "/customers", label: "Customers", roles: ["superadmin", "admin"] },
   { href: "/orders", label: "Orders", roles: ["superadmin", "admin"] },
+  { href: "/app", label: "App", roles: ["superadmin", "admin"] },
 ] as const;
+
+const showAppMenu = process.env.NEXT_PUBLIC_SHOW_APP_MENU === "true";
 
 export function Sidebar({ user }: { user: NavUser }) {
   const pathname = usePathname();
@@ -35,7 +38,12 @@ export function Sidebar({ user }: { user: NavUser }) {
         <p className="text-xs text-muted">Admin portal</p>
       </div>
       <nav className="flex-1 px-3">
-        {NAV_ITEMS.filter((item) => (item.roles as readonly string[]).includes(user.role)).map((item) => {
+        {NAV_ITEMS.filter((item) => {
+          if (item.href === "/app" && !showAppMenu) {
+            return false;
+          }
+          return (item.roles as readonly string[]).includes(user.role);
+        }).map((item) => {
           const active = pathname.startsWith(item.href);
           return (
             <Link
