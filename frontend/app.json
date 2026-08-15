@@ -5,6 +5,11 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
+    "splash": {
+      "image": "./assets/images/splash-image.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#1A4D2E"
+    },
     "scheme": "easy-order",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,

@@ -1,7 +1,7 @@
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
-import { LogBox } from "react-native";
+import { Image, LogBox, StyleSheet, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
@@ -31,10 +31,10 @@ function RouteGuard({
   const router = useRouter();
 
   useEffect(() => {
-    if (fontsReady && status !== "loading") {
+    if (fontsReady) {
       SplashScreen.hideAsync();
     }
-  }, [fontsReady, status]);
+  }, [fontsReady]);
 
   useEffect(() => {
     if (status === "loading") return;
@@ -45,6 +45,18 @@ function RouteGuard({
       router.replace("/(tabs)");
     }
   }, [status, segments, router]);
+
+  if (status === "loading") {
+    return (
+      <View style={styles.splashContainer}>
+        <Image
+          source={require("../assets/images/splash-image.png")}
+          style={styles.splashImage}
+          resizeMode="cover"
+        />
+      </View>
+    );
+  }
 
   return <>{children}</>;
 }
@@ -73,3 +85,14 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   );
 }
+
+const styles = StyleSheet.create({
+  splashContainer: {
+    flex: 1,
+    backgroundColor: "#1A4D2E",
+  },
+  splashImage: {
+    width: "100%",
+    height: "100%",
+  },
+});
