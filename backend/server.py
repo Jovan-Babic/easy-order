@@ -38,12 +38,26 @@ CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
 mongo_client: AsyncIOMotorClient = None
 db = None  # AsyncIOMotorDatabase
 
-cloudinary.config(
-    cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.environ.get("CLOUDINARY_API_KEY"),
-    api_secret=os.environ.get("CLOUDINARY_API_SECRET"),
-    secure=True,
-)
+def configure_cloudinary() -> None:
+    """Configure Cloudinary from either CLOUDINARY_URL or explicit CLOUDINARY_* vars."""
+    cloudinary_url = os.environ.get("CLOUDINARY_URL")
+    cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME")
+    api_key = os.environ.get("CLOUDINARY_API_KEY")
+    api_secret = os.environ.get("CLOUDINARY_API_SECRET")
+
+    if cloudinary_url:
+        cloudinary.config(cloudinary_url=cloudinary_url, secure=True)
+        return
+
+    cloudinary.config(
+        cloud_name=cloud_name,
+        api_key=api_key,
+        api_secret=api_secret,
+        secure=True,
+    )
+
+
+configure_cloudinary()
 
 
 @asynccontextmanager
@@ -255,11 +269,8 @@ def create_access_token(user: dict) -> str:
 
 
 def cloudinary_available() -> bool:
-    return bool(
-        os.environ.get("CLOUDINARY_CLOUD_NAME")
-        and os.environ.get("CLOUDINARY_API_KEY")
-        and os.environ.get("CLOUDINARY_API_SECRET")
-    )
+    cfg = cloudinary.config()
+    return bool(cfg.cloud_name and cfg.api_key and cfg.api_secret)
 
 
 async def find_user_by_email(email: str) -> Optional[dict]:
@@ -348,7 +359,10 @@ async def logout(current_user: User = Depends(get_current_user)):
 @api_router.post("/upload-image")
 async def upload_product_image(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     if not cloudinary_available():
-        raise HTTPException(status_code=500, detail="Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.")
+        raise HTTPException(
+            status_code=500,
+            detail="Cloudinary is not configured. Set CLOUDINARY_URL or CLOUDINARY_CLOUD_NAME/CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET.",
+        )
 
     try:
         result = cloudinary.uploader.upload(

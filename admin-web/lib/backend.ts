@@ -2,7 +2,14 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { COOKIE_NAME } from "@/lib/session";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
+const BACKEND_URL = process.env.BACKEND_URL || (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
+
+function requireBackendUrl() {
+  if (!BACKEND_URL) {
+    throw new Error("BACKEND_URL is not configured. Set BACKEND_URL to your FastAPI base URL in deployment environment variables.");
+  }
+  return BACKEND_URL;
+}
 
 // Server-to-server call to FastAPI, forwarding the session cookie as a
 // Bearer token. Never called from the browser - route handlers are the only
@@ -14,7 +21,7 @@ export async function backendFetch(path: string, init?: RequestInit) {
   const headers: Record<string, string> = {};
   if (!isFormData) headers["Content-Type"] = "application/json";
   if (token) headers.Authorization = `Bearer ${token}`;
-  return fetch(`${BACKEND_URL}/api${path}`, {
+  return fetch(`${requireBackendUrl()}/api${path}`, {
     ...init,
     headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) },
     cache: "no-store",

@@ -1,16 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { COOKIE_NAME } from "@/lib/session";
-
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
+import { backendFetch } from "@/lib/backend";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const res = await fetch(`${BACKEND_URL}/api/auth/login`, {
+  const res = await backendFetch("/auth/login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    cache: "no-store",
   });
 
   if (!res.ok) {
