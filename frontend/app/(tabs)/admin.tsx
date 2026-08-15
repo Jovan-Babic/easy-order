@@ -125,6 +125,7 @@ function formatPhone(countryCode: string, phoneNumber: string) {
 export default function AdminScreen() {
   const { t, showToast } = useApp();
   const insets = useSafeAreaInsets();
+  const safeBottom = Math.max(insets.bottom, 12);
   const [tab, setTab] = useState<Tab>("products");
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -331,7 +332,7 @@ export default function AdminScreen() {
         <FlatList
           data={data}
           keyExtractor={(i) => i.id}
-          contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + 90 }}
+          contentContainerStyle={{ padding: spacing.lg, paddingBottom: safeBottom + 90 }}
           ListEmptyComponent={
             <View style={styles.center}>
               <Ionicons name="albums-outline" size={48} color={colors.borderStrong} />
@@ -374,7 +375,7 @@ export default function AdminScreen() {
         />
       )}
 
-      <Pressable testID="fab-add" style={[styles.fab, { bottom: insets.bottom + 16 }]} onPress={openAdd}>
+      <Pressable testID="fab-add" style={[styles.fab, { bottom: safeBottom + 16 }]} onPress={openAdd}>
         <Ionicons name="add" size={30} color="#fff" />
       </Pressable>
 
@@ -382,7 +383,7 @@ export default function AdminScreen() {
       <Modal visible={formOpen} transparent animationType="slide" onRequestClose={() => setFormOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setFormOpen(false)} />
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
-          <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]}>
+          <View style={[styles.sheet, { paddingBottom: safeBottom + spacing.lg }]}>
             <View style={styles.sheetHandle} />
             <Text style={styles.sheetTitle}>
               {editing

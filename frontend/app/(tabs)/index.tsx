@@ -32,6 +32,8 @@ export default function OrderCatalog() {
   const { logout } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const safeBottom = Math.max(insets.bottom, 12);
+  const footerBottomPadding = insets.bottom > 0 ? Math.max(4, Math.round(insets.bottom * 0.4)) : 4;
 
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -44,6 +46,7 @@ export default function OrderCatalog() {
   const [error, setError] = useState(false);
   const [picking, setPicking] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [confirmingOrder, setConfirmingOrder] = useState(false);
   const [search, setSearch] = useState("");
   const [productSearch, setProductSearch] = useState("");
   const [manuFilter, setManuFilter] = useState<string>("__all__");
@@ -105,7 +108,7 @@ export default function OrderCatalog() {
     });
   }, [products, manuFilter, productSearch]);
 
-  const confirm = async () => {
+  const submitOrder = async () => {
     if (!selected) return;
     const items: OrderItem[] = products
       .filter((p) => Number(drafts[p.id]) > 0)
@@ -131,10 +134,16 @@ export default function OrderCatalog() {
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setDrafts({});
+      setConfirmingOrder(false);
       router.push({ pathname: "/invoice", params: { id: order.id } });
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const confirm = () => {
+    if (!selected || orderedCount === 0) return;
+    setConfirmingOrder(true);
   };
 
   const canConfirm = !!selected && orderedCount > 0;
@@ -241,7 +250,7 @@ export default function OrderCatalog() {
           <ScrollView
             contentContainerStyle={{
               padding: spacing.lg,
-              paddingBottom: insets.bottom + 110,
+              paddingBottom: footerBottomPadding + 96,
             }}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
@@ -316,20 +325,29 @@ export default function OrderCatalog() {
           </ScrollView>
 
           {/* Sticky confirm */}
-          <BlurView intensity={40} tint="light" style={[styles.footer, { paddingBottom: insets.bottom + spacing.sm }]}>
+          <BlurView intensity={40} tint="light" style={[styles.footer, { paddingBottom: footerBottomPadding }]}>
             {orderedCount > 0 && (
               <Text style={styles.footerHint} testID="ordered-count">
-                {orderedCount} {t("items")}
+                {orderedCount} {orderedCount === 1 ? t("item") : t("items")}
               </Text>
             )}
-            <Button
-              title={t("confirm")}
-              icon="checkmark-circle"
-              onPress={confirm}
-              disabled={!canConfirm}
-              loading={submitting}
-              testID="confirm-button"
-            />
+            {canConfirm ? (
+              <Button
+                title={t("confirm")}
+                icon="checkmark-circle"
+                onPress={confirm}
+                disabled={false}
+                loading={submitting}
+                testID="confirm-button"
+                style={styles.confirmButton}
+              />
+            ) : (
+              <View style={styles.confirmPlaceholder}>
+                <Text style={styles.confirmPlaceholderText}>
+                  {!selected ? t("selectCustomerFirst") : t("noProducts")}
+                </Text>
+              </View>
+            )}
             {!selected && (
               <Text style={styles.footerWarn}>{t("selectCustomerFirst")}</Text>
             )}
@@ -340,7 +358,7 @@ export default function OrderCatalog() {
       {/* Customer picker modal */}
       <Modal visible={picking} transparent animationType="slide" onRequestClose={() => setPicking(false)}>
         <Pressable style={styles.backdrop} onPress={() => setPicking(false)} />
-        <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]}>
+        <View style={[styles.sheet, { paddingBottom: safeBottom + spacing.lg }]}>
           <View style={styles.sheetHandle} />
           <Text style={styles.sheetTitle}>{t("selectCustomer")}</Text>
           <View style={styles.searchBox}>
@@ -429,6 +447,37 @@ export default function OrderCatalog() {
             })}
           </View>
           )}
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={confirmingOrder}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirmingOrder(false)}
+      >
+        <Pressable style={styles.centerBackdrop} onPress={() => setConfirmingOrder(false)}>
+          <Pressable style={styles.confirmModal} onPress={() => {}}>
+            <Text style={styles.confirmModalTitle}>{t("confirm")}</Text>
+            <Text style={styles.confirmModalText}>
+              {selected ? `Da li želite da potvrdite porudžbinu za ${selected.name}?` : ""}
+            </Text>
+            <Text style={styles.confirmModalMeta}>{orderedCount} artikala u porudžbini</Text>
+            <View style={styles.confirmModalActions}>
+              <Button
+                title={t("cancel")}
+                variant="secondary"
+                onPress={() => setConfirmingOrder(false)}
+                style={styles.modalSecondaryButton}
+              />
+              <Button
+                title={t("confirm")}
+                onPress={submitOrder}
+                loading={submitting}
+                style={styles.modalPrimaryButton}
+              />
+            </View>
+          </Pressable>
         </Pressable>
       </Modal>
 
@@ -662,10 +711,77 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    borderTopWidth: 1,
+    paddingTop: 4,
+    paddingBottom: 4,
+    borderTopWidth: 0.5,
     borderTopColor: colors.border,
-    backgroundColor: "rgba(243,244,246,0.7)",
+    backgroundColor: "rgba(255,255,255,0.92)",
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  confirmButton: {
+    minHeight: 55,
+    borderRadius: radius.md,
+    shadowColor: colors.brand,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.16,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  confirmPlaceholder: {
+    minHeight: 58,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surfaceTertiary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+    opacity: 0.9,
+  },
+  confirmPlaceholderText: {
+    color: colors.muted,
+    fontWeight: "700",
+    fontSize: font.base,
+    textAlign: "center",
+  },
+  confirmModal: {
+    width: "88%",
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    ...shadow.card,
+  },
+  confirmModalTitle: {
+    fontSize: font.xl,
+    fontWeight: "800",
+    color: colors.onSurface,
+    marginBottom: spacing.xs,
+  },
+  confirmModalText: {
+    fontSize: font.base,
+    color: colors.onSurfaceSecondary,
+    lineHeight: 20,
+    marginBottom: spacing.xs,
+  },
+  confirmModalMeta: {
+    fontSize: font.sm,
+    color: colors.muted,
+    marginBottom: spacing.sm,
+  },
+  confirmModalActions: {
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  modalSecondaryButton: {
+    flex: 1,
+  },
+  modalPrimaryButton: {
+    flex: 1,
   },
   footerHint: { textAlign: "center", color: colors.brand, fontWeight: "700", marginBottom: spacing.xs },
   footerWarn: { textAlign: "center", color: colors.warning, fontSize: font.sm, marginTop: spacing.sm },

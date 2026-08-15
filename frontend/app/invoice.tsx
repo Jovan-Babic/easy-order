@@ -29,6 +29,7 @@ export default function InvoiceScreen() {
   const { t, lang, showToast } = useApp();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const safeBottom = Math.max(insets.bottom, 12);
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const [order, setOrder] = useState<Order | null>(null);
@@ -129,7 +130,7 @@ export default function InvoiceScreen() {
       ) : (
         <>
           <ScrollView
-            contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + 120 }}
+            contentContainerStyle={{ padding: spacing.lg, paddingBottom: safeBottom + 120 }}
             showsVerticalScrollIndicator={false}
           >
             <View style={styles.receipt} testID="invoice-receipt">
@@ -180,7 +181,7 @@ export default function InvoiceScreen() {
             </View>
           </ScrollView>
 
-          <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.sm }]}>
+          <View style={[styles.footer, { paddingBottom: safeBottom + spacing.sm }]}>
             <View style={styles.footerRow}>
               <Button title={t("sendEmail")} icon="mail" onPress={sendEmail} testID="send-email-button" style={{ flex: 1 }} />
               <Button title={t("exportPdf")} icon="document-text" variant="secondary" onPress={exportPdf} testID="export-pdf-button" style={{ flex: 1 }} />
@@ -254,7 +255,11 @@ const styles = StyleSheet.create({
   },
   grandLabel: { fontSize: font.lg, fontWeight: "800", color: colors.brand },
   grandValue: { fontSize: font.xl, fontWeight: "800", color: colors.brand },
-  footerRow: { flexDirection: "row", gap: spacing.sm },
+  footerRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    alignItems: "stretch",
+  },
   itemName: { fontSize: font.lg, fontWeight: "800", color: colors.onSurface, marginBottom: spacing.xs },
   row: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 2 },
   rowLabel: { fontSize: font.base, color: colors.muted },
@@ -264,9 +269,14 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    padding: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.lg,
     backgroundColor: colors.surfaceSecondary,
     borderTopWidth: 1,
     borderTopColor: colors.border,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    ...shadow.card,
   },
 });

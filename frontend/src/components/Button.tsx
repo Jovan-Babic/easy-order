@@ -37,27 +37,34 @@ export function Button({
     : colors.brandSecondary;
   const fg = isPrimary || isDanger ? "#fff" : colors.brand;
 
+  const activeBg = disabled ? colors.surfaceTertiary : bg;
+  const activeFg = disabled ? colors.muted : fg;
+
   return (
     <Pressable
       testID={testID}
       disabled={disabled || loading}
       onPress={() => {
+        if (disabled || loading) return;
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
         onPress();
       }}
       style={({ pressed }) => [
         styles.btn,
-        { backgroundColor: bg, opacity: disabled ? 0.5 : pressed ? 0.85 : 1 },
+        {
+          backgroundColor: activeBg,
+          opacity: disabled ? 0.65 : pressed ? 0.85 : 1,
+        },
         isGhost && { borderWidth: 0 },
         style,
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={fg} />
+        <ActivityIndicator color={activeFg} />
       ) : (
         <View style={styles.row}>
-          {icon && <Ionicons name={icon} size={18} color={fg} style={{ marginRight: spacing.sm }} />}
-          <Text style={[styles.txt, { color: fg }]}>{title}</Text>
+          {icon && <Ionicons name={icon} size={18} color={activeFg} style={{ marginRight: spacing.sm }} />}
+          <Text style={[styles.txt, { color: activeFg }]}>{title}</Text>
         </View>
       )}
     </Pressable>

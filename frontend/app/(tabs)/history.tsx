@@ -20,6 +20,7 @@ export default function HistoryScreen() {
   const { t } = useApp();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const safeBottom = Math.max(insets.bottom, 12);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -58,7 +59,7 @@ export default function HistoryScreen() {
         <FlatList
           data={orders}
           keyExtractor={(o) => o.id}
-          contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + 20 }}
+          contentContainerStyle={{ padding: spacing.lg, paddingBottom: safeBottom + 20 }}
           renderItem={({ item }) => (
             <Pressable
               testID={`order-${item.id}`}
