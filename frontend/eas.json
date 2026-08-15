@@ -16,6 +16,9 @@
     },
     "apk": {
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "https://easy-order-mu.vercel.app"
+      },
       "android": {
         "buildType": "apk"
       }
