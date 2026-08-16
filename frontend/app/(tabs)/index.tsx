@@ -76,8 +76,7 @@ export default function OrderCatalog() {
   };
 
   const effectiveDiscount = (supplierDiscount: number, additionalDiscount: number) => {
-    const factor = (1 - supplierDiscount / 100) * (1 - additionalDiscount / 100);
-    return (1 - factor) * 100;
+    return Math.max(0, Math.min(100, supplierDiscount + additionalDiscount));
   };
 
   const filteredCustomers = useMemo(
@@ -360,6 +359,7 @@ export default function OrderCatalog() {
                       {totalDiscount.toFixed(2)}%
                     </Text>
                   </View>
+                  <Text style={styles.totalDiscountHint}>{t("totalDiscountFormula")}</Text>
                 </View>
               );
             })}
@@ -765,6 +765,12 @@ const styles = StyleSheet.create({
   },
   totalDiscountLabel: { fontSize: font.sm, color: colors.brand, fontWeight: "700" },
   totalDiscountValue: { fontSize: font.base, color: colors.brand, fontWeight: "800" },
+  totalDiscountHint: {
+    marginTop: 4,
+    fontSize: 11,
+    color: colors.muted,
+    fontWeight: "600",
+  },
   fieldLabel: { fontSize: font.sm, color: colors.onSurfaceTertiary, fontWeight: "600", marginBottom: spacing.xs },
   input: {
     borderWidth: 1.5,

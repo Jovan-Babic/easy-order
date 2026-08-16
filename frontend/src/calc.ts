@@ -3,8 +3,7 @@ import { Order, OrderItem } from "@/src/api";
 export function effectiveDiscountPct(it: OrderItem): number {
   const supplier = it.discount ?? 0;
   const additional = it.additional_discount ?? 0;
-  const factor = (1 - supplier / 100) * (1 - additional / 100);
-  return (1 - factor) * 100;
+  return Math.max(0, Math.min(100, supplier + additional));
 }
 
 export function lineNet(it: OrderItem): number {
@@ -12,7 +11,8 @@ export function lineNet(it: OrderItem): number {
   const qty = it.ordered_qty ?? 0;
   const supplier = it.discount ?? 0;
   const additional = it.additional_discount ?? 0;
-  return price * qty * (1 - supplier / 100) * (1 - additional / 100);
+  const totalDiscount = Math.max(0, Math.min(100, supplier + additional));
+  return price * qty * (1 - totalDiscount / 100);
 }
 
 export function lineVat(it: OrderItem): number {

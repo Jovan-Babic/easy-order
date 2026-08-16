@@ -8,7 +8,8 @@ def line_net(item: Dict[str, Any]) -> float:
     qty = item.get("ordered_qty") or 0
     discount = item.get("discount") or 0
     additional_discount = item.get("additional_discount") or 0
-    return price * qty * (1 - discount / 100) * (1 - additional_discount / 100)
+    total_discount = max(0, min(100, discount + additional_discount))
+    return price * qty * (1 - total_discount / 100)
 
 
 def line_vat(item: Dict[str, Any]) -> float:
