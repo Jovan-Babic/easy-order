@@ -99,6 +99,7 @@ function parseCountryCodeConfig(rawValue?: string): CountryCodeOption[] {
 }
 
 const COUNTRY_CODES = parseCountryCodeConfig((globalThis as any).process?.env?.EXPO_PUBLIC_COUNTRY_CODES);
+const DISCOUNT_OPTIONS = [0, 5, 15, 25, 30];
 
 function parsePhone(rawPhone?: string) {
   const value = (rawPhone || "").trim();
@@ -137,7 +138,6 @@ export default function AdminScreen() {
   const [countryCodeOpen, setCountryCodeOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [permMsg, setPermMsg] = useState(false);
-  const [newDisc, setNewDisc] = useState("");
   const additionalDiscountOptions = Array.from({ length: 16 }, (_, i) => i);
 
   const load = useCallback(async () => {
@@ -160,9 +160,8 @@ export default function AdminScreen() {
   const openAdd = () => {
     setEditing(null);
     setForm(tab === "products"
-      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: 0, discounts: [0], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "" }
+      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: 0, discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "" }
       : { name: "", address: "", email: "", phone: "", countryCode: "+381", phoneNumber: "", pib: "" });
-    setNewDisc("");
     setCountryCodeOpen(false);
     setPermMsg(false);
     setFormOpen(true);
@@ -179,8 +178,8 @@ export default function AdminScreen() {
             manufacturer: item.manufacturer || "",
             price_no_vat: String(item.price_no_vat ?? ""),
             vat_rate: String(item.vat_rate ?? "20"),
-            discount: item.discount ?? 0,
-            discounts: item.discounts && item.discounts.length ? [...item.discounts] : [item.discount ?? 0],
+            discount: DISCOUNT_OPTIONS.includes(item.discount ?? 0) ? (item.discount ?? 0) : 0,
+            discounts: [...DISCOUNT_OPTIONS],
             additional_discounts: item.additional_discounts && item.additional_discounts.length
               ? item.additional_discounts.filter((v: number) => Number.isInteger(v) && v >= 0 && v <= 15)
               : [0],
@@ -197,7 +196,6 @@ export default function AdminScreen() {
             pib: item.pib || "",
           }
     );
-    setNewDisc("");
     setCountryCodeOpen(false);
     setPermMsg(false);
     setFormOpen(true);
@@ -250,8 +248,8 @@ export default function AdminScreen() {
           manufacturer: form.manufacturer,
           price_no_vat: Number(form.price_no_vat) || 0,
           vat_rate: Number(form.vat_rate) || 0,
-          discount: Number(form.discount) || 0,
-          discounts: (form.discounts && form.discounts.length ? form.discounts : [Number(form.discount) || 0]),
+          discount: DISCOUNT_OPTIONS.includes(Number(form.discount)) ? Number(form.discount) : 0,
+          discounts: [...DISCOUNT_OPTIONS],
           additional_discounts: (form.additional_discounts && form.additional_discounts.length
             ? form.additional_discounts
                 .map((v: number) => Math.trunc(Number(v)))
@@ -289,26 +287,6 @@ export default function AdminScreen() {
   };
 
   const data = tab === "products" ? products : customers;
-
-  const addDiscountValue = () => {
-    const v = Number(newDisc);
-    if (newDisc === "" || isNaN(v)) return;
-    setForm((f: any) => {
-      const list: number[] = f.discounts || [];
-      if (list.includes(v)) return f;
-      const next = [...list, v].sort((a, b) => a - b);
-      return { ...f, discounts: next, discount: list.length === 0 ? v : f.discount };
-    });
-    setNewDisc("");
-  };
-
-  const removeDiscountValue = (v: number) => {
-    setForm((f: any) => {
-      const next = (f.discounts || []).filter((x: number) => x !== v);
-      const newDefault = f.discount === v ? (next[0] ?? 0) : f.discount;
-      return { ...f, discounts: next, discount: newDefault };
-    });
-  };
 
   const toggleAdditionalDiscount = (value: number) => {
     setForm((f: any) => {
@@ -440,24 +418,9 @@ export default function AdminScreen() {
 
                   <View style={{ marginBottom: spacing.md }}>
                     <Text style={styles.fieldLabel}>{t("discountOptions")}</Text>
-                    <View style={styles.discAddRow}>
-                      <TextInput
-                        testID="form-discount-input"
-                        value={newDisc}
-                        onChangeText={(v) => setNewDisc(v.replace(/[^0-9.]/g, ""))}
-                        keyboardType="numeric"
-                        placeholder="0"
-                        placeholderTextColor={colors.borderStrong}
-                        style={[styles.input, { flex: 1 }]}
-                        onSubmitEditing={addDiscountValue}
-                      />
-                      <Pressable testID="form-add-discount" style={styles.addDiscBtn} onPress={addDiscountValue}>
-                        <Ionicons name="add" size={24} color="#fff" />
-                      </Pressable>
-                    </View>
                     <Text style={styles.discHint}>{t("setDefault")}</Text>
                     <View style={styles.discChips}>
-                      {(form.discounts || []).map((d: number) => {
+                      {DISCOUNT_OPTIONS.map((d) => {
                         const isDefault = form.discount === d;
                         return (
                           <Pressable
@@ -468,9 +431,6 @@ export default function AdminScreen() {
                           >
                             {isDefault && <Ionicons name="star" size={12} color="#fff" style={{ marginRight: 4 }} />}
                             <Text style={[styles.discChipText, isDefault && styles.discChipTextDefault]}>{d}%</Text>
-                            <Pressable testID={`disc-remove-${d}`} hitSlop={8} onPress={() => removeDiscountValue(d)} style={{ marginLeft: 6 }}>
-                              <Ionicons name="close-circle" size={16} color={isDefault ? "#fff" : colors.muted} />
-                            </Pressable>
                           </Pressable>
                         );
                       })}

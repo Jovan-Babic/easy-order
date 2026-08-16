@@ -450,7 +450,6 @@ export default function OrderCatalog() {
         </View>
       </Modal>
 
-      {/* Discount dropdown */}
       <Modal
         visible={!!additionalDiscountPickerFor}
         transparent
