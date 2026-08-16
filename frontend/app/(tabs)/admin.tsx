@@ -138,6 +138,7 @@ export default function AdminScreen() {
   const [saving, setSaving] = useState(false);
   const [permMsg, setPermMsg] = useState(false);
   const [newDisc, setNewDisc] = useState("");
+  const additionalDiscountOptions = Array.from({ length: 16 }, (_, i) => i);
 
   const load = useCallback(async () => {
     try {
@@ -159,7 +160,7 @@ export default function AdminScreen() {
   const openAdd = () => {
     setEditing(null);
     setForm(tab === "products"
-      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: 0, discounts: [0], pieces_per_package: "", boxes_per_transport: "" }
+      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: 0, discounts: [0], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "" }
       : { name: "", address: "", email: "", phone: "", countryCode: "+381", phoneNumber: "", pib: "" });
     setNewDisc("");
     setCountryCodeOpen(false);
@@ -180,6 +181,9 @@ export default function AdminScreen() {
             vat_rate: String(item.vat_rate ?? "20"),
             discount: item.discount ?? 0,
             discounts: item.discounts && item.discounts.length ? [...item.discounts] : [item.discount ?? 0],
+            additional_discounts: item.additional_discounts && item.additional_discounts.length
+              ? item.additional_discounts.filter((v: number) => Number.isInteger(v) && v >= 0 && v <= 15)
+              : [0],
             pieces_per_package: String(item.pieces_per_package ?? ""),
             boxes_per_transport: String(item.boxes_per_transport ?? ""),
           }
@@ -248,6 +252,11 @@ export default function AdminScreen() {
           vat_rate: Number(form.vat_rate) || 0,
           discount: Number(form.discount) || 0,
           discounts: (form.discounts && form.discounts.length ? form.discounts : [Number(form.discount) || 0]),
+          additional_discounts: (form.additional_discounts && form.additional_discounts.length
+            ? form.additional_discounts
+                .map((v: number) => Math.trunc(Number(v)))
+                .filter((v: number) => Number.isInteger(v) && v >= 0 && v <= 15)
+            : [0]),
           pieces_per_package: Number(form.pieces_per_package) || 0,
           boxes_per_transport: Number(form.boxes_per_transport) || 0,
         };
@@ -298,6 +307,18 @@ export default function AdminScreen() {
       const next = (f.discounts || []).filter((x: number) => x !== v);
       const newDefault = f.discount === v ? (next[0] ?? 0) : f.discount;
       return { ...f, discounts: next, discount: newDefault };
+    });
+  };
+
+  const toggleAdditionalDiscount = (value: number) => {
+    setForm((f: any) => {
+      const current: number[] = f.additional_discounts || [0];
+      const exists = current.includes(value);
+      let next = exists ? current.filter((x) => x !== value) : [...current, value];
+      next = Array.from(new Set(next)).filter((x) => x >= 0 && x <= 15).sort((a, b) => a - b);
+      if (next.length === 0) next = [0];
+      if (!next.includes(0)) next = [0, ...next].sort((a, b) => a - b);
+      return { ...f, additional_discounts: next };
     });
   };
 
@@ -450,6 +471,25 @@ export default function AdminScreen() {
                             <Pressable testID={`disc-remove-${d}`} hitSlop={8} onPress={() => removeDiscountValue(d)} style={{ marginLeft: 6 }}>
                               <Ionicons name="close-circle" size={16} color={isDefault ? "#fff" : colors.muted} />
                             </Pressable>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  <View style={{ marginBottom: spacing.md }}>
+                    <Text style={styles.fieldLabel}>{t("additionalDiscountOptions")}</Text>
+                    <View style={styles.discChips}>
+                      {additionalDiscountOptions.map((d) => {
+                        const selected = (form.additional_discounts || [0]).includes(d);
+                        return (
+                          <Pressable
+                            key={`add-${d}`}
+                            testID={`additional-disc-chip-${d}`}
+                            style={[styles.discChip, selected && styles.discChipDefault]}
+                            onPress={() => toggleAdditionalDiscount(d)}
+                          >
+                            <Text style={[styles.discChipText, selected && styles.discChipTextDefault]}>{d}%</Text>
                           </Pressable>
                         );
                       })}

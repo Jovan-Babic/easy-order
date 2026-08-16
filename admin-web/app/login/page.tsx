@@ -2,9 +2,11 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useLanguage } from "@/lib/i18n";
 
 export default function LoginPage() {
   const router = useRouter();
+  const { t } = useLanguage();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -22,7 +24,7 @@ export default function LoginPage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || "Invalid email or password");
+        setError(body.detail || t("invalidCredentials"));
         return;
       }
       router.push("/dashboard");
@@ -37,7 +39,7 @@ export default function LoginPage() {
       <form onSubmit={onSubmit} className="w-full max-w-sm rounded-lg bg-surfaceSecondary p-8 shadow-sm">
         <h1 className="mb-8 text-center text-2xl font-extrabold text-brand">Easy Order Admin</h1>
 
-        <label className="mb-1 block text-sm font-semibold text-onSurfaceSecondary">Email</label>
+        <label className="mb-1 block text-sm font-semibold text-onSurfaceSecondary">{t("email")}</label>
         <input
           type="email"
           value={email}
@@ -47,7 +49,7 @@ export default function LoginPage() {
           placeholder="you@company.com"
         />
 
-        <label className="mb-1 block text-sm font-semibold text-onSurfaceSecondary">Password</label>
+        <label className="mb-1 block text-sm font-semibold text-onSurfaceSecondary">{t("password")}</label>
         <input
           type="password"
           value={password}
@@ -64,7 +66,7 @@ export default function LoginPage() {
           disabled={submitting || !email || !password}
           className="w-full rounded-md bg-brand py-2.5 font-bold text-onBrand disabled:opacity-50"
         >
-          {submitting ? "Logging in..." : "Log in"}
+          {submitting ? t("loggingIn") : t("login")}
         </button>
       </form>
     </div>

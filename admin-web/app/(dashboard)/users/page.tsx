@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
+import { useLanguage } from "@/lib/i18n";
 
 type Role = "superadmin" | "admin" | "operator";
 
@@ -137,6 +138,7 @@ const emptyEditForm: EditUserForm = {
 export default function UsersPage() {
   const session = useSession();
   const isSuperAdmin = session.role === "superadmin";
+  const { t } = useLanguage();
 
   const [users, setUsers] = useState<User[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -191,7 +193,7 @@ export default function UsersPage() {
     setError(null);
     const phone = formatPhone(form.countryCode, form.phoneNumber);
     if (!form.phoneNumber.trim()) {
-      setError("Phone is required");
+      setError(t("phoneRequired"));
       return;
     }
     setSaving(true);
@@ -202,7 +204,7 @@ export default function UsersPage() {
       const res = await fetch("/api/users", { method: "POST", body: JSON.stringify(payload) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || "Failed to create user");
+        setError(body.detail || t("failedCreateUser"));
         return;
       }
       closeCreateForm();
@@ -240,7 +242,7 @@ export default function UsersPage() {
 
     setEditError(null);
     if (!editForm.phoneNumber.trim()) {
-      setEditError("Phone is required");
+      setEditError(t("phoneRequired"));
       return;
     }
 
@@ -260,7 +262,7 @@ export default function UsersPage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setEditError(body.detail || "Failed to update user");
+        setEditError(body.detail || t("failedUpdateUser"));
         return;
       }
 
@@ -280,12 +282,12 @@ export default function UsersPage() {
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-extrabold text-onSurface">Users</h1>
+        <h1 className="text-2xl font-extrabold text-onSurface">{t("users")}</h1>
         <button
           onClick={() => setShowForm((v) => !v)}
           className="rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand"
         >
-          {showForm ? "Cancel" : "New user"}
+          {showForm ? t("cancel") : t("newUser")}
         </button>
       </div>
 
@@ -293,7 +295,7 @@ export default function UsersPage() {
         <form onSubmit={submit} className="mb-8 grid max-w-lg gap-3 rounded-lg bg-surfaceSecondary p-6 shadow-sm">
           <input
             required
-            placeholder="Name"
+            placeholder={t("name")}
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
@@ -301,7 +303,7 @@ export default function UsersPage() {
           <input
             required
             type="email"
-            placeholder="Email"
+            placeholder={t("email")}
             value={form.email}
             onChange={(e) => setForm({ ...form, email: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
@@ -330,7 +332,7 @@ export default function UsersPage() {
           <input
             required
             type="password"
-            placeholder="Password"
+            placeholder={t("password")}
             value={form.password}
             onChange={(e) => setForm({ ...form, password: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
@@ -342,9 +344,9 @@ export default function UsersPage() {
                 onChange={(e) => setForm({ ...form, role: e.target.value as Role })}
                 className="rounded-md border border-border px-3 py-2"
               >
-                <option value="operator">Operator</option>
-                <option value="admin">Admin</option>
-                <option value="superadmin">SuperAdmin</option>
+                <option value="operator">{t("userRoleOperator")}</option>
+                <option value="admin">{t("userRoleAdmin")}</option>
+                <option value="superadmin">{t("userRoleSuperAdmin")}</option>
               </select>
               {form.role !== "superadmin" && (
                 <select
@@ -353,7 +355,7 @@ export default function UsersPage() {
                   onChange={(e) => setForm({ ...form, client_id: e.target.value })}
                   className="rounded-md border border-border px-3 py-2"
                 >
-                  <option value="">Select client...</option>
+                  <option value="">{t("selectClient")}</option>
                   {clients.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
@@ -363,7 +365,7 @@ export default function UsersPage() {
               )}
             </>
           ) : (
-            <p className="text-sm text-muted">New users are created as Operators for your company.</p>
+            <p className="text-sm text-muted">{t("accountScope")}</p>
           )}
 
           {error && <p className="text-sm text-error">{error}</p>}
@@ -373,7 +375,7 @@ export default function UsersPage() {
             disabled={saving}
             className="mt-1 rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand disabled:opacity-50"
           >
-            {saving ? "Creating..." : "Create user"}
+            {saving ? t("creating") : t("createUser")}
           </button>
         </form>
       )}
@@ -382,19 +384,19 @@ export default function UsersPage() {
         <div className="fixed inset-0 z-30 bg-black/40 p-4 sm:p-6">
           <div className="mx-auto mt-6 w-full max-w-xl rounded-2xl bg-surfaceSecondary p-6 shadow-xl sm:mt-12">
             <div className="mb-6 flex items-center justify-between">
-              <h2 className="text-xl font-extrabold text-onSurface">Edit user</h2>
+              <h2 className="text-xl font-extrabold text-onSurface">{t("edit")}</h2>
               <button
                 onClick={closeEdit}
                 className="rounded-md px-3 py-2 text-sm font-semibold text-onSurfaceSecondary hover:bg-surface"
               >
-                Close
+                {t("close")}
               </button>
             </div>
 
             <form onSubmit={submitEdit} className="grid gap-3">
               <input
                 required
-                placeholder="Name"
+                placeholder={t("name")}
                 value={editForm.name}
                 onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
                 className="rounded-md border border-border px-3 py-2"
@@ -422,7 +424,7 @@ export default function UsersPage() {
               </div>
               <input
                 type="password"
-                placeholder="New password (optional)"
+                placeholder={t("newPasswordOptional")}
                 value={editForm.password}
                 onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
                 className="rounded-md border border-border px-3 py-2"
@@ -433,9 +435,9 @@ export default function UsersPage() {
                   onChange={(e) => setEditForm({ ...editForm, role: e.target.value as Role })}
                   className="rounded-md border border-border px-3 py-2"
                 >
-                  <option value="operator">Operator</option>
-                  <option value="admin">Admin</option>
-                  <option value="superadmin">SuperAdmin</option>
+                  <option value="operator">{t("userRoleOperator")}</option>
+                  <option value="admin">{t("userRoleAdmin")}</option>
+                  <option value="superadmin">{t("userRoleSuperAdmin")}</option>
                 </select>
               )}
               <select
@@ -443,8 +445,8 @@ export default function UsersPage() {
                 onChange={(e) => setEditForm({ ...editForm, active: e.target.value as "true" | "false" })}
                 className="rounded-md border border-border px-3 py-2"
               >
-                <option value="true">Active</option>
-                <option value="false">Inactive</option>
+                <option value="true">{t("active")}</option>
+                <option value="false">{t("inactive")}</option>
               </select>
 
               {editError && <p className="text-sm text-error">{editError}</p>}
@@ -455,14 +457,14 @@ export default function UsersPage() {
                   onClick={closeEdit}
                   className="rounded-md border border-border px-4 py-2 text-sm font-semibold text-onSurfaceSecondary"
                 >
-                  Cancel
+                  {t("cancel")}
                 </button>
                 <button
                   type="submit"
                   disabled={editSaving}
                   className="rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand disabled:opacity-50"
                 >
-                  {editSaving ? "Saving..." : "Save changes"}
+                  {editSaving ? t("saving") : t("saveChanges")}
                 </button>
               </div>
             </form>
@@ -471,17 +473,17 @@ export default function UsersPage() {
       )}
 
       {loading ? (
-        <p className="text-muted">Loading...</p>
+        <p className="text-muted">{t("loading")}</p>
       ) : (
         <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Email</th>
-                <th className="px-4 py-3">Phone</th>
-                <th className="px-4 py-3">Role</th>
-                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">{t("name")}</th>
+                <th className="px-4 py-3">{t("email")}</th>
+                <th className="px-4 py-3">{t("phone")}</th>
+                <th className="px-4 py-3">{t("role")}</th>
+                <th className="px-4 py-3">{t("status")}</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
@@ -494,16 +496,16 @@ export default function UsersPage() {
                   <td className="px-4 py-3 capitalize text-onSurfaceSecondary">{u.role}</td>
                   <td className="px-4 py-3">
                     <span className={u.active ? "text-success" : "text-error"}>
-                      {u.active ? "Active" : "Inactive"}
+                      {u.active ? t("active") : t("inactive")}
                     </span>
                   </td>
                   <td className="px-4 py-3">
                     <button onClick={() => openEdit(u)} className="mr-3 font-semibold text-brand hover:underline">
-                      Edit
+                      {t("edit")}
                     </button>
                     {u.id !== session.id && (
                       <button onClick={() => remove(u.id)} className="font-semibold text-error hover:underline">
-                        Delete
+                        {t("delete")}
                       </button>
                     )}
                   </td>

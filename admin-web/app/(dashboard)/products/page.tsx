@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
+import { useLanguage } from "@/lib/i18n";
 
 type Product = {
   id: string;
@@ -13,6 +14,7 @@ type Product = {
   vat_rate?: number;
   discount?: number;
   discounts?: number[];
+  additional_discounts?: number[];
   pieces_per_package?: number;
   boxes_per_transport?: number;
 };
@@ -26,6 +28,7 @@ type ProductFormState = {
   price_no_vat: string;
   vat_rate: string;
   discount: string;
+  additional_discounts: number[];
   pieces_per_package: string;
   boxes_per_transport: string;
   client_id: string;
@@ -40,12 +43,14 @@ const emptyForm = (): ProductFormState => ({
   price_no_vat: "",
   vat_rate: "20",
   discount: "0",
+  additional_discounts: [0],
   pieces_per_package: "",
   boxes_per_transport: "",
   client_id: "",
 });
 
 const discountOptions = [0, 5, 15, 25, 30];
+const additionalDiscountOptions = Array.from({ length: 16 }, (_, i) => i);
 const vatRateOptions = [0, 10, 20];
 
 const numeric = (value: string) => value.replace(/[^0-9.,]/g, "");
@@ -64,6 +69,7 @@ const toInteger = (value: string) => {
 export default function ProductsPage() {
   const session = useSession();
   const isSuperAdmin = session.role === "superadmin";
+  const { t } = useLanguage();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -119,6 +125,9 @@ export default function ProductsPage() {
       price_no_vat: String(product.price_no_vat ?? ""),
       vat_rate: String(product.vat_rate ?? "20"),
       discount: String(product.discount ?? 0),
+      additional_discounts: product.additional_discounts && product.additional_discounts.length
+        ? product.additional_discounts.filter((v) => Number.isInteger(v) && v >= 0 && v <= 15)
+        : [0],
       pieces_per_package: String(product.pieces_per_package ?? ""),
       boxes_per_transport: String(product.boxes_per_transport ?? ""),
       client_id: product.client_id || "",
@@ -200,6 +209,9 @@ export default function ProductsPage() {
         vat_rate: toNumber(form.vat_rate),
         discount: parsedDiscount,
         discounts: [parsedDiscount],
+        additional_discounts: (form.additional_discounts || [0])
+          .map((v) => Math.trunc(Number(v)))
+          .filter((v) => Number.isInteger(v) && v >= 0 && v <= 15),
         pieces_per_package: toInteger(form.pieces_per_package),
         boxes_per_transport: toInteger(form.boxes_per_transport),
       };
@@ -225,28 +237,40 @@ export default function ProductsPage() {
     await load();
   };
 
+  const toggleAdditionalDiscount = (value: number) => {
+    setForm((prev) => {
+      const current = prev.additional_discounts || [0];
+      const exists = current.includes(value);
+      let next = exists ? current.filter((x) => x !== value) : [...current, value];
+      next = Array.from(new Set(next)).filter((x) => x >= 0 && x <= 15).sort((a, b) => a - b);
+      if (next.length === 0) next = [0];
+      if (!next.includes(0)) next = [0, ...next].sort((a, b) => a - b);
+      return { ...prev, additional_discounts: next };
+    });
+  };
+
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-extrabold text-onSurface">Products</h1>
+        <h1 className="text-2xl font-extrabold text-onSurface">{t("products")}</h1>
         <button
           onClick={openCreateForm}
           className="rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand"
         >
-          New product
+          {t("newProduct")}
         </button>
       </div>
 
       {showForm && (
-        <div className="fixed inset-0 z-30 bg-black/40 p-4 sm:p-6">
-          <div className="mx-auto mt-6 w-full max-w-2xl rounded-2xl bg-surfaceSecondary p-6 shadow-xl sm:mt-12">
+        <div className="fixed inset-0 z-30 overflow-y-auto bg-black/40 p-4 sm:p-6">
+          <div className="mx-auto mt-6 max-h-[calc(100vh-3rem)] w-full max-w-2xl overflow-y-auto rounded-2xl bg-surfaceSecondary p-6 shadow-xl sm:mt-12">
             <div className="mb-6 flex items-center justify-between">
-              <h2 className="text-xl font-extrabold text-onSurface">{editingId ? "Edit product" : "Add product"}</h2>
+              <h2 className="text-xl font-extrabold text-onSurface">{editingId ? t("editProduct") : t("addProduct")}</h2>
               <button
                 onClick={closeForm}
                 className="rounded-md px-3 py-2 text-sm font-semibold text-onSurfaceSecondary hover:bg-surface"
               >
-                Close
+                {t("close")}
               </button>
             </div>
 
@@ -255,13 +279,13 @@ export default function ProductsPage() {
                 <div className="h-32 w-32 overflow-hidden rounded-lg border border-border bg-surface">
                   {form.image ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={form.image} alt="Product preview" className="h-full w-full object-cover" />
+                    <img src={form.image} alt={t("productPreview")} className="h-full w-full object-cover" />
                   ) : (
-                    <div className="flex h-full items-center justify-center text-xs text-muted">No image</div>
+                    <div className="flex h-full items-center justify-center text-xs text-muted">{t("noImage")}</div>
                   )}
                 </div>
                 <div className="space-y-3">
-                  <label className="block text-sm font-semibold text-onSurface">Product image</label>
+                  <label className="block text-sm font-semibold text-onSurface">{t("productImage")}</label>
                   <input
                     type="file"
                     accept="image/*"
@@ -269,7 +293,7 @@ export default function ProductsPage() {
                     className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm"
                   />
                   <input
-                    placeholder="Or paste image URL"
+                    placeholder={t("orPasteImageUrl")}
                     value={form.image}
                     onChange={(e) => setField("image", e.target.value)}
                     className="w-full rounded-md border border-border px-3 py-2 text-sm"
@@ -279,26 +303,26 @@ export default function ProductsPage() {
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <FormField
-                  label="Name"
+                  label={t("name")}
                   value={form.name}
                   required
                   error={fieldErrors.name}
                   onChange={(value) => setField("name", value)}
                 />
                 <FormField
-                  label="Manufacturer"
+                  label={t("manufacturer")}
                   value={form.manufacturer}
                   onChange={(value) => setField("manufacturer", value)}
                 />
                 <FormField
-                  label="Price (excl. VAT)"
+                  label={t("priceExclVat")}
                   value={form.price_no_vat}
                   inputMode="decimal"
                   error={fieldErrors.price_no_vat}
                   onChange={(value) => setField("price_no_vat", numeric(value))}
                 />
                 <div>
-                  <label className="mb-1 block text-sm font-semibold text-onSurface">VAT rate (%)</label>
+                  <label className="mb-1 block text-sm font-semibold text-onSurface">{t("vatRate")}</label>
                   <div className="flex flex-wrap gap-2">
                     {vatRateOptions.map((rate) => (
                       <button
@@ -318,7 +342,7 @@ export default function ProductsPage() {
                   {fieldErrors.vat_rate && <p className="mt-1 text-xs text-error">{fieldErrors.vat_rate}</p>}
                 </div>
                 <div className="sm:col-span-2">
-                  <label className="mb-1 block text-sm font-semibold text-onSurface">Default discount (%)</label>
+                  <label className="mb-1 block text-sm font-semibold text-onSurface">{t("defaultDiscount")}</label>
                   <div className="flex flex-wrap gap-2">
                     {discountOptions.map((discount) => {
                       const selected = toNumber(form.discount) === discount;
@@ -340,15 +364,37 @@ export default function ProductsPage() {
                   </div>
                   {fieldErrors.discount && <p className="mt-1 text-xs text-error">{fieldErrors.discount}</p>}
                 </div>
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-sm font-semibold text-onSurface">{t("additionalDiscountOptions")}</label>
+                  <div className="flex flex-wrap gap-2">
+                    {additionalDiscountOptions.map((discount) => {
+                      const selected = (form.additional_discounts || [0]).includes(discount);
+                      return (
+                        <button
+                          key={discount}
+                          type="button"
+                          onClick={() => toggleAdditionalDiscount(discount)}
+                          className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                            selected
+                              ? "border-brand bg-brand text-onBrand"
+                              : "border-border text-onSurfaceSecondary hover:bg-surface"
+                          }`}
+                        >
+                          {discount}%
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 <FormField
-                  label="Pieces per package"
+                  label={t("piecesPerPackage")}
                   value={form.pieces_per_package}
                   inputMode="numeric"
                   error={fieldErrors.pieces_per_package}
                   onChange={(value) => setField("pieces_per_package", numeric(value))}
                 />
                 <FormField
-                  label="Boxes per transport"
+                  label={t("boxesPerTransport")}
                   value={form.boxes_per_transport}
                   inputMode="numeric"
                   error={fieldErrors.boxes_per_transport}
@@ -358,14 +404,14 @@ export default function ProductsPage() {
 
               {isSuperAdmin && (
                 <div>
-                  <label className="mb-1 block text-sm font-semibold text-onSurface">Client</label>
+                  <label className="mb-1 block text-sm font-semibold text-onSurface">{t("client")}</label>
                   <select
                     required
                     value={form.client_id}
                     onChange={(e) => setField("client_id", e.target.value)}
                     className={`w-full rounded-md border px-3 py-2 text-sm ${fieldErrors.client_id ? "border-error" : "border-border"}`}
                   >
-                    <option value="">Select client...</option>
+                    <option value="">{t("selectClient")}</option>
                     {clients.map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}
@@ -384,14 +430,14 @@ export default function ProductsPage() {
                   onClick={closeForm}
                   className="rounded-md border border-border px-4 py-2 text-sm font-semibold text-onSurfaceSecondary"
                 >
-                  Cancel
+                  {t("cancel")}
                 </button>
                 <button
                   type="submit"
                   disabled={saving}
                   className="rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand disabled:opacity-50"
                 >
-                  {saving ? "Saving..." : editingId ? "Save changes" : "Create product"}
+                  {saving ? t("saving") : editingId ? t("saveChanges") : t("createProduct")}
                 </button>
               </div>
             </form>
@@ -400,19 +446,21 @@ export default function ProductsPage() {
       )}
 
       {loading ? (
-        <p className="text-muted">Loading...</p>
+        <p className="text-muted">{t("loading")}</p>
       ) : (
         <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
-                <th className="px-4 py-3">Image</th>
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Manufacturer</th>
-                <th className="px-4 py-3">Price</th>
-                <th className="px-4 py-3">VAT</th>
-                <th className="px-4 py-3">Packaging</th>
-                {isSuperAdmin && <th className="px-4 py-3">Client</th>}
+                <th className="px-4 py-3">{t("image")}</th>
+                <th className="px-4 py-3">{t("name")}</th>
+                <th className="px-4 py-3">{t("manufacturer")}</th>
+                <th className="px-4 py-3">{t("productPrice")}</th>
+                <th className="px-4 py-3">{t("defaultDiscount")}</th>
+                <th className="px-4 py-3">{t("additionalDiscountOptions")}</th>
+                <th className="px-4 py-3">{t("vat")}</th>
+                <th className="px-4 py-3">{t("packaging")}</th>
+                {isSuperAdmin && <th className="px-4 py-3">{t("client")}</th>}
                 <th className="px-4 py-3" />
               </tr>
             </thead>
@@ -430,6 +478,8 @@ export default function ProductsPage() {
                   <td className="px-4 py-3 font-semibold text-onSurface">{p.name}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.manufacturer || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{(p.price_no_vat ?? 0).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-onSurfaceSecondary">{p.discount ?? 0}%</td>
+                  <td className="px-4 py-3 text-onSurfaceSecondary">{(p.additional_discounts && p.additional_discounts.length ? p.additional_discounts : [0]).map((d) => `${d}%`).join(", ")}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.vat_rate ?? 0}%</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">
                     {(p.pieces_per_package ?? 0)}/{(p.boxes_per_transport ?? 0)}
@@ -440,10 +490,10 @@ export default function ProductsPage() {
                       onClick={() => openEditForm(p)}
                       className="mr-3 font-semibold text-brand hover:underline"
                     >
-                      Edit
+                      {t("edit")}
                     </button>
                     <button onClick={() => remove(p.id)} className="font-semibold text-error hover:underline">
-                      Delete
+                      {t("delete")}
                     </button>
                   </td>
                 </tr>

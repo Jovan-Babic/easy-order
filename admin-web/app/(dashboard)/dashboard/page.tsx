@@ -1,6 +1,9 @@
-import { backendFetch } from "@/lib/backend";
-import { StatCard } from "@/components/StatCard";
+"use client";
+
+import { useEffect, useState } from "react";
 import { ByClientChart } from "@/components/ByClientChart";
+import { StatCard } from "@/components/StatCard";
+import { useLanguage } from "@/lib/i18n";
 
 type ClientStats = {
   client_id: string;
@@ -19,26 +22,40 @@ type StatsResponse = {
   by_client: ClientStats[];
 };
 
-export default async function DashboardPage() {
-  const res = await backendFetch("/stats/overview");
-  const stats: StatsResponse = await res.json();
+export default function DashboardPage() {
+  const { t } = useLanguage();
+  const [stats, setStats] = useState<StatsResponse | null>(null);
+
+  useEffect(() => {
+    fetch("/api/stats/overview")
+      .then(async (res) => {
+        if (!res.ok) throw new Error("Failed to load dashboard stats");
+        return res.json();
+      })
+      .then(setStats)
+      .catch(() => setStats(null));
+  }, []);
+
+  if (!stats) {
+    return <p className="text-muted">{t("loading")}</p>;
+  }
 
   return (
     <div>
       <h1 className="mb-6 text-2xl font-extrabold text-onSurface">
-        {stats.scope === "global" ? "All clients" : stats.totals.client_name}
+        {stats.scope === "global" ? t("allClients") : stats.totals.client_name}
       </h1>
 
       <div className="mb-8 grid grid-cols-2 gap-4 md:grid-cols-4">
-        <StatCard label="Orders" value={stats.totals.order_count} />
-        <StatCard label="Customers" value={stats.totals.customer_count} />
-        <StatCard label="Products" value={stats.totals.product_count} />
-        <StatCard label="Revenue (incl. VAT)" value={stats.totals.total_grand.toFixed(2)} />
+        <StatCard label={t("ordersCount")} value={stats.totals.order_count} />
+        <StatCard label={t("customersCount")} value={stats.totals.customer_count} />
+        <StatCard label={t("productsCount")} value={stats.totals.product_count} />
+        <StatCard label={t("revenueInclVat")} value={stats.totals.total_grand.toFixed(2)} />
       </div>
 
       {stats.scope === "global" && (
         <div className="rounded-lg bg-surfaceSecondary p-6 shadow-sm">
-          <h2 className="mb-4 text-lg font-bold text-onSurface">Revenue by client</h2>
+          <h2 className="mb-4 text-lg font-bold text-onSurface">{t("revenueByClient")}</h2>
           <ByClientChart rows={stats.by_client} />
         </div>
       )}

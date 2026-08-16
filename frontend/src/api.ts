@@ -40,6 +40,7 @@ export type Product = {
   vat_rate?: number;
   discount?: number;
   discounts?: number[];
+  additional_discounts?: number[];
   pieces_per_package?: number;
   boxes_per_transport?: number;
   created_at?: string;
@@ -55,6 +56,7 @@ export type OrderItem = {
   pieces_per_package?: number;
   boxes_per_transport?: number;
   discount?: number;
+  additional_discount?: number;
   ordered_qty: number;
 };
 

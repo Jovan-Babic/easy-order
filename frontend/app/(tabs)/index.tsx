@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -39,8 +39,8 @@ export default function OrderCatalog() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selected, setSelected] = useState<Customer | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [discountSel, setDiscountSel] = useState<Record<string, number>>({});
-  const [discountPickerFor, setDiscountPickerFor] = useState<Product | null>(null);
+  const [additionalDiscountSel, setAdditionalDiscountSel] = useState<Record<string, number>>({});
+  const [additionalDiscountPickerFor, setAdditionalDiscountPickerFor] = useState<Product | null>(null);
   const [zoomImage, setZoomImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -58,7 +58,7 @@ export default function OrderCatalog() {
       const [p, c] = await Promise.all([api.listProducts(), api.listCustomers()]);
       setProducts(p);
       setCustomers(c);
-    } catch (e) {
+    } catch {
       setError(true);
     } finally {
       setLoading(false);
@@ -73,6 +73,11 @@ export default function OrderCatalog() {
 
   const setQty = (id: string, value: string) => {
     setDrafts((prev) => ({ ...prev, [id]: value.replace(/[^0-9]/g, "") }));
+  };
+
+  const effectiveDiscount = (supplierDiscount: number, additionalDiscount: number) => {
+    const factor = (1 - supplierDiscount / 100) * (1 - additionalDiscount / 100);
+    return (1 - factor) * 100;
   };
 
   const filteredCustomers = useMemo(
@@ -121,7 +126,8 @@ export default function OrderCatalog() {
         vat_rate: p.vat_rate,
         pieces_per_package: p.pieces_per_package,
         boxes_per_transport: p.boxes_per_transport,
-        discount: discountSel[p.id] ?? p.discount ?? 0,
+        discount: p.discount ?? 0,
+        additional_discount: additionalDiscountSel[p.id] ?? 0,
         ordered_qty: Number(drafts[p.id]) || 0,
       }));
     if (items.length === 0) return;
@@ -147,6 +153,25 @@ export default function OrderCatalog() {
   };
 
   const canConfirm = !!selected && orderedCount > 0;
+
+  const confirmationItems = useMemo(() => {
+    return products
+      .filter((p) => Number(drafts[p.id]) > 0)
+      .map((p) => {
+        const qty = Number(drafts[p.id]) || 0;
+        const supplierDiscount = p.discount ?? 0;
+        const selectedAdditionalDiscount = additionalDiscountSel[p.id] ?? 0;
+        const totalDiscount = effectiveDiscount(supplierDiscount, selectedAdditionalDiscount);
+        return {
+          id: p.id,
+          name: p.name,
+          qty,
+          supplierDiscount,
+          selectedAdditionalDiscount,
+          totalDiscount,
+        };
+      });
+  }, [products, drafts, additionalDiscountSel]);
 
   return (
     <View style={styles.container}>
@@ -263,6 +288,9 @@ export default function OrderCatalog() {
               </View>
             ) : null}
             {filteredProducts.map((p) => {
+              const supplierDiscount = p.discount ?? 0;
+              const selectedAdditionalDiscount = additionalDiscountSel[p.id] ?? 0;
+              const totalDiscount = effectiveDiscount(supplierDiscount, selectedAdditionalDiscount);
               return (
                 <View key={p.id} style={styles.card} testID={`product-card-${p.id}`}>
                   <View style={styles.cardTop}>
@@ -295,17 +323,23 @@ export default function OrderCatalog() {
 
                   <View style={styles.inputsRow}>
                     <View style={styles.discountBadge}>
-                      <Text style={styles.fieldLabel}>{t("discount")}</Text>
+                      <Text style={styles.fieldLabel}>{t("supplierDiscount")}</Text>
+                      <View style={styles.discountReadOnly} testID={`supplier-discount-${p.id}`}>
+                        <Text style={styles.discountValue}>{supplierDiscount}%</Text>
+                      </View>
+                    </View>
+                    <View style={styles.discountBadge}>
+                      <Text style={styles.fieldLabel}>{t("additionalDiscount")}</Text>
                       <Pressable
-                        testID={`discount-dropdown-${p.id}`}
+                        testID={`additional-discount-dropdown-${p.id}`}
                         style={styles.discountDropdown}
                         onPress={() => {
                           Haptics.selectionAsync().catch(() => {});
-                          setDiscountPickerFor(p);
+                          setAdditionalDiscountPickerFor(p);
                         }}
                       >
-                        <Text style={styles.discountValue} testID={`discount-value-${p.id}`}>
-                          {discountSel[p.id] ?? p.discount ?? 0}%
+                        <Text style={styles.discountValue} testID={`additional-discount-value-${p.id}`}>
+                          {selectedAdditionalDiscount}%
                         </Text>
                         <Ionicons name="chevron-down" size={16} color={colors.muted} />
                       </Pressable>
@@ -318,6 +352,13 @@ export default function OrderCatalog() {
                       placeholder="0"
                       highlight
                     />
+                  </View>
+
+                  <View style={styles.totalDiscountRow}>
+                    <Text style={styles.totalDiscountLabel}>{t("totalDiscount")}</Text>
+                    <Text style={styles.totalDiscountValue} testID={`effective-discount-${p.id}`}>
+                      {totalDiscount.toFixed(2)}%
+                    </Text>
                   </View>
                 </View>
               );
@@ -411,31 +452,31 @@ export default function OrderCatalog() {
 
       {/* Discount dropdown */}
       <Modal
-        visible={!!discountPickerFor}
+        visible={!!additionalDiscountPickerFor}
         transparent
         animationType="fade"
-        onRequestClose={() => setDiscountPickerFor(null)}
+        onRequestClose={() => setAdditionalDiscountPickerFor(null)}
       >
-        <Pressable style={styles.centerBackdrop} onPress={() => setDiscountPickerFor(null)}>
-          {discountPickerFor && (
+        <Pressable style={styles.centerBackdrop} onPress={() => setAdditionalDiscountPickerFor(null)}>
+          {additionalDiscountPickerFor && (
           <View style={styles.discountMenu}>
-            <Text style={styles.discountMenuTitle}>{discountPickerFor?.name}</Text>
-            {(discountPickerFor?.discounts && discountPickerFor.discounts.length > 0
-              ? discountPickerFor.discounts
-              : [discountPickerFor?.discount ?? 0]
+            <Text style={styles.discountMenuTitle}>{additionalDiscountPickerFor?.name}</Text>
+            {(additionalDiscountPickerFor?.additional_discounts && additionalDiscountPickerFor.additional_discounts.length > 0
+              ? additionalDiscountPickerFor.additional_discounts
+              : [0]
             ).map((opt) => {
-              const pid = discountPickerFor!.id;
-              const current = discountSel[pid] ?? discountPickerFor?.discount ?? 0;
+              const pid = additionalDiscountPickerFor!.id;
+              const current = additionalDiscountSel[pid] ?? 0;
               const active = current === opt;
               return (
                 <Pressable
                   key={String(opt)}
-                  testID={`discount-option-${opt}`}
+                  testID={`additional-discount-option-${opt}`}
                   style={[styles.discountOption, active && styles.discountOptionActive]}
                   onPress={() => {
                     Haptics.selectionAsync().catch(() => {});
-                    setDiscountSel((prev) => ({ ...prev, [pid]: opt }));
-                    setDiscountPickerFor(null);
+                    setAdditionalDiscountSel((prev) => ({ ...prev, [pid]: opt }));
+                    setAdditionalDiscountPickerFor(null);
                   }}
                 >
                   <Text style={[styles.discountOptionText, active && styles.discountOptionTextActive]}>
@@ -463,6 +504,18 @@ export default function OrderCatalog() {
               {selected ? `Da li želite da potvrdite porudžbinu za ${selected.name}?` : ""}
             </Text>
             <Text style={styles.confirmModalMeta}>{orderedCount} artikala u porudžbini</Text>
+            {confirmationItems.length > 0 && (
+              <View style={styles.confirmItemsList}>
+                {confirmationItems.map((it) => (
+                  <View key={it.id} style={styles.confirmItemRow}>
+                    <Text style={styles.confirmItemName} numberOfLines={1}>{it.name} x {it.qty}</Text>
+                    <Text style={styles.confirmItemDiscounts}>
+                      {t("supplierDiscount")}: {it.supplierDiscount}%  |  {t("additionalDiscount")}: {it.selectedAdditionalDiscount}%  |  {t("totalDiscount")}: {it.totalDiscount.toFixed(2)}%
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
             <View style={styles.confirmModalActions}>
               <Button
                 title={t("cancel")}
@@ -584,6 +637,14 @@ const styles = StyleSheet.create({
   },
   productSearchInput: { flex: 1, paddingVertical: spacing.md, fontSize: font.base, color: colors.onSurface },
   discountBadge: { flex: 1 },
+  discountReadOnly: {
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.surface,
+  },
   discountDropdown: {
     flexDirection: "row",
     alignItems: "center",
@@ -692,6 +753,18 @@ const styles = StyleSheet.create({
   metaLabel: { fontSize: 10, color: colors.muted, fontWeight: "600" },
   metaValue: { fontSize: font.base, color: colors.onSurfaceSecondary, fontWeight: "700" },
   inputsRow: { flexDirection: "row", gap: spacing.md, marginTop: spacing.md },
+  totalDiscountRow: {
+    marginTop: spacing.sm,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: colors.brandSecondary,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  totalDiscountLabel: { fontSize: font.sm, color: colors.brand, fontWeight: "700" },
+  totalDiscountValue: { fontSize: font.base, color: colors.brand, fontWeight: "800" },
   fieldLabel: { fontSize: font.sm, color: colors.onSurfaceTertiary, fontWeight: "600", marginBottom: spacing.xs },
   input: {
     borderWidth: 1.5,
@@ -772,6 +845,32 @@ const styles = StyleSheet.create({
     fontSize: font.sm,
     color: colors.muted,
     marginBottom: spacing.sm,
+  },
+  confirmItemsList: {
+    maxHeight: 180,
+    marginBottom: spacing.sm,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    gap: spacing.xs,
+  },
+  confirmItemRow: {
+    paddingBottom: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  confirmItemName: {
+    fontSize: font.sm,
+    color: colors.onSurface,
+    fontWeight: "700",
+  },
+  confirmItemDiscounts: {
+    marginTop: 2,
+    fontSize: 11,
+    color: colors.onSurfaceSecondary,
+    fontWeight: "600",
   },
   confirmModalActions: {
     flexDirection: "row",

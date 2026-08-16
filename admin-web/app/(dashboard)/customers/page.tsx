@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
+import { useLanguage } from "@/lib/i18n";
 
 type Customer = {
   id: string;
@@ -20,6 +21,7 @@ const emptyForm = { name: "", address: "", email: "", phone: "", pib: "", client
 export default function CustomersPage() {
   const session = useSession();
   const isSuperAdmin = session.role === "superadmin";
+  const { t } = useLanguage();
 
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -63,7 +65,7 @@ export default function CustomersPage() {
       const res = await fetch("/api/customers", { method: "POST", body: JSON.stringify(payload) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || "Failed to create customer");
+        setError(body.detail || t("failedCreateCustomer"));
         return;
       }
       setForm(emptyForm);
@@ -83,12 +85,12 @@ export default function CustomersPage() {
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-extrabold text-onSurface">Customers</h1>
+        <h1 className="text-2xl font-extrabold text-onSurface">{t("customers")}</h1>
         <button
           onClick={() => setShowForm((v) => !v)}
           className="rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand"
         >
-          {showForm ? "Cancel" : "New customer"}
+          {showForm ? t("cancel") : t("newCustomer")}
         </button>
       </div>
 
@@ -96,31 +98,31 @@ export default function CustomersPage() {
         <form onSubmit={submit} className="mb-8 grid max-w-lg gap-3 rounded-lg bg-surfaceSecondary p-6 shadow-sm">
           <input
             required
-            placeholder="Name"
+            placeholder={t("name")}
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
           />
           <input
-            placeholder="Address"
+            placeholder={t("address")}
             value={form.address}
             onChange={(e) => setForm({ ...form, address: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
           />
           <input
-            placeholder="Email"
+            placeholder={t("email")}
             value={form.email}
             onChange={(e) => setForm({ ...form, email: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
           />
           <input
-            placeholder="Phone"
+            placeholder={t("phone")}
             value={form.phone}
             onChange={(e) => setForm({ ...form, phone: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
           />
           <input
-            placeholder="Tax ID (PIB)"
+            placeholder={t("taxIdPib")}
             value={form.pib}
             onChange={(e) => setForm({ ...form, pib: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
@@ -132,7 +134,7 @@ export default function CustomersPage() {
               onChange={(e) => setForm({ ...form, client_id: e.target.value })}
               className="rounded-md border border-border px-3 py-2"
             >
-              <option value="">Select client...</option>
+              <option value="">{t("selectClient")}</option>
               {clients.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
@@ -148,23 +150,23 @@ export default function CustomersPage() {
             disabled={saving}
             className="mt-1 rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand disabled:opacity-50"
           >
-            {saving ? "Creating..." : "Create customer"}
+            {saving ? t("creating") : t("createCustomer")}
           </button>
         </form>
       )}
 
       {loading ? (
-        <p className="text-muted">Loading...</p>
+        <p className="text-muted">{t("loading")}</p>
       ) : (
         <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Address</th>
-                <th className="px-4 py-3">Email</th>
-                <th className="px-4 py-3">Phone</th>
-                {isSuperAdmin && <th className="px-4 py-3">Client</th>}
+                <th className="px-4 py-3">{t("name")}</th>
+                <th className="px-4 py-3">{t("address")}</th>
+                <th className="px-4 py-3">{t("email")}</th>
+                <th className="px-4 py-3">{t("phone")}</th>
+                {isSuperAdmin && <th className="px-4 py-3">{t("client")}</th>}
                 <th className="px-4 py-3" />
               </tr>
             </thead>
@@ -178,7 +180,7 @@ export default function CustomersPage() {
                   {isSuperAdmin && <td className="px-4 py-3 text-onSurfaceSecondary">{clientName(c.client_id)}</td>}
                   <td className="px-4 py-3">
                     <button onClick={() => remove(c.id)} className="font-semibold text-error hover:underline">
-                      Delete
+                      {t("delete")}
                     </button>
                   </td>
                 </tr>

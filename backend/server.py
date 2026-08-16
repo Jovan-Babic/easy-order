@@ -184,6 +184,9 @@ class Product(BaseModel):
     manufacturer: Optional[str] = ""
     price_no_vat: Optional[float] = 0
     vat_rate: Optional[float] = 20
+    discount: Optional[float] = 0
+    discounts: List[float] = Field(default_factory=lambda: [0])
+    additional_discounts: List[int] = Field(default_factory=lambda: [0])
     pieces_per_package: Optional[int] = 0
     boxes_per_transport: Optional[int] = 0
     created_at: str = Field(default_factory=now_iso)
@@ -195,6 +198,9 @@ class ProductInput(BaseModel):
     manufacturer: Optional[str] = ""
     price_no_vat: Optional[float] = 0
     vat_rate: Optional[float] = 20
+    discount: Optional[float] = 0
+    discounts: Optional[List[float]] = None
+    additional_discounts: Optional[List[int]] = None
     pieces_per_package: Optional[int] = 0
     boxes_per_transport: Optional[int] = 0
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
@@ -210,6 +216,7 @@ class OrderItem(BaseModel):
     pieces_per_package: Optional[int] = 0
     boxes_per_transport: Optional[int] = 0
     discount: Optional[float] = 0
+    additional_discount: Optional[float] = 0
     ordered_qty: int = 0
 
 
@@ -315,6 +322,25 @@ async def resolve_write_client_id(user: User, payload_client_id: Optional[str]) 
             raise HTTPException(status_code=404, detail="Client not found")
         return payload_client_id
     return user.client_id
+
+
+def normalize_additional_discounts(values: Optional[List[int]]) -> List[int]:
+    if not values:
+        return [0]
+
+    allowed = set(range(0, 16))
+    normalized = sorted({int(v) for v in values if int(v) in allowed})
+    return normalized or [0]
+
+
+def normalize_discounts(values: Optional[List[float]], default_discount: float) -> List[float]:
+    base = values if values else [default_discount]
+    normalized = sorted({max(0.0, min(100.0, float(v))) for v in base})
+    default_normalized = max(0.0, min(100.0, float(default_discount)))
+    if default_normalized not in normalized:
+        normalized.append(default_normalized)
+        normalized.sort()
+    return normalized or [0.0]
 
 
 def _scope_query(user: User) -> dict:
@@ -546,7 +572,11 @@ async def list_products(current_user: User = Depends(get_current_user)):
 @api_router.post("/products", response_model=Product)
 async def create_product(inp: ProductInput, current_user: User = Depends(get_current_user)):
     client_id = await resolve_write_client_id(current_user, inp.client_id)
-    obj = Product(**inp.dict(exclude={"client_id"}), client_id=client_id)
+    payload = inp.dict(exclude={"client_id"})
+    payload["discount"] = max(0.0, min(100.0, float(payload.get("discount") or 0)))
+    payload["discounts"] = normalize_discounts(inp.discounts, payload["discount"])
+    payload["additional_discounts"] = normalize_additional_discounts(inp.additional_discounts)
+    obj = Product(**payload, client_id=client_id)
     await db.products.insert_one({**obj.dict(), "_id": obj.id})
     return obj
 
@@ -554,7 +584,16 @@ async def create_product(inp: ProductInput, current_user: User = Depends(get_cur
 @api_router.put("/products/{product_id}", response_model=Product)
 async def update_product(product_id: str, inp: ProductInput, current_user: User = Depends(get_current_user)):
     existing = await get_scoped_or_404("products", product_id, current_user)
-    updated = {**existing, **inp.dict(exclude={"client_id"}), "id": product_id}
+    incoming = inp.dict(exclude={"client_id"})
+    discount_value = max(0.0, min(100.0, float(incoming.get("discount") or existing.get("discount") or 0)))
+    updated = {
+        **existing,
+        **incoming,
+        "id": product_id,
+        "discount": discount_value,
+        "discounts": normalize_discounts(inp.discounts, discount_value),
+        "additional_discounts": normalize_additional_discounts(inp.additional_discounts),
+    }
     await db.products.replace_one({"id": product_id}, {**updated, "_id": product_id})
     return Product(**updated)
 
@@ -585,6 +624,9 @@ async def get_order(order_id: str, current_user: User = Depends(get_current_user
 async def create_order(inp: OrderInput, current_user: User = Depends(get_current_user)):
     client_id = await resolve_write_client_id(current_user, inp.client_id)
     obj = Order(**inp.dict(exclude={"client_id"}), client_id=client_id)
+    for item in obj.items:
+        item.discount = max(0.0, min(100.0, float(item.discount or 0)))
+        item.additional_discount = max(0.0, min(100.0, float(item.additional_discount or 0)))
     await db.orders.insert_one({**obj.dict(), "_id": obj.id})
     return obj
 

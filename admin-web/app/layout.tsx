@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { LanguageProvider } from "@/lib/i18n";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -8,8 +9,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen">{children}</body>
+    <html lang="sr" suppressHydrationWarning>
+      <body className="min-h-screen" suppressHydrationWarning>
+        <LanguageProvider>{children}</LanguageProvider>
+      </body>
     </html>
   );
 }

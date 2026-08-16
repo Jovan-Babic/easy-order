@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
 import { api, Order } from "@/src/api";
 import { buildInvoiceText, buildInvoiceHtml } from "@/src/invoice";
-import { computeTotals, lineNet, money } from "@/src/calc";
+import { computeTotals, effectiveDiscountPct, lineNet, money } from "@/src/calc";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
 
@@ -78,7 +78,7 @@ export default function InvoiceScreen() {
       try {
         const { uri } = await Print.printToFileAsync({ html: buildInvoiceHtml(order, lang, contact) });
         attachments = [uri];
-      } catch (e) {
+      } catch {
         attachments = [];
       }
       await MailComposer.composeAsync({
@@ -104,7 +104,7 @@ export default function InvoiceScreen() {
       } else {
         showToast(uri);
       }
-    } catch (e) {
+    } catch {
       showToast(t("pdfError"));
     }
   };
@@ -157,7 +157,9 @@ export default function InvoiceScreen() {
                   {!!it.manufacturer && <Row label={t("manufacturer")} value={it.manufacturer} />}
                   <Row label={t("priceNoVat")} value={money(it.price_no_vat ?? 0)} />
                   <Row label={t("orderedPieces")} value={String(it.ordered_qty)} />
-                  <Row label={t("discount")} value={`${it.discount ?? 0}%`} />
+                  <Row label={t("supplierDiscount")} value={`${it.discount ?? 0}%`} />
+                  <Row label={t("additionalDiscount")} value={`${it.additional_discount ?? 0}%`} />
+                  <Row label={t("totalDiscount")} value={`${money(effectiveDiscountPct(it))}%`} />
                   <Row label={t("vatRate")} value={`${it.vat_rate ?? 0}%`} />
                   <Row label={t("lineTotal")} value={money(lineNet(it))} bold />
                 </View>
