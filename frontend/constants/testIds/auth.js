@@ -36,3 +36,16 @@ export const REGISTER = {
 export const LOGOUT = {
 	button: 'logout-button',
 };
+
+export const FORGOT_PASSWORD = {
+	emailInput: 'forgot-password-email-input',
+	submitButton: 'forgot-password-submit-button',
+	backToLoginLink: 'forgot-password-back-to-login-link',
+};
+
+export const RESET_PASSWORD = {
+	newPasswordInput: 'reset-password-new-password-input',
+	confirmPasswordInput: 'reset-password-confirm-password-input',
+	submitButton: 'reset-password-submit-button',
+	backToLoginLink: 'reset-password-back-to-login-link',
+};

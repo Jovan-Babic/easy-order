@@ -5,6 +5,7 @@ cross-tenant data leakage and role-escalation must be impossible.
 import os
 import uuid
 
+import pytest
 import requests
 
 BASE_URL = os.environ.get(
@@ -39,6 +40,82 @@ class TestAuth:
         assert r.status_code == 200
         assert r.json()["email"] == "demo-admin@easyorder.dev"
         assert r.json()["role"] == "admin"
+
+
+class TestForgotPassword:
+    def test_forgot_password_for_existing_email_returns_generic_success(self):
+        r = requests.post(
+            f"{API}/auth/forgot-password",
+            json={"email": "demo-admin@easyorder.dev", "channel": "web"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body.get("ok") is True
+        assert isinstance(body.get("message"), str)
+
+    def test_forgot_password_for_unknown_email_returns_same_success(self):
+        fake_email = f"unknown-{uuid.uuid4().hex[:8]}@easyorder.dev"
+        r = requests.post(
+            f"{API}/auth/forgot-password",
+            json={"email": fake_email, "channel": "web"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body.get("ok") is True
+        assert isinstance(body.get("message"), str)
+
+    def test_reset_password_invalid_token_rejected(self):
+        r = requests.post(
+            f"{API}/auth/reset-password",
+            json={"token": "definitely-invalid-token", "new_password": "NewPass123!"},
+        )
+        assert r.status_code == 400
+
+    def test_reset_password_roundtrip_and_token_reuse(self):
+        # This requires PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE=true on the
+        # server process used by tests.
+        forgot = requests.post(
+            f"{API}/auth/forgot-password",
+            json={"email": "demo-admin@easyorder.dev", "channel": "web"},
+        )
+        assert forgot.status_code == 200, forgot.text
+        token = forgot.json().get("reset_token")
+        if not token:
+            pytest.skip("Enable PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE=true to run token roundtrip test")
+
+        temp_password = f"TempPass-{uuid.uuid4().hex[:8]}!"
+
+        first_reset = requests.post(
+            f"{API}/auth/reset-password",
+            json={"token": token, "new_password": temp_password},
+        )
+        assert first_reset.status_code == 200, first_reset.text
+
+        # Token is single-use.
+        second_reset = requests.post(
+            f"{API}/auth/reset-password",
+            json={"token": token, "new_password": "AnotherPass123!"},
+        )
+        assert second_reset.status_code == 400
+
+        # New password should now work for login.
+        login = requests.post(
+            f"{API}/auth/login",
+            json={"email": "demo-admin@easyorder.dev", "password": temp_password},
+        )
+        assert login.status_code == 200, login.text
+
+        body = login.json()
+        default_password = os.environ.get("DEMO_ADMIN_PASSWORD", "ChangeMe123!")
+        restore = requests.put(
+            f"{API}/users/{body['user']['id']}",
+            json={"password": default_password},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {body['access_token']}",
+            },
+        )
+        assert restore.status_code == 200, restore.text
 
 
 class TestCrossTenantIsolation:

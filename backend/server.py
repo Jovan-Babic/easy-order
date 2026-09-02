@@ -4,8 +4,12 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from motor.motor_asyncio import AsyncIOMotorClient
+import asyncio
+import hashlib
 import os
 import re
+import secrets
+import smtplib
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
@@ -15,6 +19,8 @@ import uuid
 import bcrypt
 import jwt
 from datetime import datetime, timezone, timedelta
+from email.message import EmailMessage
+from urllib.parse import quote
 import cloudinary
 import cloudinary.uploader
 
@@ -29,11 +35,21 @@ logger = logging.getLogger(__name__)
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-insecure-secret-change-me")
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "720"))
+PASSWORD_RESET_EXPIRE_MINUTES = int(os.environ.get("PASSWORD_RESET_EXPIRE_MINUTES", "30"))
 SUPERADMIN_EMAIL = os.environ.get("SUPERADMIN_EMAIL", "admin@easyorder.dev")
 SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD", "ChangeMe123!")
 DEMO_ADMIN_EMAIL = os.environ.get("DEMO_ADMIN_EMAIL", "demo-admin@easyorder.dev")
 DEMO_ADMIN_PASSWORD = os.environ.get("DEMO_ADMIN_PASSWORD", "ChangeMe123!")
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", "noreply@easyorder.dev")
+SMTP_USE_TLS = os.environ.get("SMTP_USE_TLS", "true").lower() == "true"
+RESET_WEB_URL = os.environ.get("RESET_WEB_URL", "http://localhost:3000/reset-password")
+RESET_MOBILE_SCHEME = os.environ.get("RESET_MOBILE_SCHEME", "easy-order://reset-password")
+PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE = os.environ.get("PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE", "false").lower() == "true"
 
 mongo_client: AsyncIOMotorClient = None
 db = None  # AsyncIOMotorDatabase
@@ -69,6 +85,9 @@ async def lifespan(app: FastAPI):
     await db.products.create_index("client_id")
     await db.orders.create_index("client_id")
     await db.users.create_index("email")
+    await db.password_reset_tokens.create_index("token_hash", unique=True)
+    await db.password_reset_tokens.create_index("expires_at")
+    await db.password_reset_tokens.create_index("user_id")
     await seed_data()
     logger.info("Backend started with MongoDB (%s)", os.environ["DB_NAME"])
     yield
@@ -147,6 +166,42 @@ class UserUpdateInput(BaseModel):
 class LoginInput(BaseModel):
     email: EmailStr
     password: str
+
+
+class ForgotPasswordChannel(str, Enum):
+    WEB = "web"
+    MOBILE = "mobile"
+
+
+class ForgotPasswordInput(BaseModel):
+    email: EmailStr
+    channel: ForgotPasswordChannel = ForgotPasswordChannel.WEB
+
+
+class ResetPasswordInput(BaseModel):
+    token: str
+    new_password: str
+
+
+class TestEmailInput(BaseModel):
+    to_email: EmailStr
+    subject: str = "Easy Order SMTP test"
+
+
+class TestEmailResponse(BaseModel):
+    ok: bool = True
+    sent_to: EmailStr
+    subject: str
+
+
+class ForgotPasswordResponse(BaseModel):
+    ok: bool = True
+    message: str = "If this account exists, a password reset link has been sent"
+    reset_token: Optional[str] = None
+
+
+class GenericOkResponse(BaseModel):
+    ok: bool = True
 
 
 class TokenResponse(BaseModel):
@@ -275,6 +330,117 @@ def create_access_token(user: dict) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 
+def _password_is_strong_enough(password: str) -> bool:
+    return len(password) >= 8
+
+
+def _hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _build_reset_link(token: str, channel: ForgotPasswordChannel) -> str:
+    encoded = quote(token, safe="")
+    if channel == ForgotPasswordChannel.MOBILE:
+        return f"{RESET_MOBILE_SCHEME}?token={encoded}"
+    sep = "&" if "?" in RESET_WEB_URL else "?"
+    return f"{RESET_WEB_URL}{sep}token={encoded}"
+
+
+def _to_aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _smtp_is_configured() -> bool:
+    return bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD and SMTP_FROM)
+
+
+def _send_smtp_email_sync(to_email: str, subject: str, plain_text_body: str) -> None:
+    msg = EmailMessage()
+    msg["From"] = SMTP_FROM
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.set_content(plain_text_body)
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
+        if SMTP_USE_TLS:
+            smtp.starttls()
+        smtp.login(SMTP_USER, SMTP_PASSWORD)
+        smtp.send_message(msg)
+
+
+def _build_reset_email_body(user_name: str, reset_link: str) -> str:
+    return (
+        f"Hi {user_name or 'there'},\n\n"
+        "We received a request to reset your Easy Order password.\n"
+        f"Use this link to set a new password:\n{reset_link}\n\n"
+        f"This link expires in {PASSWORD_RESET_EXPIRE_MINUTES} minutes.\n"
+        "If you did not request this, you can ignore this email."
+    )
+
+
+def _build_test_email_body() -> str:
+    return (
+        "This is a test email from Easy Order.\n\n"
+        "If you received this, Brevo SMTP is configured correctly and the backend can send mail."
+    )
+
+
+async def _send_reset_email(to_email: str, user_name: str, reset_link: str) -> None:
+    if not _smtp_is_configured():
+        logger.warning("SMTP not configured. Password reset link for %s: %s", to_email, reset_link)
+        return
+
+    body = _build_reset_email_body(user_name, reset_link)
+    await asyncio.to_thread(_send_smtp_email_sync, to_email, "Easy Order - Password reset", body)
+
+
+async def _send_test_email(to_email: str, subject: str) -> None:
+    if not _smtp_is_configured():
+        raise HTTPException(
+            status_code=500,
+            detail="SMTP is not configured. Check SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD and SMTP_FROM.",
+        )
+
+    await asyncio.to_thread(_send_smtp_email_sync, to_email, subject, _build_test_email_body())
+
+
+async def _create_password_reset_token_record(user: dict, channel: ForgotPasswordChannel) -> str:
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = _hash_reset_token(raw_token)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=PASSWORD_RESET_EXPIRE_MINUTES)
+    await db.password_reset_tokens.insert_one(
+        {
+            "_id": str(uuid.uuid4()),
+            "token_hash": token_hash,
+            "user_id": user["id"],
+            "client_id": user.get("client_id"),
+            "channel": channel.value,
+            "created_at": now_iso(),
+            "expires_at": expires_at,
+            "used_at": None,
+        }
+    )
+    return raw_token
+
+
+async def _get_valid_reset_record(token: str) -> Optional[dict]:
+    record = await db.password_reset_tokens.find_one(
+        {"token_hash": _hash_reset_token(token)},
+        {"_id": 0},
+    )
+    if not record:
+        return None
+    if record.get("used_at"):
+        return None
+    expires_at = record.get("expires_at")
+    if not expires_at or _to_aware_utc(expires_at) <= datetime.now(timezone.utc):
+        return None
+    return record
+
+
 def cloudinary_available() -> bool:
     cfg = cloudinary.config()
     return bool(cfg.cloud_name and cfg.api_key and cfg.api_secret)
@@ -370,6 +536,61 @@ async def login(inp: LoginInput):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_access_token(raw)
     return TokenResponse(access_token=token, user=User(**raw))
+
+
+@api_router.post("/auth/forgot-password", response_model=ForgotPasswordResponse)
+async def forgot_password(inp: ForgotPasswordInput):
+    user = await find_user_by_email(inp.email)
+    debug_token: Optional[str] = None
+
+    if user and user.get("active", True):
+        raw_token = await _create_password_reset_token_record(user, inp.channel)
+        reset_link = _build_reset_link(raw_token, inp.channel)
+        try:
+            await _send_reset_email(user["email"], user.get("name", ""), reset_link)
+        except Exception as exc:
+            logger.exception("Failed to send reset email for %s: %s", user["email"], exc)
+        if PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE:
+            debug_token = raw_token
+
+    return ForgotPasswordResponse(reset_token=debug_token)
+
+
+@api_router.post("/auth/reset-password", response_model=GenericOkResponse)
+async def reset_password(inp: ResetPasswordInput):
+    if not _password_is_strong_enough(inp.new_password):
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
+
+    record = await _get_valid_reset_record(inp.token)
+    if not record:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user = await db.users.find_one({"id": record["user_id"]}, {"_id": 0})
+    if not user or not user.get("active", True):
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"password_hash": hash_password(inp.new_password)}},
+    )
+    # Invalidate all outstanding reset tokens for this user after a successful reset.
+    await db.password_reset_tokens.update_many(
+        {"user_id": user["id"], "used_at": None},
+        {"$set": {"used_at": now_iso()}},
+    )
+
+    return GenericOkResponse()
+
+
+@api_router.post("/auth/test-email", response_model=TestEmailResponse)
+async def test_email(inp: TestEmailInput, current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN))):
+    try:
+        await _send_test_email(inp.to_email, inp.subject)
+    except Exception as exc:
+        logger.exception("SMTP test email failed for %s: %s", inp.to_email, exc)
+        raise HTTPException(status_code=500, detail=f"SMTP test failed: {str(exc)}") from exc
+
+    return TestEmailResponse(sent_to=inp.to_email, subject=inp.subject)
 
 
 @api_router.get("/auth/me", response_model=User)

@@ -109,6 +109,16 @@ export const api = {
     req<TokenResponse>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   me: () => req<User>("/auth/me"),
   logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+  requestPasswordReset: (email: string, channel: "web" | "mobile" = "mobile") =>
+    req<{ ok: boolean; message: string }>("/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email, channel }),
+    }),
+  resetPassword: (token: string, newPassword: string) =>
+    req<{ ok: boolean }>("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password: newPassword }),
+    }),
 
   // customers
   listCustomers: () => req<Customer[]>("/customers"),

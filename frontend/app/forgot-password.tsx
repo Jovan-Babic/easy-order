@@ -12,35 +12,31 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
-import { useAuth } from "@/src/context/AuthContext";
+import { api } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
-import { LOGIN } from "@/constants/testIds";
+import { FORGOT_PASSWORD } from "@/constants/testIds";
 
-export default function LoginScreen() {
+export default function ForgotPasswordScreen() {
   const { t } = useApp();
-  const { login, logout } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const onSubmit = async () => {
-    if (!email.trim() || !password) return;
+    if (!email.trim()) return;
     setError(null);
+    setMessage(null);
     setSubmitting(true);
     try {
-      const user = await login(email.trim(), password);
-      // SuperAdmin's real workspace is the admin web portal - the mobile
-      // Admin CRUD form has no UI for the client_id a SuperAdmin write needs.
-      if (user.role === "superadmin") {
-        await logout();
-        setError(t("useWebPortal"));
-      }
+      const response = await api.requestPasswordReset(email.trim(), "mobile");
+      setMessage(response.message || t("resetEmailSent"));
     } catch {
-      setError(t("invalidCredentials"));
+      setError(t("resetRequestFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -51,12 +47,13 @@ export default function LoginScreen() {
       style={{ flex: 1, backgroundColor: colors.surface }}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <View style={[styles.container, { paddingTop: insets.top + spacing.xxl }]}>
-        <Text style={styles.title}>{t("appName")}</Text>
+      <View style={[styles.container, { paddingTop: insets.top + spacing.xxl }]}> 
+        <Text style={styles.title}>{t("forgotPasswordTitle")}</Text>
         <View style={[styles.card, shadow.card]}>
+          <Text style={styles.description}>{t("forgotPasswordDescription")}</Text>
           <Text style={styles.label}>{t("email")}</Text>
           <TextInput
-            testID={LOGIN.emailInput}
+            testID={FORGOT_PASSWORD.emailInput}
             style={styles.input}
             value={email}
             onChangeText={setEmail}
@@ -65,34 +62,26 @@ export default function LoginScreen() {
             placeholder="you@company.com"
             placeholderTextColor={colors.muted}
           />
-          <Text style={styles.label}>{t("password")}</Text>
-          <TextInput
-            testID={LOGIN.passwordInput}
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            placeholder="••••••••"
-            placeholderTextColor={colors.muted}
+
+          {error && <Text style={styles.error}>{error}</Text>}
+          {message && <Text style={styles.success}>{message}</Text>}
+
+          <Button
+            testID={FORGOT_PASSWORD.submitButton}
+            title={t("sendResetLink")}
+            onPress={onSubmit}
+            loading={submitting}
+            disabled={!email.trim()}
+            style={{ marginTop: spacing.lg }}
           />
 
           <Pressable
-            testID={LOGIN.forgotPasswordLink}
-            onPress={() => router.push("/forgot-password")}
-            style={{ marginTop: spacing.sm, alignSelf: "flex-end" }}
+            testID={FORGOT_PASSWORD.backToLoginLink}
+            onPress={() => router.replace("/login")}
+            style={styles.backWrap}
           >
-            <Text style={styles.forgotLink}>{t("forgotPassword")}</Text>
+            <Text style={styles.backText}>{t("backToLogin")}</Text>
           </Pressable>
-
-          {error && <Text style={styles.error}>{error}</Text>}
-          <Button
-            testID={LOGIN.submitButton}
-            title={t("login")}
-            onPress={onSubmit}
-            loading={submitting}
-            disabled={!email.trim() || !password}
-            style={{ marginTop: spacing.lg }}
-          />
         </View>
       </View>
     </KeyboardAvoidingView>
@@ -112,6 +101,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceSecondary,
     borderRadius: radius.lg,
     padding: spacing.xl,
+  },
+  description: {
+    color: colors.onSurfaceSecondary,
+    fontSize: font.base,
+    marginBottom: spacing.md,
   },
   label: {
     fontSize: font.base,
@@ -134,7 +128,16 @@ const styles = StyleSheet.create({
     fontSize: font.base,
     marginTop: spacing.md,
   },
-  forgotLink: {
+  success: {
+    color: colors.success,
+    fontSize: font.base,
+    marginTop: spacing.md,
+  },
+  backWrap: {
+    alignSelf: "center",
+    marginTop: spacing.lg,
+  },
+  backText: {
     color: colors.brand,
     fontSize: font.base,
     fontWeight: "600",

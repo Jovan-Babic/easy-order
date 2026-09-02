@@ -38,10 +38,11 @@ function RouteGuard({
 
   useEffect(() => {
     if (status === "loading") return;
-    const onLoginScreen = segments[0] === "login";
-    if (status === "unauthenticated" && !onLoginScreen) {
+    const publicScreens = new Set(["login", "forgot-password", "reset-password"]);
+    const onPublicScreen = publicScreens.has(segments[0] ?? "");
+    if (status === "unauthenticated" && !onPublicScreen) {
       router.replace("/login");
-    } else if (status === "authenticated" && onLoginScreen) {
+    } else if (status === "authenticated" && onPublicScreen) {
       router.replace("/(tabs)");
     }
   }, [status, segments, router]);
@@ -76,6 +77,8 @@ export default function RootLayout() {
               <Stack screenOptions={{ headerShown: false }}>
                 <Stack.Screen name="(tabs)" />
                 <Stack.Screen name="login" options={{ presentation: "card" }} />
+                <Stack.Screen name="forgot-password" options={{ presentation: "card" }} />
+                <Stack.Screen name="reset-password" options={{ presentation: "card" }} />
                 <Stack.Screen name="invoice" options={{ presentation: "card" }} />
               </Stack>
             </RouteGuard>
