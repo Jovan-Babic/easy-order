@@ -281,6 +281,8 @@ class Order(BaseModel):
     customer_id: str
     customer_name: str
     items: List[OrderItem] = []
+    item_count: Optional[int] = None
+    client_name: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -828,12 +830,22 @@ async def delete_product(product_id: str, current_user: User = Depends(get_curre
 
 # ---------------- Orders ----------------
 @api_router.get("/orders", response_model=List[Order])
-async def list_orders(customer_id: Optional[str] = None, current_user: User = Depends(get_current_user)):
+async def list_orders(
+    customer_id: Optional[str] = None,
+    portal: bool = False,
+    current_user: User = Depends(get_current_user),
+):
     query = _scope_query(current_user)
     if customer_id:
         query = {**query, "customer_id": customer_id}
     docs = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(None)
-    return [Order(**v) for v in docs]
+    orders = []
+    for value in docs:
+        if portal and current_user.role == Role.SUPERADMIN:
+            client = await db.clients.find_one({"id": value.get("client_id")}, {"_id": 0, "name": 1})
+            value = {**value, "client_name": client.get("name") if client else None}
+        orders.append(Order(**value))
+    return orders
 
 
 @api_router.get("/orders/{order_id}", response_model=Order)

@@ -1,5 +1,5 @@
 import { backendFetch, proxyJson } from "@/lib/backend";
 
 export async function GET() {
-  return proxyJson(await backendFetch("/orders"));
+  return proxyJson(await backendFetch("/orders?portal=true"));
 }

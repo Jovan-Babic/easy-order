@@ -156,6 +156,21 @@ class TestCrossTenantIsolation:
         TestCrossTenantIsolation.client_b_customer_id = c["id"]
         TestCrossTenantIsolation.client_b_order_id = o["id"]
 
+    def test_portal_order_items_are_visible_to_scoped_users(self, superadmin_client):
+        admin = TestCrossTenantIsolation.client_b_admin
+        admin_orders = admin.get(f"{API}/orders?portal=true")
+        assert admin_orders.status_code == 200
+        admin_order = next(order for order in admin_orders.json() if order["id"] == TestCrossTenantIsolation.client_b_order_id)
+        assert admin_order["items"][0]["name"] == "TEST_B_Product"
+
+        superadmin_orders = superadmin_client.get(f"{API}/orders?portal=true")
+        assert superadmin_orders.status_code == 200
+        superadmin_order = next(
+            order for order in superadmin_orders.json() if order["id"] == TestCrossTenantIsolation.client_b_order_id
+        )
+        assert superadmin_order["items"][0]["name"] == "TEST_B_Product"
+        assert superadmin_order["client_name"].startswith("TEST_ClientB_")
+
     def test_client_a_admin_cannot_edit_client_b_customer(self, api_client):
         # No GET-by-id route exists for customers/products (only list + PUT/DELETE
         # by id) - PUT is the isolation surface to probe here.

@@ -6,3 +6,46 @@ body {
   background-color: #f3f4f6;
   color: #111827;
 }
+
+@media print {
+  @page {
+    margin: 12mm;
+  }
+
+  body {
+    background: white;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-overlay {
+    position: static !important;
+    overflow: visible !important;
+    background: white !important;
+    padding: 0 !important;
+  }
+
+  .orders-page > :not(.print-overlay) {
+    display: none !important;
+  }
+
+  body:has(.print-document) main {
+    padding: 0 !important;
+    background: white !important;
+  }
+
+  body:has(.print-document) aside {
+    display: none !important;
+  }
+
+  .print-modal {
+    max-width: none !important;
+    box-shadow: none !important;
+  }
+
+  .print-document {
+    padding: 0 !important;
+  }
+}

@@ -30,6 +30,8 @@ export default function LoginPage() {
       }
       router.push("/dashboard");
       router.refresh();
+    } catch {
+      setError(t("backendUnavailable"));
     } finally {
       setSubmitting(false);
     }
@@ -46,6 +48,7 @@ export default function LoginPage() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           autoComplete="username"
+          required
           className="mb-4 w-full rounded-md border border-border px-3 py-2 text-onSurface outline-none focus:border-brand"
           placeholder="you@company.com"
         />
@@ -56,6 +59,7 @@ export default function LoginPage() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           autoComplete="current-password"
+          required
           className="mb-4 w-full rounded-md border border-border px-3 py-2 text-onSurface outline-none focus:border-brand"
           placeholder="••••••••"
         />
@@ -64,7 +68,7 @@ export default function LoginPage() {
 
         <button
           type="submit"
-          disabled={submitting || !email || !password}
+          disabled={submitting}
           className="w-full rounded-md bg-brand py-2.5 font-bold text-onBrand disabled:opacity-50"
         >
           {submitting ? t("loggingIn") : t("login")}
