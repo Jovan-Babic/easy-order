@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 type Customer = {
   id: string;
@@ -30,6 +31,7 @@ export default function CustomersPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [pendingDelete, setPendingDelete] = useState<Customer | null>(null);
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name || id;
 
@@ -76,9 +78,10 @@ export default function CustomersPage() {
     }
   };
 
-  const remove = async (id: string) => {
-    if (!confirm("Delete this customer?")) return;
-    await fetch(`/api/customers/${id}`, { method: "DELETE" });
+  const remove = async () => {
+    if (!pendingDelete) return;
+    await fetch(`/api/customers/${pendingDelete.id}`, { method: "DELETE" });
+    setPendingDelete(null);
     await load();
   };
 
@@ -179,7 +182,7 @@ export default function CustomersPage() {
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.phone || "-"}</td>
                   {isSuperAdmin && <td className="px-4 py-3 text-onSurfaceSecondary">{clientName(c.client_id)}</td>}
                   <td className="px-4 py-3">
-                    <button onClick={() => remove(c.id)} className="font-semibold text-error hover:underline">
+                    <button onClick={() => setPendingDelete(c)} className="font-semibold text-error hover:underline">
                       {t("delete")}
                     </button>
                   </td>
@@ -188,6 +191,9 @@ export default function CustomersPage() {
             </tbody>
           </table>
         </div>
+      )}
+      {pendingDelete && (
+        <ConfirmDialog itemName={pendingDelete.name} onCancel={() => setPendingDelete(null)} onConfirm={remove} />
       )}
     </div>
   );

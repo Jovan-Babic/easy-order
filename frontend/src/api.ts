@@ -19,6 +19,13 @@ export type TokenResponse = {
   user: User;
 };
 
+export type AppUpdate = {
+  enabled: boolean;
+  version?: string;
+  download_url?: string;
+  release_notes?: string;
+};
+
 export type Customer = {
   id: string;
   client_id?: string;
@@ -104,6 +111,8 @@ async function req<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  checkAppUpdate: () => req<AppUpdate>("/app/update"),
+
   // auth
   login: (email: string, password: string) =>
     req<TokenResponse>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),

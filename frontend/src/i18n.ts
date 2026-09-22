@@ -99,6 +99,10 @@ export const translations = {
     invalidCredentials: "Pogrešan email ili lozinka",
     sessionExpired: "Sesija je istekla, prijavite se ponovo",
     useWebPortal: "SuperAdmin nalozi koriste web portal, ne mobilnu aplikaciju",
+    appUpdateAvailable: "Dostupna je nova verzija",
+    appUpdateMessage: "Nova verzija aplikacije je spremna za preuzimanje.",
+    appUpdateNow: "Preuzmi sada",
+    appUpdateLater: "Kasnije",
   },
   en: {
     appName: "Easy Order",
@@ -198,6 +202,10 @@ export const translations = {
     invalidCredentials: "Invalid email or password",
     sessionExpired: "Your session expired, please log in again",
     useWebPortal: "SuperAdmin accounts use the web portal, not the mobile app",
+    appUpdateAvailable: "A new version is available",
+    appUpdateMessage: "A new version of the app is ready to download.",
+    appUpdateNow: "Download now",
+    appUpdateLater: "Later",
   },
 } as const;
 

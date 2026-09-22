@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, File, UploadFile
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -24,7 +25,7 @@ from urllib.parse import quote
 import cloudinary
 import cloudinary.uploader
 
-from calc import compute_order_totals
+from calc import compute_order_totals, line_net, line_vat
 
 
 ROOT_DIR = Path(__file__).parent
@@ -50,6 +51,7 @@ SMTP_USE_TLS = os.environ.get("SMTP_USE_TLS", "true").lower() == "true"
 RESET_WEB_URL = os.environ.get("RESET_WEB_URL", "http://localhost:3000/reset-password")
 RESET_MOBILE_SCHEME = os.environ.get("RESET_MOBILE_SCHEME", "easy-order://reset-password")
 PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE = os.environ.get("PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE", "false").lower() == "true"
+APP_UPDATE_FILE = ROOT_DIR / "public" / "app" / "app-update.json"
 
 mongo_client: AsyncIOMotorClient = None
 db = None  # AsyncIOMotorDatabase
@@ -308,6 +310,63 @@ class StatsResponse(BaseModel):
     scope: str  # "global" | "client"
     totals: ClientStats
     by_client: List[ClientStats]
+
+
+class DashboardSummary(BaseModel):
+    order_count: int
+    customer_count: int
+    product_count: int
+    active_customer_count: int
+    total_net: float
+    total_vat: float
+    total_grand: float
+    average_order_value: float
+    average_items_per_order: float
+
+
+class RevenuePoint(BaseModel):
+    period: str
+    order_count: int
+    total_net: float
+    total_vat: float
+    total_grand: float
+
+
+class ProductSalesStats(BaseModel):
+    product_id: str
+    name: str
+    manufacturer: Optional[str] = ""
+    ordered_qty: int
+    order_count: int
+    total_net: float
+    total_vat: float
+    total_grand: float
+
+
+class CustomerSalesStats(BaseModel):
+    customer_id: str
+    customer_name: str
+    order_count: int
+    total_grand: float
+
+
+class RecentOrderStats(BaseModel):
+    id: str
+    customer_name: str
+    item_count: int
+    total_grand: float
+    created_at: str
+
+
+class DashboardStatsResponse(BaseModel):
+    scope: str
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+    summary: DashboardSummary
+    revenue_by_period: List[RevenuePoint]
+    top_products: List[ProductSalesStats]
+    top_customers: List[CustomerSalesStats]
+    recent_orders: List[RecentOrderStats]
 
 
 # ---------------- Auth helpers ----------------
@@ -876,6 +935,17 @@ async def root():
     return {"message": "Easy Order API"}
 
 
+@api_router.get("/app/update")
+async def app_update():
+    if not APP_UPDATE_FILE.exists():
+        return {"enabled": False}
+    try:
+        import json
+        return json.loads(APP_UPDATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(status_code=503, detail="App update metadata is unavailable")
+
+
 # ---------------- Statistics ----------------
 async def _compute_client_stats(client_id: str) -> ClientStats:
     client = await db.clients.find_one({"id": client_id}, {"_id": 0})
@@ -924,6 +994,129 @@ async def stats_overview(current_user: User = Depends(require_roles(Role.SUPERAD
     return StatsResponse(scope="client", totals=stats, by_client=[stats])
 
 
+def _parse_dashboard_date(value: Optional[str], field_name: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}; use YYYY-MM-DD")
+
+
+@api_router.get("/stats/dashboard", response_model=DashboardStatsResponse)
+async def stats_dashboard(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN)),
+):
+    start = _parse_dashboard_date(from_date, "from_date")
+    end = _parse_dashboard_date(to_date, "to_date")
+    if start and end and start > end:
+        raise HTTPException(status_code=400, detail="from_date must be before to_date")
+
+    query = {} if current_user.role == Role.SUPERADMIN else {"client_id": current_user.client_id}
+    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(None)
+    filtered_orders = []
+    for order in orders:
+        try:
+            created_at = datetime.fromisoformat(order["created_at"].replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            continue
+        if start and created_at < start:
+            continue
+        if end and created_at >= end + timedelta(days=1):
+            continue
+        filtered_orders.append(order)
+
+    product_rows: Dict[str, Dict[str, Any]] = {}
+    customer_rows: Dict[str, Dict[str, Any]] = {}
+    revenue_rows: Dict[str, Dict[str, Any]] = {}
+    total_net = 0.0
+    total_vat = 0.0
+    total_items = 0
+
+    for order in filtered_orders:
+        totals = compute_order_totals(order)
+        total_net += totals["subtotal"]
+        total_vat += totals["vat"]
+        total_items += len(order.get("items", []))
+        period = order["created_at"][:7]
+        revenue = revenue_rows.setdefault(period, {"period": period, "order_count": 0, "total_net": 0.0, "total_vat": 0.0})
+        revenue["order_count"] += 1
+        revenue["total_net"] += totals["subtotal"]
+        revenue["total_vat"] += totals["vat"]
+
+        customer_id = order.get("customer_id", "")
+        customer = customer_rows.setdefault(customer_id, {
+            "customer_id": customer_id,
+            "customer_name": order.get("customer_name", "Unknown"),
+            "order_count": 0,
+            "total_grand": 0.0,
+        })
+        customer["order_count"] += 1
+        customer["total_grand"] += totals["grand"]
+
+        for item in order.get("items", []):
+            product_id = item.get("product_id", item.get("name", "unknown"))
+            product = product_rows.setdefault(product_id, {
+                "product_id": product_id,
+                "name": item.get("name", "Unknown"),
+                "manufacturer": item.get("manufacturer", ""),
+                "ordered_qty": 0,
+                "order_count": 0,
+                "total_net": 0.0,
+                "total_vat": 0.0,
+            })
+            product["ordered_qty"] += int(item.get("ordered_qty") or 0)
+            product["order_count"] += 1
+            product["total_net"] += line_net(item)
+            product["total_vat"] += line_vat(item)
+
+    customer_count = await db.customers.count_documents(query)
+    summary = DashboardSummary(
+        order_count=len(filtered_orders),
+        customer_count=customer_count,
+        product_count=await db.products.count_documents(query),
+        active_customer_count=len(customer_rows),
+        total_net=round(total_net, 2),
+        total_vat=round(total_vat, 2),
+        total_grand=round(total_net + total_vat, 2),
+        average_order_value=round((total_net + total_vat) / len(filtered_orders), 2) if filtered_orders else 0,
+        average_items_per_order=round(total_items / len(filtered_orders), 2) if filtered_orders else 0,
+    )
+
+    revenue_by_period = [
+        RevenuePoint(**{**row, "total_net": round(row["total_net"], 2), "total_vat": round(row["total_vat"], 2), "total_grand": round(row["total_net"] + row["total_vat"], 2)})
+        for row in sorted(revenue_rows.values(), key=lambda row: row["period"])
+    ]
+    top_products = [
+        ProductSalesStats(**{**row, "total_net": round(row["total_net"], 2), "total_vat": round(row["total_vat"], 2), "total_grand": round(row["total_net"] + row["total_vat"], 2)})
+        for row in sorted(product_rows.values(), key=lambda row: row["total_net"] + row["total_vat"], reverse=True)[:10]
+    ]
+    top_customers = [CustomerSalesStats(**row) for row in sorted(customer_rows.values(), key=lambda row: row["total_grand"], reverse=True)[:10]]
+    recent_orders = [
+        RecentOrderStats(
+            id=order["id"],
+            customer_name=order.get("customer_name", "Unknown"),
+            item_count=len(order.get("items", [])),
+            total_grand=round(compute_order_totals(order)["grand"], 2),
+            created_at=order["created_at"],
+        )
+        for order in filtered_orders[:10]
+    ]
+
+    return DashboardStatsResponse(
+        scope="global" if current_user.role == Role.SUPERADMIN else "client",
+        from_date=from_date,
+        to_date=to_date,
+        summary=summary,
+        revenue_by_period=revenue_by_period,
+        top_products=top_products,
+        top_customers=top_customers,
+        recent_orders=recent_orders,
+    )
+
+
 @api_router.get("/stats/clients/{client_id}", response_model=ClientStats)
 async def stats_client(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
     if not await db.clients.find_one({"id": client_id}, {"_id": 0}):
@@ -954,6 +1147,7 @@ async def seed_data():
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(api_router)
+app.mount("/app", StaticFiles(directory=ROOT_DIR / "public" / "app"), name="app-downloads")
 
 app.add_middleware(
     CORSMiddleware,

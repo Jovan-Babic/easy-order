@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 type Product = {
   id: string;
@@ -80,6 +81,7 @@ export default function ProductsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ProductFormState>(emptyForm());
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const [pendingDelete, setPendingDelete] = useState<Product | null>(null);
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name || id;
 
@@ -231,9 +233,10 @@ export default function ProductsPage() {
     }
   };
 
-  const remove = async (id: string) => {
-    if (!confirm("Delete this product?")) return;
-    await fetch(`/api/products/${id}`, { method: "DELETE" });
+  const remove = async () => {
+    if (!pendingDelete) return;
+    await fetch(`/api/products/${pendingDelete.id}`, { method: "DELETE" });
+    setPendingDelete(null);
     await load();
   };
 
@@ -492,7 +495,7 @@ export default function ProductsPage() {
                     >
                       {t("edit")}
                     </button>
-                    <button onClick={() => remove(p.id)} className="font-semibold text-error hover:underline">
+                    <button onClick={() => setPendingDelete(p)} className="font-semibold text-error hover:underline">
                       {t("delete")}
                     </button>
                   </td>
@@ -501,6 +504,9 @@ export default function ProductsPage() {
             </tbody>
           </table>
         </div>
+      )}
+      {pendingDelete && (
+        <ConfirmDialog itemName={pendingDelete.name} onCancel={() => setPendingDelete(null)} onConfirm={remove} />
       )}
     </div>
   );

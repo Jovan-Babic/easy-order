@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 type Role = "superadmin" | "admin" | "operator";
 
@@ -153,6 +154,7 @@ export default function UsersPage() {
   const [editError, setEditError] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   const [editForm, setEditForm] = useState<EditUserForm>(emptyEditForm);
+  const [pendingDelete, setPendingDelete] = useState<User | null>(null);
 
   const parsePhone = (rawPhone: string | undefined) => {
     if (!rawPhone) return { countryCode: "+381", phoneNumber: "" };
@@ -273,9 +275,10 @@ export default function UsersPage() {
     }
   };
 
-  const remove = async (id: string) => {
-    if (!confirm("Delete this user?")) return;
-    await fetch(`/api/users/${id}`, { method: "DELETE" });
+  const remove = async () => {
+    if (!pendingDelete) return;
+    await fetch(`/api/users/${pendingDelete.id}`, { method: "DELETE" });
+    setPendingDelete(null);
     await load();
   };
 
@@ -504,7 +507,7 @@ export default function UsersPage() {
                       {t("edit")}
                     </button>
                     {u.id !== session.id && (
-                      <button onClick={() => remove(u.id)} className="font-semibold text-error hover:underline">
+                      <button onClick={() => setPendingDelete(u)} className="font-semibold text-error hover:underline">
                         {t("delete")}
                       </button>
                     )}
@@ -514,6 +517,9 @@ export default function UsersPage() {
             </tbody>
           </table>
         </div>
+      )}
+      {pendingDelete && (
+        <ConfirmDialog itemName={pendingDelete.name} onCancel={() => setPendingDelete(null)} onConfirm={remove} />
       )}
     </div>
   );

@@ -1,13 +1,16 @@
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect } from "react";
-import { Image, LogBox, StyleSheet, View } from "react-native";
+import Constants from "expo-constants";
+import { useEffect, useRef } from "react";
+import { Alert, Image, Linking, LogBox, Platform, StyleSheet, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { AppProvider } from "@/src/context/AppContext";
 import { AuthProvider, useAuth } from "@/src/context/AuthContext";
+import { useApp } from "@/src/context/AppContext";
+import { api } from "@/src/api";
 
 // Disable logbox errors etc so that users can see the app
 // and agent works as expected.
@@ -27,8 +30,10 @@ function RouteGuard({
   children: React.ReactNode;
 }) {
   const { status } = useAuth();
+  const { t } = useApp();
   const segments = useSegments();
   const router = useRouter();
+  const updateChecked = useRef(false);
 
   useEffect(() => {
     if (fontsReady) {
@@ -47,6 +52,37 @@ function RouteGuard({
     }
   }, [status, segments, router]);
 
+  useEffect(() => {
+    if (updateChecked.current || status === "loading" || Platform.OS !== "android") return;
+    updateChecked.current = true;
+
+    const checkForUpdate = async () => {
+      try {
+        const update = await api.checkAppUpdate();
+        const currentVersion = Constants.expoConfig?.version ?? "0.0.0";
+        if (!update.enabled || !update.version || !update.download_url || compareVersions(update.version, currentVersion) <= 0) {
+          return;
+        }
+
+        const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+        if (!backendUrl) return;
+        const downloadUrl = new URL(update.download_url, backendUrl).toString();
+        Alert.alert(
+          t("appUpdateAvailable"),
+          update.release_notes ? `${t("appUpdateMessage")}\n\n${update.release_notes}` : t("appUpdateMessage"),
+          [
+            { text: t("appUpdateLater"), style: "cancel" },
+            { text: t("appUpdateNow"), onPress: () => Linking.openURL(downloadUrl) },
+          ],
+        );
+      } catch {
+        // Update checks are best-effort and must not block app startup.
+      }
+    };
+
+    checkForUpdate();
+  }, [status, t]);
+
   if (status === "loading") {
     return (
       <View style={styles.splashContainer}>
@@ -60,6 +96,15 @@ function RouteGuard({
   }
 
   return <>{children}</>;
+}
+
+function compareVersions(left: string, right: string): number {
+  const a = left.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const b = right.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) - (b[index] ?? 0);
+  }
+  return 0;
 }
 
 export default function RootLayout() {

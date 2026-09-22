@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { useSession } from "@/lib/session-provider";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 type Order = {
   id: string;
@@ -50,21 +51,34 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Record<string, Customer>>({});
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Order | null>(null);
+
+  const load = async () => {
+    try {
+      const [ordersResponse, customersResponse] = await Promise.all([fetch("/api/orders"), fetch("/api/customers")]);
+      if (!ordersResponse.ok) throw new Error("Failed to load orders");
+      const orderList = (await ordersResponse.json()) as Order[];
+      const customerList = customersResponse.ok ? ((await customersResponse.json()) as Customer[]) : [];
+      setOrders(orderList);
+      setCustomers(Object.fromEntries(customerList.map((customer) => [customer.id, customer])));
+    } catch {
+      setOrders([]);
+      setCustomers({});
+    }
+  };
 
   useEffect(() => {
-    Promise.all([fetch("/api/orders"), fetch("/api/customers")])
-      .then(async ([ordersResponse, customersResponse]) => {
-        if (!ordersResponse.ok) throw new Error("Failed to load orders");
-        const orderList = (await ordersResponse.json()) as Order[];
-        const customerList = customersResponse.ok ? ((await customersResponse.json()) as Customer[]) : [];
-        setOrders(orderList);
-        setCustomers(Object.fromEntries(customerList.map((customer) => [customer.id, customer])));
-      })
-      .catch(() => {
-        setOrders([]);
-        setCustomers({});
-      });
+    load();
   }, []);
+
+  const remove = async () => {
+    if (!pendingDelete) return;
+    const response = await fetch(`/api/orders/${pendingDelete.id}`, { method: "DELETE" });
+    setPendingDelete(null);
+    if (!response.ok) return;
+    if (selectedOrder?.id === pendingDelete.id) setSelectedOrder(null);
+    await load();
+  };
 
   return (
     <div className="orders-page">
@@ -96,6 +110,13 @@ export default function OrdersPage() {
                     className="rounded-md border border-brand px-3 py-1.5 text-sm font-semibold text-brand hover:bg-brandSecondary"
                   >
                     {t("details")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingDelete(o)}
+                    className="ml-2 rounded-md border border-error px-3 py-1.5 text-sm font-semibold text-error hover:bg-red-50"
+                  >
+                    {t("delete")}
                   </button>
                 </td>
               </tr>
@@ -209,6 +230,9 @@ export default function OrdersPage() {
             </div>
           </div>
         </div>
+      )}
+      {pendingDelete && (
+        <ConfirmDialog itemName={pendingDelete.customer_name} onCancel={() => setPendingDelete(null)} onConfirm={remove} />
       )}
     </div>
   );

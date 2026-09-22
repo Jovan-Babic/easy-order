@@ -1,0 +1,34 @@
+# EAS resolves this repository from the Git root. The mobile app lives in frontend/.
+# Exclude the other applications and repository metadata from the upload archive.
+admin-web/
+backend/
+.git/
+.git
+.venv/
+.venv
+.claude/
+.emergent/
+.pytest_cache/
+memory/
+tests/
+test_reports/
+
+# Repository-level generated output
+**/.next/
+**/.pytest_cache/
+**/__pycache__/
+
+# Frontend dependencies, caches and local build output
+frontend/node_modules/
+frontend/.metro-cache/
+frontend/.expo/
+frontend/dist/
+frontend/web-build/
+frontend/android/.gradle/
+frontend/android/build/
+frontend/android/app/build/
+frontend/ios/Pods/
+frontend/ios/build/
+frontend/.env*
+frontend/*.log
+frontend/*.tsbuildinfo

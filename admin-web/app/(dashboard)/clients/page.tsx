@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useLanguage } from "@/lib/i18n";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 type Client = {
   id: string;
@@ -23,6 +24,7 @@ export default function ClientsPage() {
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<Client | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -52,6 +54,17 @@ export default function ClientsPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const remove = async () => {
+    if (!pendingDelete) return;
+    const res = await fetch(`/api/clients/${pendingDelete.id}`, { method: "DELETE" });
+    setPendingDelete(null);
+    if (!res.ok) {
+      setError(t("failedDeleteClient"));
+      return;
+    }
+    await load();
   };
 
   return (
@@ -158,15 +171,25 @@ export default function ClientsPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <Link href={`/clients/${c.id}`} className="font-semibold text-brand hover:underline">
-                      {t("view")}
-                    </Link>
+                    <div className="flex items-center gap-3">
+                      <Link href={`/clients/${c.id}`} className="font-semibold text-brand hover:underline">
+                        {t("view")}
+                      </Link>
+                      {c.active && (
+                        <button onClick={() => setPendingDelete(c)} className="font-semibold text-error hover:underline">
+                          {t("delete")}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+      {pendingDelete && (
+        <ConfirmDialog itemName={pendingDelete.name} onCancel={() => setPendingDelete(null)} onConfirm={remove} />
       )}
     </div>
   );
