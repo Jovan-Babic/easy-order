@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "functions": {
+    "server.py": {
+      "includeFiles": [
+        "public/app/**"
+      ]
+    }
+  }
+}

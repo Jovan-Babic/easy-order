@@ -1147,7 +1147,9 @@ async def seed_data():
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(api_router)
-app.mount("/app", StaticFiles(directory=ROOT_DIR / "public" / "app"), name="app-downloads")
+APP_DOWNLOADS_DIR = ROOT_DIR / "public" / "app"
+if APP_DOWNLOADS_DIR.is_dir():
+    app.mount("/app", StaticFiles(directory=APP_DOWNLOADS_DIR), name="app-downloads")
 
 app.add_middleware(
     CORSMiddleware,
