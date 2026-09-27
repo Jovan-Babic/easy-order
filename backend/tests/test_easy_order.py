@@ -150,6 +150,7 @@ class TestOrderSnapshot:
                 "manufacturer": "TEST_ManuX",
                 "price_no_vat": 450,
                 "vat_rate": 20,
+                "discount": 5,  # server only accepts discounts the product allows
                 "pieces_per_package": 6,
                 "boxes_per_transport": 2,
             },

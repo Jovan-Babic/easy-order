@@ -34,11 +34,27 @@ load_dotenv(ROOT_DIR / '.env')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-insecure-secret-change-me")
+# Production = explicit APP_ENV=production, or any public Vercel deployment
+# (production and preview URLs are both reachable from the internet).
+IS_PRODUCTION = (
+    os.environ.get("APP_ENV", "").lower() == "production"
+    or os.environ.get("VERCEL_ENV", "") in ("production", "preview")
+)
+DEV_JWT_SECRET = "dev-insecure-secret-change-me"
+DEFAULT_SUPERADMIN_PASSWORD = "ChangeMe123!"
+
+JWT_SECRET = os.environ.get("JWT_SECRET", "")
+if not JWT_SECRET:
+    if IS_PRODUCTION:
+        # Fail fast: with the public dev fallback anyone could sign a valid
+        # superadmin token, so refusing to start is the only safe option.
+        raise RuntimeError("JWT_SECRET must be set in production")
+    logger.warning("JWT_SECRET not set - using insecure dev secret (never do this in production)")
+    JWT_SECRET = DEV_JWT_SECRET
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "720"))
 PASSWORD_RESET_EXPIRE_MINUTES = int(os.environ.get("PASSWORD_RESET_EXPIRE_MINUTES", "30"))
 SUPERADMIN_EMAIL = os.environ.get("SUPERADMIN_EMAIL", "admin@easyorder.dev")
-SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD", "ChangeMe123!")
+SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD", DEFAULT_SUPERADMIN_PASSWORD)
 DEMO_ADMIN_EMAIL = os.environ.get("DEMO_ADMIN_EMAIL", "demo-admin@easyorder.dev")
 DEMO_ADMIN_PASSWORD = os.environ.get("DEMO_ADMIN_PASSWORD", "ChangeMe123!")
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
@@ -255,7 +271,9 @@ class ProductInput(BaseModel):
     manufacturer: Optional[str] = ""
     price_no_vat: Optional[float] = 0
     vat_rate: Optional[float] = 20
-    discount: Optional[float] = 0
+    # None = "not sent". On update this keeps the stored value; a default of 0
+    # made "not sent" and "explicitly 0" indistinguishable.
+    discount: Optional[float] = None
     discounts: Optional[List[float]] = None
     additional_discounts: Optional[List[int]] = None
     pieces_per_package: Optional[int] = 0
@@ -288,10 +306,20 @@ class Order(BaseModel):
     created_at: str = Field(default_factory=now_iso)
 
 
+class OrderItemInput(BaseModel):
+    """What the client may decide per line. Everything else (name, price, VAT,
+    packaging...) is snapshotted server-side from the stored Product. Extra
+    fields that older clients still send (price_no_vat, name, ...) are ignored."""
+    product_id: str
+    ordered_qty: int
+    discount: Optional[float] = None  # must be one of product.discounts; None = product default
+    additional_discount: Optional[float] = None  # must be one of product.additional_discounts
+
+
 class OrderInput(BaseModel):
     customer_id: str
-    customer_name: str
-    items: List[OrderItem] = []
+    customer_name: Optional[str] = None  # ignored - taken from the stored Customer
+    items: List[OrderItemInput] = []
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
 
 
@@ -514,6 +542,15 @@ async def find_user_by_email(email: str) -> Optional[dict]:
     )
 
 
+async def client_is_active(client_id: Optional[str]) -> bool:
+    """Superadmins have no client. For everyone else, a soft-deleted
+    (active=False) or missing client locks out all of its users."""
+    if not client_id:
+        return True
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "active": 1})
+    return bool(client and client.get("active", True))
+
+
 security = HTTPBearer(auto_error=False)
 
 
@@ -529,6 +566,10 @@ async def get_current_user(
     raw = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0})
     if not raw or not raw.get("active", True):
         raise HTTPException(status_code=401, detail="User not found or inactive")
+    # Checked on every request (not only at login) so deactivating a client
+    # also cuts off tokens that were issued before the deactivation.
+    if not await client_is_active(raw.get("client_id")):
+        raise HTTPException(status_code=401, detail="Client account is disabled")
     return User(**raw)
 
 
@@ -538,6 +579,11 @@ def require_roles(*roles: Role):
             raise HTTPException(status_code=403, detail="Forbidden")
         return user
     return _dep
+
+
+# Admin-level writes (catalog, customers, deleting orders). Operators only
+# read the catalog and create orders.
+require_manager = require_roles(Role.SUPERADMIN, Role.ADMIN)
 
 
 # ---------------- Tenant scoping helpers ----------------
@@ -595,6 +641,9 @@ async def login(inp: LoginInput):
     raw = await find_user_by_email(inp.email)
     if not raw or not raw.get("active", True) or not verify_password(inp.password, raw["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    # After the password check, so this can't be used to probe which emails exist.
+    if not await client_is_active(raw.get("client_id")):
+        raise HTTPException(status_code=403, detail="Client account is disabled")
     token = create_access_token(raw)
     return TokenResponse(access_token=token, user=User(**raw))
 
@@ -604,7 +653,7 @@ async def forgot_password(inp: ForgotPasswordInput):
     user = await find_user_by_email(inp.email)
     debug_token: Optional[str] = None
 
-    if user and user.get("active", True):
+    if user and user.get("active", True) and await client_is_active(user.get("client_id")):
         raw_token = await _create_password_reset_token_record(user, inp.channel)
         reset_link = _build_reset_link(raw_token, inp.channel)
         try:
@@ -665,7 +714,10 @@ async def logout(current_user: User = Depends(get_current_user)):
 
 
 @api_router.post("/upload-image")
-async def upload_product_image(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+async def upload_product_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN)),
+):
     if not cloudinary_available():
         raise HTTPException(
             status_code=500,
@@ -785,8 +837,21 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
     if current_user.role == Role.OPERATOR:
         raise HTTPException(status_code=403, detail="Forbidden")
     target = await get_scoped_or_404("users", user_id, current_user)
-    if current_user.role == Role.ADMIN and inp.role is not None and inp.role != Role.OPERATOR:
-        raise HTTPException(status_code=403, detail="Admins cannot assign this role")
+    if current_user.role == Role.ADMIN:
+        is_self = target["id"] == current_user.id
+        if not is_self and target.get("role") != Role.OPERATOR:
+            # Otherwise one admin could reset another admin's password and
+            # take over their account, or deactivate them.
+            raise HTTPException(status_code=403, detail="Admins can only manage operators")
+        # Compare against the stored values: the admin-web edit form always
+        # sends `active` (and may send the current role), so only an actual
+        # change is rejected - re-sending the same value is fine.
+        role_changes = inp.role is not None and inp.role != target.get("role")
+        active_changes = inp.active is not None and inp.active != target.get("active", True)
+        if is_self and (role_changes or active_changes):
+            raise HTTPException(status_code=403, detail="Cannot change your own role or status")
+        if inp.role is not None and inp.role != Role.OPERATOR:
+            raise HTTPException(status_code=403, detail="Admins cannot assign this role")
 
     updated = {**target}
     if inp.name is not None:
@@ -807,9 +872,11 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
 async def delete_user(user_id: str, current_user: User = Depends(get_current_user)):
     if current_user.role == Role.OPERATOR:
         raise HTTPException(status_code=403, detail="Forbidden")
-    await get_scoped_or_404("users", user_id, current_user)
+    target = await get_scoped_or_404("users", user_id, current_user)
     if user_id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    if current_user.role == Role.ADMIN and target.get("role") != Role.OPERATOR:
+        raise HTTPException(status_code=403, detail="Admins can only manage operators")
     await db.users.delete_one({"id": user_id})
     return {"ok": True}
 
@@ -822,7 +889,7 @@ async def list_customers(current_user: User = Depends(get_current_user)):
 
 
 @api_router.post("/customers", response_model=Customer)
-async def create_customer(inp: CustomerInput, current_user: User = Depends(get_current_user)):
+async def create_customer(inp: CustomerInput, current_user: User = Depends(require_manager)):
     client_id = await resolve_write_client_id(current_user, inp.client_id)
     obj = Customer(**inp.dict(exclude={"client_id"}), client_id=client_id)
     await db.customers.insert_one({**obj.dict(), "_id": obj.id})
@@ -830,7 +897,7 @@ async def create_customer(inp: CustomerInput, current_user: User = Depends(get_c
 
 
 @api_router.put("/customers/{customer_id}", response_model=Customer)
-async def update_customer(customer_id: str, inp: CustomerInput, current_user: User = Depends(get_current_user)):
+async def update_customer(customer_id: str, inp: CustomerInput, current_user: User = Depends(require_manager)):
     existing = await get_scoped_or_404("customers", customer_id, current_user)
     updated = {**existing, **inp.dict(exclude={"client_id"})}
     await db.customers.replace_one({"id": customer_id}, {**updated, "_id": customer_id})
@@ -838,7 +905,7 @@ async def update_customer(customer_id: str, inp: CustomerInput, current_user: Us
 
 
 @api_router.delete("/customers/{customer_id}")
-async def delete_customer(customer_id: str, current_user: User = Depends(get_current_user)):
+async def delete_customer(customer_id: str, current_user: User = Depends(require_manager)):
     await get_scoped_or_404("customers", customer_id, current_user)
     await db.customers.delete_one({"id": customer_id})
     return {"ok": True}
@@ -852,7 +919,7 @@ async def list_products(current_user: User = Depends(get_current_user)):
 
 
 @api_router.post("/products", response_model=Product)
-async def create_product(inp: ProductInput, current_user: User = Depends(get_current_user)):
+async def create_product(inp: ProductInput, current_user: User = Depends(require_manager)):
     client_id = await resolve_write_client_id(current_user, inp.client_id)
     payload = inp.dict(exclude={"client_id"})
     payload["discount"] = max(0.0, min(100.0, float(payload.get("discount") or 0)))
@@ -864,30 +931,62 @@ async def create_product(inp: ProductInput, current_user: User = Depends(get_cur
 
 
 @api_router.put("/products/{product_id}", response_model=Product)
-async def update_product(product_id: str, inp: ProductInput, current_user: User = Depends(get_current_user)):
+async def update_product(product_id: str, inp: ProductInput, current_user: User = Depends(require_manager)):
     existing = await get_scoped_or_404("products", product_id, current_user)
     incoming = inp.dict(exclude={"client_id"})
-    discount_value = max(0.0, min(100.0, float(incoming.get("discount") or existing.get("discount") or 0)))
+    # `is None`, not `or`: an explicit 0 must reset the discount, only a
+    # missing field keeps the stored one. Same for the two option lists.
+    raw_discount = inp.discount if inp.discount is not None else existing.get("discount")
+    discount_value = max(0.0, min(100.0, float(raw_discount or 0)))
+    discounts = inp.discounts if inp.discounts is not None else existing.get("discounts")
+    additional = (
+        inp.additional_discounts if inp.additional_discounts is not None else existing.get("additional_discounts")
+    )
     updated = {
         **existing,
         **incoming,
         "id": product_id,
         "discount": discount_value,
-        "discounts": normalize_discounts(inp.discounts, discount_value),
-        "additional_discounts": normalize_additional_discounts(inp.additional_discounts),
+        "discounts": normalize_discounts(discounts, discount_value),
+        "additional_discounts": normalize_additional_discounts(additional),
     }
     await db.products.replace_one({"id": product_id}, {**updated, "_id": product_id})
     return Product(**updated)
 
 
 @api_router.delete("/products/{product_id}")
-async def delete_product(product_id: str, current_user: User = Depends(get_current_user)):
+async def delete_product(product_id: str, current_user: User = Depends(require_manager)):
     await get_scoped_or_404("products", product_id, current_user)
     await db.products.delete_one({"id": product_id})
     return {"ok": True}
 
 
 # ---------------- Orders ----------------
+def _allowed_supplier_discount(product: dict, requested: Optional[float]) -> float:
+    """Supplier discount = product default, or another value the admin
+    whitelisted in product.discounts. Anything else is rejected."""
+    default = float(product.get("discount") or 0)
+    if requested is None:
+        return default
+    allowed = {float(v) for v in (product.get("discounts") or [])} | {default}
+    if float(requested) not in allowed:
+        raise HTTPException(status_code=400, detail=f"Discount {requested}% is not allowed for {product['name']}")
+    return float(requested)
+
+
+def _allowed_additional_discount(product: dict, requested: Optional[float]) -> float:
+    """Additional discount must be one of product.additional_discounts
+    (0 = none is always allowed)."""
+    if not requested:
+        return 0.0
+    allowed = {float(v) for v in (product.get("additional_discounts") or [])}
+    if float(requested) not in allowed:
+        raise HTTPException(
+            status_code=400, detail=f"Additional discount {requested}% is not allowed for {product['name']}"
+        )
+    return float(requested)
+
+
 @api_router.get("/orders", response_model=List[Order])
 async def list_orders(
     customer_id: Optional[str] = None,
@@ -915,16 +1014,51 @@ async def get_order(order_id: str, current_user: User = Depends(get_current_user
 @api_router.post("/orders", response_model=Order)
 async def create_order(inp: OrderInput, current_user: User = Depends(get_current_user)):
     client_id = await resolve_write_client_id(current_user, inp.client_id)
-    obj = Order(**inp.dict(exclude={"client_id"}), client_id=client_id)
-    for item in obj.items:
-        item.discount = max(0.0, min(100.0, float(item.discount or 0)))
-        item.additional_discount = max(0.0, min(100.0, float(item.additional_discount or 0)))
+    if not inp.items:
+        raise HTTPException(status_code=400, detail="Order must contain at least one item")
+
+    # Customer and products are looked up inside this client only, so an
+    # order can't reference another tenant's data.
+    customer = await db.customers.find_one({"id": inp.customer_id, "client_id": client_id}, {"_id": 0})
+    if not customer:
+        raise HTTPException(status_code=400, detail="Customer not found")
+
+    product_ids = list({line.product_id for line in inp.items})
+    product_docs = await db.products.find(
+        {"id": {"$in": product_ids}, "client_id": client_id}, {"_id": 0}
+    ).to_list(None)
+    products = {p["id"]: p for p in product_docs}
+
+    items: List[OrderItem] = []
+    for line in inp.items:
+        product = products.get(line.product_id)
+        if not product:
+            raise HTTPException(status_code=400, detail=f"Product not found: {line.product_id}")
+        if line.ordered_qty <= 0:
+            raise HTTPException(status_code=400, detail=f"Quantity must be positive for {product['name']}")
+        # Snapshot from the stored product - never from the payload - so a
+        # client can't set its own price/VAT/discount.
+        items.append(OrderItem(
+            product_id=product["id"],
+            name=product["name"],
+            image=product.get("image", ""),
+            manufacturer=product.get("manufacturer", ""),
+            price_no_vat=product.get("price_no_vat", 0),
+            vat_rate=product.get("vat_rate", 20),
+            pieces_per_package=product.get("pieces_per_package", 0),
+            boxes_per_transport=product.get("boxes_per_transport", 0),
+            discount=_allowed_supplier_discount(product, line.discount),
+            additional_discount=_allowed_additional_discount(product, line.additional_discount),
+            ordered_qty=line.ordered_qty,
+        ))
+
+    obj = Order(client_id=client_id, customer_id=customer["id"], customer_name=customer["name"], items=items)
     await db.orders.insert_one({**obj.dict(), "_id": obj.id})
     return obj
 
 
 @api_router.delete("/orders/{order_id}")
-async def delete_order(order_id: str, current_user: User = Depends(get_current_user)):
+async def delete_order(order_id: str, current_user: User = Depends(require_manager)):
     await get_scoped_or_404("orders", order_id, current_user)
     await db.orders.delete_one({"id": order_id})
     return {"ok": True}
@@ -1135,14 +1269,20 @@ async def seed_data():
         demo_client_id = first["id"]
 
     if not await find_user_by_email(SUPERADMIN_EMAIL):
+        if SUPERADMIN_PASSWORD == DEFAULT_SUPERADMIN_PASSWORD:
+            if IS_PRODUCTION:
+                # The default password is public (it's in the repo), so never
+                # create a production superadmin with it. Skip instead of
+                # crashing so an already-seeded deployment keeps running.
+                logger.error("SUPERADMIN_PASSWORD not set - refusing to create superadmin with the default password")
+                return
+            logger.warning(
+                "SUPERADMIN_PASSWORD not set in backend/.env - using an insecure default password."
+            )
         superadmin = User(email=SUPERADMIN_EMAIL, name="Super Admin", role=Role.SUPERADMIN, client_id=None)
         raw = superadmin.dict()
         raw["password_hash"] = hash_password(SUPERADMIN_PASSWORD)
         await db.users.insert_one({**raw, "_id": superadmin.id})
-        if SUPERADMIN_PASSWORD == "ChangeMe123!":
-            logger.warning(
-                "SUPERADMIN_PASSWORD not set in backend/.env - using an insecure default password."
-            )
 
 
 app = FastAPI(lifespan=lifespan)
