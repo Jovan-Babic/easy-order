@@ -1,7 +1,7 @@
 {
   "enabled": true,
-  "version": "1.1.1",
-  "download_url": "/app/easy-order-v1.1.1.apk",
+  "version": "1.2.0",
+  "download_url": "https://github.com/Jovan-Babic/easy-order/releases/download/v1.2.0/easy-order.apk",
   "build_date": "27.09.2026",
   "release_notes": "Nova verzija aplikacije"
 }
