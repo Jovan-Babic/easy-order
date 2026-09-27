@@ -1,0 +1,67 @@
+# Over-the-air update (EAS Update) for JS/TS-only changes: screens, logic,
+# translations, images. Installed apps download it on their next start and
+# offer a restart - no APK, no app-update.json change, no backend deploy.
+# Run it from GitHub: Actions -> "OTA update" -> Run workflow.
+#
+# Always publish from here, not with `eas update` on your machine: the bundle
+# inlines EXPO_PUBLIC_* env vars at publish time, and a local frontend/.env
+# (LAN IP for Expo Go) would ship a backend URL phones can't reach.
+#
+# Only reaches APKs with the same native fingerprint (runtimeVersion policy
+# "fingerprint" in app.json). If the change touched native code, nothing
+# breaks - the update just won't apply; release a new APK instead.
+name: OTA update
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Opis izmene (vidi se na expo.dev)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ota-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Check secret
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          [ -n "$EXPO_TOKEN" ] || { echo "::error::Missing EXPO_TOKEN secret"; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install app dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Publish update
+        working-directory: frontend
+        env:
+          MESSAGE: ${{ inputs.message }}
+        run: |
+          # Same backend URL the APK was built with (eas.json "apk" profile).
+          export EXPO_PUBLIC_BACKEND_URL=$(jq -r '.build.apk.env.EXPO_PUBLIC_BACKEND_URL' eas.json)
+          echo "Backend URL in bundle: $EXPO_PUBLIC_BACKEND_URL"
+          eas update --channel production --platform android --message "$MESSAGE" --non-interactive

@@ -41,8 +41,8 @@ npm install    # runs scripts/cmd-guard.js --preinstall first (see below)
 npm start      # expo start
 npm run lint
 npx tsc --noEmit
-eas build -p android --profile apk   # APK pointing at the production backend (see eas.json)
 ```
+Production APKs and OTA updates are published by GitHub Actions workflows, not locally (see "Mobile app distribution" below).
 `frontend/.env` needs `EXPO_PUBLIC_BACKEND_URL` (a phone can't reach `localhost` — use the LAN IP). Env vars are only inlined when written literally as `process.env.EXPO_PUBLIC_X`. Typed routes (`.expo/types/router.d.ts`) regenerate on `expo start`; a new screen gives tsc errors until then.
 
 ### Admin portal (`admin-web/`)
@@ -67,12 +67,12 @@ npx tsc --noEmit
 - **Money math:** `backend/calc.py` is the source of truth. `frontend/src/calc.ts` duplicates it for the unsaved-order preview and the invoice — keep both in sync. admin-web has no copy (uses `totals`/`line_net`).
 - **Product images:** `/upload-image` accepts JPEG/PNG/WEBP/HEIC up to 4 MB (Vercel's body limit is 4.5 MB), Cloudinary stores it shrunk (max 1000px, WEBP). Replaced/deleted product images are removed from Cloudinary (`_delete_product_image`), only for URLs in the `easy-order/products` folder.
 - **Production guard:** `IS_PRODUCTION` = `APP_ENV=production` or `VERCEL_ENV` production/preview. There, a missing `JWT_SECRET` stops startup, and the default superadmin password is refused. Demo data is seeded only with `SEED_DEMO_DATA=true` and never in production.
-- **Mobile app distribution:** `backend/public/app/` holds exactly one APK plus `app-update.json` (`version`, `download_url`, `build_date`, `release_notes`), served via `StaticFiles` at `/app/*` and `GET /api/app/update`. `vercel.json` bundles that folder into the function. Release = bump `frontend/app.json` `version`, build, replace the APK (delete the old one), update `app-update.json` to the same version.
+- **Mobile app distribution:** `GET /api/app/update` serves `backend/public/app/app-update.json` (`version`, `download_url`, `build_date`, `release_notes`). APKs are GitHub Releases, never committed (`*.apk` is gitignored); `download_url` is the versioned release URL. Releases go through `.github/workflows/release-android.yml` (sets `app.json` version, EAS build, GitHub Release, updates the JSON); JS-only changes through `ota-update.yml` (EAS Update, channel `production`, `runtimeVersion` policy `fingerprint`). Don't bump `app.json` `version` by hand and don't run `eas update` locally (it would inline the local `.env` backend URL). Details: `.claude/DOCS/IZDANJE_APLIKACIJE.md`.
 
 When adding a product field: add it to `Product`, `ProductInput`, `OrderItem` and the snapshot in `create_order`, then to `frontend/src/api.ts` and the catalog → invoice flow.
 
 ### Mobile app (`frontend/`)
-- `app/_layout.tsx` — `RouteGuard`: unauthenticated → `/login`; `must_change_password` → `/change-password`; also the Android update prompt (compares `app-update.json` version with `app.json` version).
+- `app/_layout.tsx` — `RouteGuard`: unauthenticated → `/login`; `must_change_password` → `/change-password`; the Android APK update prompt (compares `app-update.json` version with `app.json` version); and the OTA restart prompt (`Updates.useUpdates().isUpdatePending`).
 - `app/(tabs)/index.tsx` catalog/order (FlatList), `history.tsx`, `admin.tsx` (customers/products CRUD, hidden for operators); `invoice.tsx`, `login.tsx`, `change-password.tsx`, `forgot-password.tsx`, `reset-password.tsx`.
 - `src/api.ts` — the only place that talks to the backend; throws `ApiError` (`status`, `detail`). 401 → logout handler, 403 "Password change required" → flag the user. Types mirror the backend models.
 - `src/context/AuthContext.tsx` — token in SecureStore, `login`/`logout`/`changePassword` (stores the fresh token the backend returns).

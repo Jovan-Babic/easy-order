@@ -67,6 +67,12 @@
         "projectId": "3911ae84-9b6f-4c4f-8385-727261e384c0"
       }
     },
-    "owner": "jbgenie"
+    "owner": "jbgenie",
+    "updates": {
+      "url": "https://u.expo.dev/3911ae84-9b6f-4c4f-8385-727261e384c0"
+    },
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    }
   }
 }

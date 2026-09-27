@@ -1,5 +1,6 @@
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
+import * as Updates from "expo-updates";
 import Constants from "expo-constants";
 import { useEffect, useRef } from "react";
 import { Alert, Image, Linking, Platform, StyleSheet, View } from "react-native";
@@ -30,6 +31,11 @@ function RouteGuard({
   const segments = useSegments();
   const router = useRouter();
   const updateChecked = useRef(false);
+  const otaPrompted = useRef(false);
+  // expo-updates checks for an OTA (EAS Update) on every launch and downloads
+  // it in the background; without a reload it only applies on the next cold
+  // start. isUpdatePending = downloaded and ready.
+  const { isUpdatePending } = Updates.useUpdates();
 
   useEffect(() => {
     if (fontsReady) {
@@ -85,6 +91,17 @@ function RouteGuard({
 
     checkForUpdate();
   }, [status, t]);
+
+  useEffect(() => {
+    if (!isUpdatePending || otaPrompted.current) return;
+    otaPrompted.current = true;
+    // "Later" is safe: the update is applied on the next app start anyway,
+    // so a rep in the middle of an order isn't forced to lose their drafts.
+    Alert.alert(t("otaReadyTitle"), t("otaReadyMessage"), [
+      { text: t("appUpdateLater"), style: "cancel" },
+      { text: t("otaRestartNow"), onPress: () => Updates.reloadAsync().catch(() => {}) },
+    ]);
+  }, [isUpdatePending, t]);
 
   if (status === "loading") {
     return (

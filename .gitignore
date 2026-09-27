@@ -87,3 +87,7 @@ credentials.json
 *.key
 .credentials
 .env*
+
+# Android builds are published as GitHub Releases (see .github/workflows/release-android.yml), never committed.
+*.apk
+*.aab

@@ -15,11 +15,7 @@ Nastavak na `IZMENE_BEZBEDNOST.md`. Ovde je sve što je urađeno u drugoj rundi 
 4. **Postojeći korisnici** se ne odjavljuju i ne moraju da menjaju lozinku. Obaveza promene važi samo za nove naloge.
 
 ### Izdavanje APK-a 1.2.0
-1. `frontend/app.json` je već podignut na `1.2.0`.
-2. `eas build -p android --profile apk`
-3. U `backend/public/app/` obrisati `easy-order-v1.1.1.apk` i ubaciti `easy-order-v1.2.0.apk`. Uvek treba da postoji samo jedan APK.
-4. U `app-update.json` postaviti `version: "1.2.0"`, `download_url: "/app/easy-order-v1.2.0.apk"` i nov `build_date`.
-5. Deploy backend. Admin-web ne treba redeploy za novu verziju.
+~~Ručno: build, zamena fajla u `backend/public/app/`, izmena JSON-a.~~ **Zamenjeno automatizovanim tokom:** GitHub Actions → „Release Android" → verzija `1.2.0`. Vidi `IZDANJE_APLIKACIJE.md`. APK više ne ide u repo, nego na GitHub Releases, a uz to postoje i OTA izmene (EAS Update).
 
 ---
 
