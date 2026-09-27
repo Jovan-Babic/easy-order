@@ -5,7 +5,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -15,6 +14,7 @@ import { useApp } from "@/src/context/AppContext";
 import { api } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
+import { PasswordInput } from "@/src/components/PasswordInput";
 import { RESET_PASSWORD } from "@/constants/testIds";
 
 export default function ResetPasswordScreen() {
@@ -71,24 +71,22 @@ export default function ResetPasswordScreen() {
         <Text style={styles.title}>{t("resetPasswordTitle")}</Text>
         <View style={[styles.card, shadow.card]}>
           <Text style={styles.label}>{t("newPassword")}</Text>
-          <TextInput
+          <PasswordInput
             testID={RESET_PASSWORD.newPasswordInput}
             style={styles.input}
             value={newPassword}
             onChangeText={setNewPassword}
-            secureTextEntry
             placeholder="••••••••"
             placeholderTextColor={colors.muted}
             autoComplete="new-password"
           />
 
           <Text style={styles.label}>{t("confirmPassword")}</Text>
-          <TextInput
+          <PasswordInput
             testID={RESET_PASSWORD.confirmPasswordInput}
             style={styles.input}
             value={confirmPassword}
             onChangeText={setConfirmPassword}
-            secureTextEntry
             placeholder="••••••••"
             placeholderTextColor={colors.muted}
             autoComplete="new-password"

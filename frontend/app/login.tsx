@@ -16,6 +16,7 @@ import { useAuth } from "@/src/context/AuthContext";
 import { ApiError } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
+import { PasswordInput } from "@/src/components/PasswordInput";
 import { LOGIN } from "@/constants/testIds";
 
 export default function LoginScreen() {
@@ -70,12 +71,11 @@ export default function LoginScreen() {
             placeholderTextColor={colors.muted}
           />
           <Text style={styles.label}>{t("password")}</Text>
-          <TextInput
+          <PasswordInput
             testID={LOGIN.passwordInput}
             style={styles.input}
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
             placeholder="••••••••"
             placeholderTextColor={colors.muted}
           />

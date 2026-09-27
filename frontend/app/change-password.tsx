@@ -5,7 +5,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -15,6 +14,7 @@ import { useAuth } from "@/src/context/AuthContext";
 import { ApiError } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
+import { PasswordInput } from "@/src/components/PasswordInput";
 
 // Mirrors the backend rule (server.py _password_is_strong_enough).
 function isStrongEnough(password: string) {
@@ -65,33 +65,27 @@ export default function ChangePasswordScreen() {
           <Text style={styles.intro}>{t("changePasswordRequired")}</Text>
 
           <Text style={styles.label}>{t("currentPassword")}</Text>
-          <TextInput
+          <PasswordInput
             style={styles.input}
             value={currentPassword}
             onChangeText={setCurrentPassword}
-            secureTextEntry
-            autoCapitalize="none"
             autoComplete="current-password"
           />
 
           <Text style={styles.label}>{t("newPassword")}</Text>
-          <TextInput
+          <PasswordInput
             style={styles.input}
             value={newPassword}
             onChangeText={setNewPassword}
-            secureTextEntry
-            autoCapitalize="none"
             autoComplete="new-password"
           />
           <Text style={styles.hint}>{t("passwordRules")}</Text>
 
           <Text style={styles.label}>{t("confirmPassword")}</Text>
-          <TextInput
+          <PasswordInput
             style={styles.input}
             value={confirmPassword}
             onChangeText={setConfirmPassword}
-            secureTextEntry
-            autoCapitalize="none"
             autoComplete="new-password"
           />
 
