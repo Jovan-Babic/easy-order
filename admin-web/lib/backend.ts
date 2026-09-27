@@ -11,6 +11,12 @@ function requireBackendUrl() {
   return BACKEND_URL;
 }
 
+// Turns a backend-relative path (e.g. "/app/easy-order-v1.1.1.apk") into a
+// full URL the browser can open. Absolute URLs pass through unchanged.
+export function backendPublicUrl(pathOrUrl: string) {
+  return new URL(pathOrUrl, requireBackendUrl()).toString();
+}
+
 // Server-to-server call to FastAPI, forwarding the session cookie as a
 // Bearer token. Never called from the browser - route handlers are the only
 // callers, so this never crosses browser CORS.

@@ -12,6 +12,7 @@ import re
 import secrets
 import smtplib
 import logging
+import mimetypes
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict, Any
@@ -1287,6 +1288,9 @@ async def seed_data():
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(api_router)
+# Not every OS registers .apk (Windows doesn't), and without it StaticFiles
+# serves the APK as text/plain, which some Android browsers won't install.
+mimetypes.add_type("application/vnd.android.package-archive", ".apk")
 APP_DOWNLOADS_DIR = ROOT_DIR / "public" / "app"
 if APP_DOWNLOADS_DIR.is_dir():
     app.mount("/app", StaticFiles(directory=APP_DOWNLOADS_DIR), name="app-downloads")

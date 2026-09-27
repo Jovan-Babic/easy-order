@@ -1,109 +1,52 @@
-"use client";
+import { backendFetch, backendPublicUrl } from "@/lib/backend";
+import { AppDownloads, AndroidRelease } from "@/components/AppDownloads";
 
-import { useLanguage } from "@/lib/i18n";
+type AppUpdate = {
+  enabled?: boolean;
+  version?: string;
+  download_url?: string;
+  build_date?: string;
+};
 
-const androidApkUrl = process.env.NEXT_PUBLIC_ANDROID_APK_URL;
-const androidVersion = process.env.NEXT_PUBLIC_ANDROID_APP_VERSION;
-const androidBuildDate = process.env.NEXT_PUBLIC_ANDROID_BUILD_DATE;
-const showAndroidSection = process.env.NEXT_PUBLIC_SHOW_ANDROID_APP_SECTION === "true";
-
-const iosAppUrl = process.env.NEXT_PUBLIC_IOS_APP_URL;
-const iosVersion = process.env.NEXT_PUBLIC_IOS_APP_VERSION;
-const iosBuildDate = process.env.NEXT_PUBLIC_IOS_BUILD_DATE;
-const showIosSection = process.env.NEXT_PUBLIC_SHOW_IOS_APP_SECTION === "true";
-
-function getFileNameFromUrl(url: string) {
+// Android release info comes from the backend's /api/app/update (i.e.
+// backend/public/app/app-update.json) - the same source the mobile app's
+// update prompt uses, so the two can't drift apart. Fetched server-side, so
+// the browser never calls the backend directly (no CORS), and it's read per
+// request, so publishing a new APK needs no admin-web redeploy.
+async function getAndroidRelease(): Promise<AndroidRelease | null> {
   try {
-    const parsed = new URL(url);
-    const segments = parsed.pathname.split("/").filter(Boolean);
-    return segments[segments.length - 1] ?? "android.apk";
+    const res = await backendFetch("/app/update");
+    if (!res.ok) return null;
+    const data = (await res.json()) as AppUpdate;
+    if (!data.enabled || !data.download_url) return null;
+    return {
+      url: backendPublicUrl(data.download_url),
+      version: data.version ?? null,
+      buildDate: data.build_date ?? null,
+    };
   } catch {
-    return "android.apk";
+    return null;
   }
 }
 
-export default function AppDownloadsPage() {
-  const { t } = useLanguage();
-  const activeSections = Number(showAndroidSection) + Number(showIosSection);
+export default async function AppDownloadsPage() {
+  // Env vars are only a fallback for when the backend has no release published.
+  const android = (await getAndroidRelease()) ?? {
+    url: process.env.NEXT_PUBLIC_ANDROID_APK_URL || null,
+    version: process.env.NEXT_PUBLIC_ANDROID_APP_VERSION || null,
+    buildDate: process.env.NEXT_PUBLIC_ANDROID_BUILD_DATE || null,
+  };
 
   return (
-    <div>
-      <h1 className="mb-2 text-2xl font-extrabold text-onSurface">{t("appDownloads")}</h1>
-      <p className="mb-6 text-sm text-muted">{t("appDownloadsSubtitle")}</p>
-
-      {activeSections === 0 && (
-        <div className="mb-4 rounded-lg border border-border bg-surfaceSecondary p-6 text-sm text-onSurfaceSecondary shadow-sm">
-          {t("appNotReady")}
-        </div>
-      )}
-
-      <div className={`grid gap-4 ${activeSections > 1 ? "md:grid-cols-2" : "md:grid-cols-1"}`}>
-        {showAndroidSection && (
-          <section className="rounded-lg bg-surfaceSecondary p-6 shadow-sm">
-            <h2 className="mb-2 text-lg font-bold text-onSurface">{t("android")}</h2>
-            <p className="mb-4 text-sm text-onSurfaceSecondary">{t("androidDescription")}</p>
-
-            <div className="mb-4 rounded-md border border-border bg-surface p-3 text-sm">
-              <p className="text-onSurface">
-                <span className="font-semibold">{t("version")}:</span> {androidVersion || "—"}
-              </p>
-              <p className="mt-1 text-onSurface">
-                <span className="font-semibold">{t("buildDate")}:</span> {androidBuildDate || "—"}
-              </p>
-              <p className="mt-1 truncate text-onSurfaceSecondary">
-                <span className="font-semibold text-onSurface">{t("file")}:</span>{" "}
-                {androidApkUrl ? getFileNameFromUrl(androidApkUrl) : "android.apk"}
-              </p>
-            </div>
-
-            {androidApkUrl ? (
-              <a
-                href={androidApkUrl}
-                className="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-                download
-              >
-                {t("downloadApk")}
-              </a>
-            ) : (
-              <div className="rounded-md border border-border bg-surface p-4 text-sm text-onSurfaceSecondary">
-                <p className="font-semibold text-onSurface">{t("androidNotAvailable")}</p>
-                <p className="mt-2">{t("androidFuture")}</p>
-              </div>
-            )}
-          </section>
-        )}
-
-        {showIosSection && (
-          <section className="rounded-lg bg-surfaceSecondary p-6 shadow-sm">
-            <h2 className="mb-2 text-lg font-bold text-onSurface">{t("ios")}</h2>
-            <p className="mb-4 text-sm text-onSurfaceSecondary">{t("iOSDescription")}</p>
-
-            <div className="mb-4 rounded-md border border-border bg-surface p-3 text-sm">
-              <p className="text-onSurface">
-                <span className="font-semibold">{t("version")}:</span> {iosVersion || "—"}
-              </p>
-              <p className="mt-1 text-onSurface">
-                <span className="font-semibold">{t("buildDate")}:</span> {iosBuildDate || "—"}
-              </p>
-              <p className="mt-1 truncate text-onSurfaceSecondary">
-                <span className="font-semibold text-onSurface">{t("link")}:</span>{" "}
-                {iosAppUrl || "—"}
-              </p>
-            </div>
-
-            {iosAppUrl ? (
-              <a
-                href={iosAppUrl}
-                className="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-              >
-                {t("openIOSDistribution")}
-              </a>
-            ) : (
-              <p className="text-xs text-muted">{t("iosNotActivated")}</p>
-            )}
-          </section>
-        )}
-      </div>
-    </div>
+    <AppDownloads
+      showAndroid={process.env.NEXT_PUBLIC_SHOW_ANDROID_APP_SECTION === "true"}
+      showIos={process.env.NEXT_PUBLIC_SHOW_IOS_APP_SECTION === "true"}
+      android={android}
+      ios={{
+        url: process.env.NEXT_PUBLIC_IOS_APP_URL || null,
+        version: process.env.NEXT_PUBLIC_IOS_APP_VERSION || null,
+        buildDate: process.env.NEXT_PUBLIC_IOS_BUILD_DATE || null,
+      }}
+    />
   );
 }
