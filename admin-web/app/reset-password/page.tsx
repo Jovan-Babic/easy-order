@@ -2,12 +2,11 @@
 
 import Link from "next/link";
 import { Suspense, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useLanguage } from "@/lib/i18n";
 
 function ResetPasswordContent() {
   const { t } = useLanguage();
-  const router = useRouter();
   const searchParams = useSearchParams();
   const token = useMemo(() => searchParams.get("token") || "", [searchParams]);
 
@@ -49,10 +48,9 @@ function ResetPasswordContent() {
         return;
       }
 
+      // No redirect to the portal login: this page is also where operators
+      // land from the reset email, and they sign in in the mobile app.
       setMessage(t("resetPasswordSuccess"));
-      setTimeout(() => {
-        router.push("/login");
-      }, 800);
     } finally {
       setSubmitting(false);
     }

@@ -28,7 +28,8 @@ export default function ForgotPasswordPage() {
         return;
       }
       const body = await res.json().catch(() => ({}));
-      setMessage(body.message || t("resetEmailSent"));
+      // Always the translated text - the backend message is English-only.
+      setMessage(t("resetEmailSent"));
     } finally {
       setSubmitting(false);
     }

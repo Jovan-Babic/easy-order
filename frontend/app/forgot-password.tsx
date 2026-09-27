@@ -34,7 +34,8 @@ export default function ForgotPasswordScreen() {
     setSubmitting(true);
     try {
       const response = await api.requestPasswordReset(email.trim(), "mobile");
-      setMessage(response.message || t("resetEmailSent"));
+      // Always the translated text - the backend message is English-only.
+      setMessage(t("resetEmailSent"));
     } catch {
       setError(t("resetRequestFailed"));
     } finally {

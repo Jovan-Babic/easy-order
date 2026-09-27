@@ -536,9 +536,12 @@ def _hash_reset_token(token: str) -> str:
 
 
 def _build_reset_link(token: str, channel: ForgotPasswordChannel) -> str:
+    # Always the https web page, also for requests from the mobile app: email
+    # clients (Gmail etc.) don't make custom-scheme links like easy-order://
+    # clickable and spam filters distrust them, so those emails got lost. The
+    # web reset page needs no login and works for every role; the new password
+    # applies to the app right away. `channel` is still stored on the token.
     encoded = quote(token, safe="")
-    if channel == ForgotPasswordChannel.MOBILE:
-        return f"{RESET_MOBILE_SCHEME}?token={encoded}"
     sep = "&" if "?" in RESET_WEB_URL else "?"
     return f"{RESET_WEB_URL}{sep}token={encoded}"
 
@@ -569,6 +572,11 @@ def _send_smtp_email_sync(to_email: str, subject: str, plain_text_body: str) -> 
 
 def _build_reset_email_body(user_name: str, reset_link: str) -> str:
     return (
+        f"Zdravo {user_name or ''},\n\n"
+        "Primili smo zahtev za promenu lozinke za Easy Order.\n"
+        f"Novu lozinku postavite preko ovog linka:\n{reset_link}\n\n"
+        f"Link važi {PASSWORD_RESET_EXPIRE_MINUTES} minuta. Ako niste vi poslali zahtev, zanemarite ovaj email.\n\n"
+        "---\n"
         f"Hi {user_name or 'there'},\n\n"
         "We received a request to reset your Easy Order password.\n"
         f"Use this link to set a new password:\n{reset_link}\n\n"
@@ -673,7 +681,7 @@ async def _send_reset_email(to_email: str, user_name: str, reset_link: str) -> N
         return
 
     body = _build_reset_email_body(user_name, reset_link)
-    await asyncio.to_thread(_send_smtp_email_sync, to_email, "Easy Order - Password reset", body)
+    await asyncio.to_thread(_send_smtp_email_sync, to_email, "Easy Order - promena lozinke / password reset", body)
 
 
 async def _send_test_email(to_email: str, subject: str) -> None:

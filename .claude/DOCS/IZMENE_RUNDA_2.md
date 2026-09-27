@@ -165,6 +165,16 @@ Nastavak na `IZMENE_BEZBEDNOST.md`. Ovde je sve što je urađeno u drugoj rundi 
 
 ---
 
+## 12. Zaboravljena lozinka: prevod poruke i link u mejlu
+
+- **Poruka posle slanja zahteva** je sada uvek prevedena (`t("resetEmailSent")`), u mobilnoj aplikaciji i na webu. Ranije se prikazivala poruka sa backenda, koja je uvek na engleskom.
+- **Link u mejlu je uvek https link ka web stranici za reset**, i kad zahtev dolazi iz mobilne aplikacije. Ranije je mobilna aplikacija dobijala `easy-order://reset-password?token=...`, a mail klijenti (Gmail) takve linkove ne prikazuju kao klikabilne i spam filteri ih ne vole, pa su se mejlovi „gubili". Web stranica za reset ne traži prijavu i radi za sve uloge, a nova lozinka odmah važi i u mobilnoj aplikaciji.
+- **Web stranica za reset** posle uspeha više ne prebacuje na login portala, jer tu dolaze i operatori koji se na portal ne mogu prijaviti. Umesto toga piše „Sada se možete prijaviti u mobilnoj aplikaciji ili na portalu".
+- **Mejl za reset** je sada dvojezičan (SR i EN), kao i invite.
+- `RESET_MOBILE_SCHEME` se više ne koristi za link. Mobilni ekran `reset-password` i dalje postoji, ali ga mejl više ne otvara.
+
+---
+
 ## Otvoreno / za kasnije
 - Privremena lozinka nema rok trajanja. Važi dok je korisnik ne promeni.
 - Firma ne može ponovo da se aktivira kroz API.
