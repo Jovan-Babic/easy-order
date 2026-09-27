@@ -8,7 +8,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
@@ -16,35 +15,40 @@ import { useAuth } from "@/src/context/AuthContext";
 import { ApiError } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
-import { LOGIN } from "@/constants/testIds";
 
-export default function LoginScreen() {
+// Mirrors the backend rule (server.py _password_is_strong_enough).
+function isStrongEnough(password: string) {
+  return password.length >= 8 && /[A-Za-z]/.test(password) && /\d/.test(password);
+}
+
+// Shown by RouteGuard while user.must_change_password is true (invited user
+// or password set by an admin). Once changed, RouteGuard moves on to the tabs.
+export default function ChangePasswordScreen() {
   const { t } = useApp();
-  const { login, logout } = useAuth();
-  const router = useRouter();
+  const { changePassword, logout } = useAuth();
   const insets = useSafeAreaInsets();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const onSubmit = async () => {
-    if (!email.trim() || !password) return;
     setError(null);
+    if (!isStrongEnough(newPassword)) {
+      setError(t("passwordRules"));
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError(t("passwordMismatch"));
+      return;
+    }
     setSubmitting(true);
     try {
-      const user = await login(email.trim(), password);
-      // SuperAdmin's real workspace is the admin web portal - the mobile
-      // Admin CRUD form has no UI for the client_id a SuperAdmin write needs.
-      if (user.role === "superadmin") {
-        await logout();
-        setError(t("useWebPortal"));
-      }
+      await changePassword(currentPassword, newPassword);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 429) setError(t("tooManyAttempts"));
-      else if (e instanceof ApiError && e.status === 403) setError(t("accountDisabled"));
-      else if (e instanceof ApiError) setError(t("invalidCredentials"));
-      else setError(t("networkError"));
+      setError(e instanceof ApiError && e.status === 400 ? e.detail : t("changePasswordFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -56,47 +60,54 @@ export default function LoginScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <View style={[styles.container, { paddingTop: insets.top + spacing.xxl }]}>
-        <Text style={styles.title}>{t("appName")}</Text>
+        <Text style={styles.title}>{t("changePassword")}</Text>
         <View style={[styles.card, shadow.card]}>
-          <Text style={styles.label}>{t("email")}</Text>
+          <Text style={styles.intro}>{t("changePasswordRequired")}</Text>
+
+          <Text style={styles.label}>{t("currentPassword")}</Text>
           <TextInput
-            testID={LOGIN.emailInput}
             style={styles.input}
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            placeholder="you@company.com"
-            placeholderTextColor={colors.muted}
-          />
-          <Text style={styles.label}>{t("password")}</Text>
-          <TextInput
-            testID={LOGIN.passwordInput}
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
+            value={currentPassword}
+            onChangeText={setCurrentPassword}
             secureTextEntry
-            placeholder="••••••••"
-            placeholderTextColor={colors.muted}
+            autoCapitalize="none"
+            autoComplete="current-password"
           />
 
-          <Pressable
-            testID={LOGIN.forgotPasswordLink}
-            onPress={() => router.push("/forgot-password")}
-            style={{ marginTop: spacing.sm, alignSelf: "flex-end" }}
-          >
-            <Text style={styles.forgotLink}>{t("forgotPassword")}</Text>
-          </Pressable>
+          <Text style={styles.label}>{t("newPassword")}</Text>
+          <TextInput
+            style={styles.input}
+            value={newPassword}
+            onChangeText={setNewPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoComplete="new-password"
+          />
+          <Text style={styles.hint}>{t("passwordRules")}</Text>
+
+          <Text style={styles.label}>{t("confirmPassword")}</Text>
+          <TextInput
+            style={styles.input}
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoComplete="new-password"
+          />
 
           {error && <Text style={styles.error}>{error}</Text>}
+
           <Button
-            testID={LOGIN.submitButton}
-            title={t("login")}
+            title={t("changePassword")}
             onPress={onSubmit}
             loading={submitting}
-            disabled={!email.trim() || !password}
+            disabled={!currentPassword || !newPassword || !confirmPassword}
             style={{ marginTop: spacing.lg }}
           />
+
+          <Pressable onPress={() => logout()} style={styles.backWrap}>
+            <Text style={styles.backText}>{t("logout")}</Text>
+          </Pressable>
         </View>
       </View>
     </KeyboardAvoidingView>
@@ -117,6 +128,10 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     padding: spacing.xl,
   },
+  intro: {
+    fontSize: font.base,
+    color: colors.onSurfaceSecondary,
+  },
   label: {
     fontSize: font.base,
     fontWeight: "600",
@@ -133,12 +148,21 @@ const styles = StyleSheet.create({
     fontSize: font.lg,
     color: colors.onSurface,
   },
+  hint: {
+    fontSize: font.sm,
+    color: colors.muted,
+    marginTop: spacing.xs,
+  },
   error: {
     color: colors.error,
     fontSize: font.base,
     marginTop: spacing.md,
   },
-  forgotLink: {
+  backWrap: {
+    alignSelf: "center",
+    marginTop: spacing.lg,
+  },
+  backText: {
     color: colors.brand,
     fontSize: font.base,
     fontWeight: "600",

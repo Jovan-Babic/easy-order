@@ -1,5 +1,7 @@
 # Bezbednosne izmene — septembar 2026.
 
+> Nastavak: `IZMENE_RUNDA_2.md` (invite nalozi, pravila za lozinku, limiti, Cloudinary, porudžbine, CI, mobilna 1.2.0).
+
 Ovaj dokument beleži šta je promenjeno posle review-a projekta i **zašto** je urađeno baš tako.
 Izmene su u `backend/server.py` i `admin-web/lib/session.ts`. Testovi su u `backend/tests/test_security_fixes.py`.
 

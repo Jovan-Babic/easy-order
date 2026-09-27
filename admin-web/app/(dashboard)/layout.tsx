@@ -12,6 +12,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
     redirect("/login");
   }
   const user = await res.json();
+  if (user.must_change_password) {
+    // Invited user (or password set by an admin): the backend rejects every
+    // business call until the temporary password is replaced.
+    redirect("/change-password?required=1");
+  }
 
   return (
     <SessionProvider user={user}>

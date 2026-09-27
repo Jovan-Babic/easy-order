@@ -51,6 +51,8 @@ const emptyForm = (): ProductFormState => ({
 });
 
 const discountOptions = [0, 5, 15, 25, 30];
+// Keep in sync with IMAGE_MAX_BYTES in backend/server.py (Vercel caps request bodies at 4.5 MB).
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const additionalDiscountOptions = Array.from({ length: 16 }, (_, i) => i);
 const vatRateOptions = [0, 10, 20];
 
@@ -87,13 +89,19 @@ export default function ProductsPage() {
 
   const load = async () => {
     setLoading(true);
-    const [pRes, cRes] = await Promise.all([
-      fetch("/api/products"),
-      isSuperAdmin ? fetch("/api/clients") : Promise.resolve(null),
-    ]);
-    setProducts(await pRes.json());
-    if (cRes) setClients(await cRes.json());
-    setLoading(false);
+    try {
+      const [pRes, cRes] = await Promise.all([
+        fetch("/api/products"),
+        isSuperAdmin ? fetch("/api/clients") : Promise.resolve(null),
+      ]);
+      if (!pRes.ok) throw new Error();
+      setProducts(await pRes.json());
+      if (cRes?.ok) setClients(await cRes.json());
+    } catch {
+      setError(t("loadFailed"));
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -149,25 +157,22 @@ export default function ProductsPage() {
     const vat = toNumber(form.vat_rate);
     const discount = toNumber(form.discount);
 
-    if (!form.name.trim()) nextErrors.name = "Name is required";
-    if (!form.price_no_vat.trim()) nextErrors.price_no_vat = "Price is required";
-    if (!Number.isFinite(price) || price < 0) nextErrors.price_no_vat = "Price must be 0 or greater";
-    if (!vatRateOptions.includes(vat)) {
-      nextErrors.vat_rate = "Use one of the suggested VAT options";
-    }
-    if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
-      nextErrors.discount = "Discount must be between 0 and 100";
-    }
-    if (!discountOptions.includes(discount)) {
-      nextErrors.discount = "Use one of the suggested discount options";
-    }
+    if (!form.name.trim()) nextErrors.name = t("nameRequired");
+    if (!form.price_no_vat.trim()) nextErrors.price_no_vat = t("priceRequired");
+    if (!Number.isFinite(price) || price < 0) nextErrors.price_no_vat = t("valueNonNegative");
+    if (!vatRateOptions.includes(vat)) nextErrors.vat_rate = t("vatInvalid");
+    // Any 0-100 value is valid (the backend accepts it). The chips are just
+    // shortcuts - a product saved elsewhere with e.g. 10% must stay editable.
+    // toNumber() turns garbage like "1.2.3" into 0, so check the raw input too.
+    const discountParses = Number.isFinite(Number(normalizeDecimal(form.discount.trim() || "0")));
+    if (!discountParses || discount < 0 || discount > 100) nextErrors.discount = t("discountInvalid");
     if (form.pieces_per_package && toInteger(form.pieces_per_package) < 0) {
-      nextErrors.pieces_per_package = "Value must be 0 or greater";
+      nextErrors.pieces_per_package = t("valueNonNegative");
     }
     if (form.boxes_per_transport && toInteger(form.boxes_per_transport) < 0) {
-      nextErrors.boxes_per_transport = "Value must be 0 or greater";
+      nextErrors.boxes_per_transport = t("valueNonNegative");
     }
-    if (isSuperAdmin && !form.client_id) nextErrors.client_id = "Client is required";
+    if (isSuperAdmin && !form.client_id) nextErrors.client_id = t("clientRequired");
 
     setFieldErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
@@ -175,6 +180,10 @@ export default function ProductsPage() {
 
   const updateImageFromFile = async (file: File | null) => {
     if (!file) return;
+    if (file.size > MAX_IMAGE_BYTES) {
+      setError(t("imageTooLarge"));
+      return;
+    }
 
     const formData = new FormData();
     formData.append("file", file);
@@ -186,13 +195,13 @@ export default function ProductsPage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || "Image upload failed");
+        setError(body.detail || t("imageUploadFailed"));
         return;
       }
       const json = await res.json();
       setForm((prev) => ({ ...prev, image: json.url }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Image upload failed");
+      setError(err instanceof Error ? err.message : t("imageUploadFailed"));
     }
   };
 
@@ -223,7 +232,7 @@ export default function ProductsPage() {
       const res = await fetch(endpoint, { method, body: JSON.stringify(payload) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || "Failed to save product");
+        setError(body.detail || t("productSaveFailed"));
         return;
       }
       closeForm();
@@ -235,8 +244,14 @@ export default function ProductsPage() {
 
   const remove = async () => {
     if (!pendingDelete) return;
-    await fetch(`/api/products/${pendingDelete.id}`, { method: "DELETE" });
+    const res = await fetch(`/api/products/${pendingDelete.id}`, { method: "DELETE" });
     setPendingDelete(null);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body.detail || t("deleteFailed"));
+      return;
+    }
+    setError(null);
     await load();
   };
 
@@ -263,6 +278,8 @@ export default function ProductsPage() {
           {t("newProduct")}
         </button>
       </div>
+
+      {!showForm && error && <p className="mb-4 text-sm text-error">{error}</p>}
 
       {showForm && (
         <div className="fixed inset-0 z-30 overflow-y-auto bg-black/40 p-4 sm:p-6">
@@ -348,7 +365,7 @@ export default function ProductsPage() {
                   <label className="mb-1 block text-sm font-semibold text-onSurface">{t("defaultDiscount")}</label>
                   <div className="flex flex-wrap gap-2">
                     {discountOptions.map((discount) => {
-                      const selected = toNumber(form.discount) === discount;
+                      const selected = form.discount.trim() !== "" && toNumber(form.discount) === discount;
                       return (
                         <button
                           key={discount}
@@ -364,6 +381,20 @@ export default function ProductsPage() {
                         </button>
                       );
                     })}
+                    {/* Chips are shortcuts; any 0-100 value can be typed (only admins edit products). */}
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs text-muted">{t("orEnterDiscount")}</span>
+                      <input
+                        inputMode="decimal"
+                        value={form.discount}
+                        onChange={(e) => setField("discount", numeric(e.target.value))}
+                        aria-label={t("defaultDiscount")}
+                        className={`w-20 rounded-md border px-2 py-1 text-right text-xs ${
+                          fieldErrors.discount ? "border-error" : "border-border"
+                        }`}
+                      />
+                      <span className="text-xs text-muted">%</span>
+                    </div>
                   </div>
                   {fieldErrors.discount && <p className="mt-1 text-xs text-error">{fieldErrors.discount}</p>}
                 </div>

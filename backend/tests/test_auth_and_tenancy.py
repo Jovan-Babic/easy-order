@@ -8,9 +8,11 @@ import uuid
 import pytest
 import requests
 
+from helpers import activate_invited_user
+
 BASE_URL = os.environ.get(
     "EXPO_PUBLIC_BACKEND_URL",
-    "https://order-invoice-app-2.preview.emergentagent.com",
+    "http://localhost:8000",
 ).rstrip("/")
 API = f"{BASE_URL}/api"
 
@@ -71,19 +73,24 @@ class TestForgotPassword:
         )
         assert r.status_code == 400
 
-    def test_reset_password_roundtrip_and_token_reuse(self):
+    def test_reset_password_roundtrip_and_token_reuse(self, api_client):
         # This requires PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE=true on the
-        # server process used by tests.
+        # server process used by tests. Uses its own user: resetting the demo
+        # admin would invalidate the shared api_client session (token_version).
+        email = f"test-reset-{uuid.uuid4().hex[:8]}@easyorder.dev"
+        created = api_client.post(f"{API}/users", json={"email": email, "name": "TEST Reset", "role": "operator"}).json()
+        activate_invited_user(email, created["temporary_password"])
+
         forgot = requests.post(
             f"{API}/auth/forgot-password",
-            json={"email": "demo-admin@easyorder.dev", "channel": "web"},
+            json={"email": email, "channel": "web"},
         )
         assert forgot.status_code == 200, forgot.text
         token = forgot.json().get("reset_token")
         if not token:
             pytest.skip("Enable PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE=true to run token roundtrip test")
 
-        temp_password = f"TempPass-{uuid.uuid4().hex[:8]}!"
+        temp_password = f"TempPass-{uuid.uuid4().hex[:8]}!1"
 
         first_reset = requests.post(
             f"{API}/auth/reset-password",
@@ -101,21 +108,9 @@ class TestForgotPassword:
         # New password should now work for login.
         login = requests.post(
             f"{API}/auth/login",
-            json={"email": "demo-admin@easyorder.dev", "password": temp_password},
+            json={"email": email, "password": temp_password},
         )
         assert login.status_code == 200, login.text
-
-        body = login.json()
-        default_password = os.environ.get("DEMO_ADMIN_PASSWORD", "ChangeMe123!")
-        restore = requests.put(
-            f"{API}/users/{body['user']['id']}",
-            json={"password": default_password},
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {body['access_token']}",
-            },
-        )
-        assert restore.status_code == 200, restore.text
 
 
 class TestCrossTenantIsolation:
@@ -131,13 +126,12 @@ class TestCrossTenantIsolation:
             "name": f"TEST_ClientB_{suffix}",
             "admin_name": "TEST ClientB Admin",
             "admin_email": f"test-clientb-{suffix}@easyorder.dev",
-            "admin_password": "TestPass123!",
         }
         r = superadmin_client.post(f"{API}/clients", json=payload)
         assert r.status_code == 200, r.text
         body = r.json()
         TestCrossTenantIsolation.client_b_id = body["client"]["id"]
-        TestCrossTenantIsolation.client_b_admin = _login(payload["admin_email"], payload["admin_password"])
+        TestCrossTenantIsolation.client_b_admin = activate_invited_user(payload["admin_email"], body["temporary_password"])
 
     def test_client_b_admin_creates_own_data(self):
         admin = TestCrossTenantIsolation.client_b_admin
@@ -225,6 +219,8 @@ class TestRoleEscalation:
         assert body["role"] == "operator"
         TestRoleEscalation.operator_email = email
         TestRoleEscalation.operator_id = body["id"]
+        # Sets the password to TestPass123!, which the tests below log in with.
+        activate_invited_user(email, body["temporary_password"])
 
     def test_operator_cannot_list_users(self):
         operator = _login(TestRoleEscalation.operator_email, "TestPass123!")
@@ -258,11 +254,11 @@ class TestStatsScoping:
     def test_operator_cannot_view_stats(self, api_client):
         suffix = uuid.uuid4().hex[:8]
         email = f"test-stats-operator-{suffix}@easyorder.dev"
-        api_client.post(
+        created = api_client.post(
             f"{API}/users",
-            json={"email": email, "name": "TEST Stats Operator", "password": "TestPass123!", "role": "operator"},
-        )
-        operator = _login(email, "TestPass123!")
+            json={"email": email, "name": "TEST Stats Operator", "role": "operator"},
+        ).json()
+        operator = activate_invited_user(email, created["temporary_password"])
         r = operator.get(f"{API}/stats/overview")
         assert r.status_code == 403
 

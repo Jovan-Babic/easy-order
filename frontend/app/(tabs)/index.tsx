@@ -21,14 +21,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
-import { api, Customer, Product, OrderItem } from "@/src/api";
+import { api, ApiError, Customer, Product, OrderLineInput } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { LangToggle } from "@/src/components/LangToggle";
 import { Button } from "@/src/components/Button";
 import { LOGOUT } from "@/constants/testIds";
 
 export default function OrderCatalog() {
-  const { t } = useApp();
+  const { t, showToast } = useApp();
   const { logout } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -114,33 +114,35 @@ export default function OrderCatalog() {
 
   const submitOrder = async () => {
     if (!selected) return;
-    const items: OrderItem[] = products
+    // Only what the rep decides - the backend snapshots name/price/VAT from
+    // the stored product, so stale catalog data here can't end up on an order.
+    const items: OrderLineInput[] = products
       .filter((p) => Number(drafts[p.id]) > 0)
       .map((p) => ({
         product_id: p.id,
-        name: p.name,
-        image: p.image,
-        manufacturer: p.manufacturer,
-        price_no_vat: p.price_no_vat,
-        vat_rate: p.vat_rate,
-        pieces_per_package: p.pieces_per_package,
-        boxes_per_transport: p.boxes_per_transport,
+        ordered_qty: Number(drafts[p.id]) || 0,
         discount: p.discount ?? 0,
         additional_discount: additionalDiscountSel[p.id] ?? 0,
-        ordered_qty: Number(drafts[p.id]) || 0,
       }));
     if (items.length === 0) return;
     try {
       setSubmitting(true);
-      const order = await api.createOrder({
-        customer_id: selected.id,
-        customer_name: selected.name,
-        items,
-      });
+      const order = await api.createOrder({ customer_id: selected.id, items });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setDrafts({});
       setConfirmingOrder(false);
       router.push({ pathname: "/invoice", params: { id: order.id } });
+    } catch (e) {
+      // Drafts are kept so nothing has to be re-entered. A 400 means the
+      // catalog changed meanwhile (product removed, discount no longer
+      // allowed) - reload it so the rep sees the current state.
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      if (e instanceof ApiError) {
+        showToast(`${t("orderFailed")}: ${e.detail}`);
+        if (e.status === 400) load();
+      } else {
+        showToast(t("networkError"));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -271,7 +273,11 @@ export default function OrderCatalog() {
           behavior={Platform.OS === "ios" ? "padding" : undefined}
           keyboardVerticalOffset={0}
         >
-          <ScrollView
+          <FlatList
+            data={filteredProducts}
+            keyExtractor={(p) => p.id}
+            // Cards read drafts/discount picks from state - re-render on change.
+            extraData={{ drafts, additionalDiscountSel }}
             contentContainerStyle={{
               padding: spacing.lg,
               paddingBottom: footerBottomPadding + 96,
@@ -279,19 +285,22 @@ export default function OrderCatalog() {
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}
-          >
-            {filteredProducts.length === 0 ? (
+            // Keeps a focused quantity input from being unmounted while typing.
+            removeClippedSubviews={false}
+            initialNumToRender={8}
+            windowSize={7}
+            ListEmptyComponent={
               <View style={{ alignItems: "center", paddingTop: spacing.xxxl }}>
                 <Ionicons name="search-outline" size={48} color={colors.borderStrong} />
                 <Text style={styles.mutedText}>{t("noProducts")}</Text>
               </View>
-            ) : null}
-            {filteredProducts.map((p) => {
+            }
+            renderItem={({ item: p }) => {
               const supplierDiscount = p.discount ?? 0;
               const selectedAdditionalDiscount = additionalDiscountSel[p.id] ?? 0;
               const totalDiscount = effectiveDiscount(supplierDiscount, selectedAdditionalDiscount);
               return (
-                <View key={p.id} style={styles.card} testID={`product-card-${p.id}`}>
+                <View style={styles.card} testID={`product-card-${p.id}`}>
                   <View style={styles.cardTop}>
                     <Pressable
                       testID={`product-image-${p.id}`}
@@ -362,8 +371,8 @@ export default function OrderCatalog() {
                   <Text style={styles.totalDiscountHint}>{t("totalDiscountFormula")}</Text>
                 </View>
               );
-            })}
-          </ScrollView>
+            }}
+          />
 
           {/* Sticky confirm */}
           <BlurView intensity={40} tint="light" style={[styles.footer, { paddingBottom: footerBottomPadding }]}>

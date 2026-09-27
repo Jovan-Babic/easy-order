@@ -14,7 +14,11 @@ type Client = {
   active: boolean;
 };
 
-const emptyForm = { name: "", email: "", phone: "", pib: "", admin_name: "", admin_email: "", admin_password: "" };
+const emptyForm = { name: "", email: "", phone: "", pib: "", admin_name: "", admin_email: "" };
+
+// The first admin gets a generated temporary password by email; it only
+// comes back in the response when that email could not be sent.
+type InviteNotice = { email: string; sent: boolean; temporaryPassword?: string | null };
 
 export default function ClientsPage() {
   const { t } = useLanguage();
@@ -25,12 +29,19 @@ export default function ClientsPage() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Client | null>(null);
+  const [inviteNotice, setInviteNotice] = useState<InviteNotice | null>(null);
 
   const load = async () => {
     setLoading(true);
-    const res = await fetch("/api/clients");
-    setClients(await res.json());
-    setLoading(false);
+    try {
+      const res = await fetch("/api/clients");
+      if (!res.ok) throw new Error();
+      setClients(await res.json());
+    } catch {
+      setError(t("loadFailed"));
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -48,6 +59,12 @@ export default function ClientsPage() {
         setError(body.detail || t("failedCreateClient"));
         return;
       }
+      const created = await res.json();
+      setInviteNotice({
+        email: created.admin_user.email,
+        sent: created.invite_sent,
+        temporaryPassword: created.temporary_password,
+      });
       setForm(emptyForm);
       setShowForm(false);
       await load();
@@ -124,14 +141,7 @@ export default function ClientsPage() {
             onChange={(e) => setForm({ ...form, admin_email: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
           />
-          <input
-            required
-            type="password"
-            placeholder={t("adminPassword")}
-            value={form.admin_password}
-            onChange={(e) => setForm({ ...form, admin_password: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
+          <p className="text-sm text-muted">{t("inviteInfo")}</p>
 
           {error && <p className="text-sm text-error">{error}</p>}
 
@@ -144,6 +154,32 @@ export default function ClientsPage() {
           </button>
         </form>
       )}
+
+      {inviteNotice && (
+        <div
+          className={`mb-6 flex items-start justify-between gap-4 rounded-lg border p-4 text-sm ${
+            inviteNotice.sent ? "border-success bg-surfaceSecondary" : "border-error bg-surfaceSecondary"
+          }`}
+        >
+          <div>
+            {inviteNotice.sent ? (
+              <p className="text-onSurface">
+                {t("inviteSentTo")} <strong>{inviteNotice.email}</strong>
+              </p>
+            ) : (
+              <>
+                <p className="text-onSurface">{t("inviteNotSent")}</p>
+                <p className="mt-2 font-mono text-base font-bold text-onSurface">{inviteNotice.temporaryPassword}</p>
+              </>
+            )}
+          </div>
+          <button onClick={() => setInviteNotice(null)} className="font-semibold text-onSurfaceSecondary hover:underline">
+            {t("close")}
+          </button>
+        </div>
+      )}
+
+      {!showForm && error && <p className="mb-4 text-sm text-error">{error}</p>}
 
       {loading ? (
         <p className="text-muted">{t("loading")}</p>

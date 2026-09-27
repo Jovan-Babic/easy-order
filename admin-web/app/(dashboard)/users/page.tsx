@@ -24,10 +24,13 @@ type CreateUserForm = {
   email: string;
   phoneNumber: string;
   countryCode: string;
-  password: string;
   role: Role;
   client_id: string;
 };
+
+// Result of POST /api/users: the backend generates a temporary password and
+// emails it; it only comes back here when the email could not be sent.
+type InviteNotice = { email: string; sent: boolean; temporaryPassword?: string | null };
 
 type EditUserForm = {
   name: string;
@@ -122,7 +125,6 @@ const emptyCreateForm: CreateUserForm = {
   email: "",
   phoneNumber: "",
   countryCode: "+381",
-  password: "",
   role: "operator",
   client_id: "",
 };
@@ -155,6 +157,13 @@ export default function UsersPage() {
   const [editSaving, setEditSaving] = useState(false);
   const [editForm, setEditForm] = useState<EditUserForm>(emptyEditForm);
   const [pendingDelete, setPendingDelete] = useState<User | null>(null);
+  const [inviteNotice, setInviteNotice] = useState<InviteNotice | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+
+  // Mirrors the backend: an admin manages only operators (and edits
+  // themselves); a superadmin manages everyone.
+  const canEdit = (u: User) => isSuperAdmin || u.role === "operator" || u.id === session.id;
+  const canDelete = (u: User) => u.id !== session.id && (isSuperAdmin || u.role === "operator");
 
   const parsePhone = (rawPhone: string | undefined) => {
     if (!rawPhone) return { countryCode: "+381", phoneNumber: "" };
@@ -170,13 +179,19 @@ export default function UsersPage() {
 
   const load = async () => {
     setLoading(true);
-    const [uRes, cRes] = await Promise.all([
-      fetch("/api/users"),
-      isSuperAdmin ? fetch("/api/clients") : Promise.resolve(null),
-    ]);
-    setUsers(await uRes.json());
-    if (cRes) setClients(await cRes.json());
-    setLoading(false);
+    try {
+      const [uRes, cRes] = await Promise.all([
+        fetch("/api/users"),
+        isSuperAdmin ? fetch("/api/clients") : Promise.resolve(null),
+      ]);
+      if (!uRes.ok) throw new Error();
+      setUsers(await uRes.json());
+      if (cRes?.ok) setClients(await cRes.json());
+    } catch {
+      setListError(t("loadFailed"));
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -202,13 +217,15 @@ export default function UsersPage() {
     try {
       const payload = isSuperAdmin
         ? { ...form, phone }
-        : { name: form.name, email: form.email, phone, password: form.password, role: "operator" };
+        : { name: form.name, email: form.email, phone, role: "operator" };
       const res = await fetch("/api/users", { method: "POST", body: JSON.stringify(payload) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setError(body.detail || t("failedCreateUser"));
         return;
       }
+      const created = await res.json();
+      setInviteNotice({ email: created.email, sent: created.invite_sent, temporaryPassword: created.temporary_password });
       closeCreateForm();
       await load();
     } finally {
@@ -250,13 +267,17 @@ export default function UsersPage() {
 
     setEditSaving(true);
     try {
+      const isSelf = editingUser.id === session.id;
       const payload: Record<string, unknown> = {
         name: editForm.name,
         phone: formatPhone(editForm.countryCode, editForm.phoneNumber),
-        active: editForm.active === "true",
       };
-      if (isSuperAdmin) payload.role = editForm.role;
-      if (editForm.password.trim()) payload.password = editForm.password;
+      // Own status/password aren't editable here: status can't be changed on
+      // yourself, and your own password goes through /change-password (which
+      // keeps you logged in; a change here would end the session).
+      if (!isSelf) payload.active = editForm.active === "true";
+      if (isSuperAdmin && !isSelf) payload.role = editForm.role;
+      if (!isSelf && editForm.password.trim()) payload.password = editForm.password;
 
       const res = await fetch(`/api/users/${editingUser.id}`, {
         method: "PUT",
@@ -277,8 +298,14 @@ export default function UsersPage() {
 
   const remove = async () => {
     if (!pendingDelete) return;
-    await fetch(`/api/users/${pendingDelete.id}`, { method: "DELETE" });
+    setListError(null);
+    const res = await fetch(`/api/users/${pendingDelete.id}`, { method: "DELETE" });
     setPendingDelete(null);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setListError(body.detail || t("deleteFailed"));
+      return;
+    }
     await load();
   };
 
@@ -332,14 +359,7 @@ export default function UsersPage() {
               className="rounded-md border border-border px-3 py-2"
             />
           </div>
-          <input
-            required
-            type="password"
-            placeholder={t("password")}
-            value={form.password}
-            onChange={(e) => setForm({ ...form, password: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
+          <p className="text-sm text-muted">{t("inviteInfo")}</p>
           {isSuperAdmin ? (
             <>
               <select
@@ -425,14 +445,21 @@ export default function UsersPage() {
                   className="rounded-md border border-border px-3 py-2"
                 />
               </div>
-              <input
-                type="password"
-                placeholder={t("newPasswordOptional")}
-                value={editForm.password}
-                onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
-                className="rounded-md border border-border px-3 py-2"
-              />
-              {isSuperAdmin && (
+              {editingUser.id === session.id ? (
+                <p className="text-sm text-muted">{t("ownPasswordHint")}</p>
+              ) : (
+                <>
+                  <input
+                    type="password"
+                    placeholder={t("newPasswordOptional")}
+                    value={editForm.password}
+                    onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                    className="rounded-md border border-border px-3 py-2"
+                  />
+                  <p className="-mt-2 text-xs text-muted">{t("adminSetPasswordHint")}</p>
+                </>
+              )}
+              {isSuperAdmin && editingUser.id !== session.id && (
                 <select
                   value={editForm.role}
                   onChange={(e) => setEditForm({ ...editForm, role: e.target.value as Role })}
@@ -443,14 +470,16 @@ export default function UsersPage() {
                   <option value="superadmin">{t("userRoleSuperAdmin")}</option>
                 </select>
               )}
-              <select
-                value={editForm.active}
-                onChange={(e) => setEditForm({ ...editForm, active: e.target.value as "true" | "false" })}
-                className="rounded-md border border-border px-3 py-2"
-              >
-                <option value="true">{t("active")}</option>
-                <option value="false">{t("inactive")}</option>
-              </select>
+              {editingUser.id !== session.id && (
+                <select
+                  value={editForm.active}
+                  onChange={(e) => setEditForm({ ...editForm, active: e.target.value as "true" | "false" })}
+                  className="rounded-md border border-border px-3 py-2"
+                >
+                  <option value="true">{t("active")}</option>
+                  <option value="false">{t("inactive")}</option>
+                </select>
+              )}
 
               {editError && <p className="text-sm text-error">{editError}</p>}
 
@@ -474,6 +503,32 @@ export default function UsersPage() {
           </div>
         </div>
       )}
+
+      {inviteNotice && (
+        <div
+          className={`mb-6 flex items-start justify-between gap-4 rounded-lg border p-4 text-sm ${
+            inviteNotice.sent ? "border-success bg-surfaceSecondary" : "border-error bg-surfaceSecondary"
+          }`}
+        >
+          <div>
+            {inviteNotice.sent ? (
+              <p className="text-onSurface">
+                {t("inviteSentTo")} <strong>{inviteNotice.email}</strong>
+              </p>
+            ) : (
+              <>
+                <p className="text-onSurface">{t("inviteNotSent")}</p>
+                <p className="mt-2 font-mono text-base font-bold text-onSurface">{inviteNotice.temporaryPassword}</p>
+              </>
+            )}
+          </div>
+          <button onClick={() => setInviteNotice(null)} className="font-semibold text-onSurfaceSecondary hover:underline">
+            {t("close")}
+          </button>
+        </div>
+      )}
+
+      {listError && <p className="mb-4 text-sm text-error">{listError}</p>}
 
       {loading ? (
         <p className="text-muted">{t("loading")}</p>
@@ -503,10 +558,12 @@ export default function UsersPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <button onClick={() => openEdit(u)} className="mr-3 font-semibold text-brand hover:underline">
-                      {t("edit")}
-                    </button>
-                    {u.id !== session.id && (
+                    {canEdit(u) && (
+                      <button onClick={() => openEdit(u)} className="mr-3 font-semibold text-brand hover:underline">
+                        {t("edit")}
+                      </button>
+                    )}
+                    {canDelete(u) && (
                       <button onClick={() => setPendingDelete(u)} className="font-semibold text-error hover:underline">
                         {t("delete")}
                       </button>

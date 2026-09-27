@@ -10,7 +10,7 @@ import requests
 
 BASE_URL = os.environ.get(
     "EXPO_PUBLIC_BACKEND_URL",
-    "https://order-invoice-app-2.preview.emergentagent.com",
+    "http://localhost:8000",
 ).rstrip("/")
 API = f"{BASE_URL}/api"
 

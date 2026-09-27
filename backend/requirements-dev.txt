@@ -1,0 +1,4 @@
+# Local development and CI only - not installed on Vercel.
+-r requirements.txt
+pytest>=8.0.0
+requests>=2.31.0

@@ -2,7 +2,7 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import Constants from "expo-constants";
 import { useEffect, useRef } from "react";
-import { Alert, Image, Linking, LogBox, Platform, StyleSheet, View } from "react-native";
+import { Alert, Image, Linking, Platform, StyleSheet, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
@@ -11,10 +11,6 @@ import { AppProvider } from "@/src/context/AppContext";
 import { AuthProvider, useAuth } from "@/src/context/AuthContext";
 import { useApp } from "@/src/context/AppContext";
 import { api } from "@/src/api";
-
-// Disable logbox errors etc so that users can see the app
-// and agent works as expected.
-LogBox.ignoreAllLogs(true);
 
 // Keep the native splash visible from cold start until icon fonts register.
 SplashScreen.preventAutoHideAsync();
@@ -29,7 +25,7 @@ function RouteGuard({
   fontsReady: boolean;
   children: React.ReactNode;
 }) {
-  const { status } = useAuth();
+  const { status, user } = useAuth();
   const { t } = useApp();
   const segments = useSegments();
   const router = useRouter();
@@ -41,16 +37,23 @@ function RouteGuard({
     }
   }, [fontsReady]);
 
+  const mustChangePassword = !!user?.must_change_password;
+
   useEffect(() => {
     if (status === "loading") return;
     const publicScreens = new Set(["login", "forgot-password", "reset-password"]);
-    const onPublicScreen = publicScreens.has(segments[0] ?? "");
+    const screen = segments[0] ?? "";
+    const onPublicScreen = publicScreens.has(screen);
     if (status === "unauthenticated" && !onPublicScreen) {
       router.replace("/login");
-    } else if (status === "authenticated" && onPublicScreen) {
+    } else if (status === "authenticated" && mustChangePassword && screen !== "change-password") {
+      // Temporary (invite / admin-set) password: the backend refuses every
+      // other call until it's replaced.
+      router.replace("/change-password");
+    } else if (status === "authenticated" && !mustChangePassword && (onPublicScreen || screen === "change-password")) {
       router.replace("/(tabs)");
     }
-  }, [status, segments, router]);
+  }, [status, mustChangePassword, segments, router]);
 
   useEffect(() => {
     if (updateChecked.current || status === "loading" || Platform.OS !== "android") return;
@@ -124,6 +127,7 @@ export default function RootLayout() {
                 <Stack.Screen name="login" options={{ presentation: "card" }} />
                 <Stack.Screen name="forgot-password" options={{ presentation: "card" }} />
                 <Stack.Screen name="reset-password" options={{ presentation: "card" }} />
+                <Stack.Screen name="change-password" options={{ presentation: "card", gestureEnabled: false }} />
                 <Stack.Screen name="invoice" options={{ presentation: "card" }} />
               </Stack>
             </RouteGuard>

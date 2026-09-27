@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -58,6 +59,8 @@ SUPERADMIN_EMAIL = os.environ.get("SUPERADMIN_EMAIL", "admin@easyorder.dev")
 SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD", DEFAULT_SUPERADMIN_PASSWORD)
 DEMO_ADMIN_EMAIL = os.environ.get("DEMO_ADMIN_EMAIL", "demo-admin@easyorder.dev")
 DEMO_ADMIN_PASSWORD = os.environ.get("DEMO_ADMIN_PASSWORD", "ChangeMe123!")
+# Demo client/admin/customers/products for local tests and CI. See seed_data().
+SEED_DEMO_DATA = os.environ.get("SEED_DEMO_DATA", "false").lower() == "true"
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
@@ -69,6 +72,27 @@ RESET_WEB_URL = os.environ.get("RESET_WEB_URL", "http://localhost:3000/reset-pas
 RESET_MOBILE_SCHEME = os.environ.get("RESET_MOBILE_SCHEME", "easy-order://reset-password")
 PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE = os.environ.get("PASSWORD_RESET_DEBUG_TOKEN_IN_RESPONSE", "false").lower() == "true"
 APP_UPDATE_FILE = ROOT_DIR / "public" / "app" / "app-update.json"
+
+# Public URLs put into invite emails. On Vercel the backend URL falls back to
+# the project's production domain (a Vercel system env var).
+PUBLIC_BACKEND_URL = (
+    os.environ.get("PUBLIC_BACKEND_URL")
+    or (f"https://{os.environ['VERCEL_PROJECT_PRODUCTION_URL']}" if os.environ.get("VERCEL_PROJECT_PRODUCTION_URL") else "")
+    or "http://localhost:8000"
+).rstrip("/")
+ADMIN_WEB_URL = (os.environ.get("ADMIN_WEB_URL") or RESET_WEB_URL.rsplit("/reset-password", 1)[0]).rstrip("/")
+
+# Brute-force protection (counted per email, stored in Mongo so it survives
+# serverless cold starts and is shared by all instances).
+LOGIN_MAX_FAILURES = int(os.environ.get("LOGIN_MAX_FAILURES", "5"))
+LOGIN_LOCKOUT_MINUTES = int(os.environ.get("LOGIN_LOCKOUT_MINUTES", "15"))
+FORGOT_PASSWORD_MAX_PER_HOUR = int(os.environ.get("FORGOT_PASSWORD_MAX_PER_HOUR", "3"))
+
+# Product images. Vercel rejects request bodies over 4.5 MB, so the limit
+# stays under that; Cloudinary additionally shrinks what it stores.
+IMAGE_MAX_BYTES = int(os.environ.get("IMAGE_MAX_BYTES", str(4 * 1024 * 1024)))
+IMAGE_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
+PRODUCT_IMAGE_FOLDER = "easy-order/products"
 
 mongo_client: AsyncIOMotorClient = None
 db = None  # AsyncIOMotorDatabase
@@ -103,10 +127,17 @@ async def lifespan(app: FastAPI):
     await db.customers.create_index("client_id")
     await db.products.create_index("client_id")
     await db.orders.create_index("client_id")
-    await db.users.create_index("email")
+    await _migrate_user_emails_to_lowercase()
+    try:
+        await db.users.create_index("email", unique=True)
+    except Exception as exc:  # e.g. two legacy accounts that only differed by case
+        logger.error("Could not create unique index on users.email: %s", exc)
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at")
     await db.password_reset_tokens.create_index("user_id")
+    await db.auth_attempts.create_index("key")
+    # TTL cleanup only - the limits themselves are enforced by querying created_at.
+    await db.auth_attempts.create_index("created_at", expireAfterSeconds=24 * 3600)
     await seed_data()
     logger.info("Backend started with MongoDB (%s)", os.environ["DB_NAME"])
     yield
@@ -144,9 +175,11 @@ class ClientInput(BaseModel):
 
 
 class ClientCreateInput(ClientInput):
+    # No password field: the admin gets a generated temporary password by
+    # email (see _invite_user). An old client still sending admin_password
+    # is ignored.
     admin_name: str
     admin_email: EmailStr
-    admin_password: str
 
 
 class User(BaseModel):
@@ -157,10 +190,24 @@ class User(BaseModel):
     role: Role
     client_id: Optional[str] = None  # None only for SUPERADMIN
     active: bool = True
+    # True until the user replaces their temporary (invite) password. While
+    # set, only /auth/me, /auth/change-password and /auth/logout work.
+    must_change_password: bool = False
     created_at: str = Field(default_factory=now_iso)
 
 
-class ClientCreateResponse(BaseModel):
+class InviteResult(BaseModel):
+    invite_sent: bool
+    # Only returned when the invite email could NOT be sent (SMTP missing or
+    # failing), so the creator can hand the password over another way.
+    temporary_password: Optional[str] = None
+
+
+class UserInviteResponse(User, InviteResult):
+    pass
+
+
+class ClientCreateResponse(InviteResult):
     client: Client
     admin_user: User
 
@@ -169,9 +216,13 @@ class UserInput(BaseModel):
     email: EmailStr
     name: str
     phone: Optional[str] = ""
-    password: str
     role: Role
     client_id: Optional[str] = None
+
+
+class ChangePasswordInput(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class UserUpdateInput(BaseModel):
@@ -296,6 +347,12 @@ class OrderItem(BaseModel):
     ordered_qty: int = 0
 
 
+class OrderStatus(str, Enum):
+    # Only NEW for now; the warehouse workflow (RBAC_PLAN.md) will add
+    # in_progress/completed/rejected.
+    NEW = "new"
+
+
 class Order(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     client_id: str
@@ -304,7 +361,28 @@ class Order(BaseModel):
     items: List[OrderItem] = []
     item_count: Optional[int] = None
     client_name: Optional[str] = None
+    status: OrderStatus = OrderStatus.NEW
+    # Who placed it. None on orders created before this field existed.
+    created_by_user_id: Optional[str] = None
+    created_by_name: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
+
+
+class OrderItemOut(OrderItem):
+    line_net: float = 0
+
+
+class OrderTotals(BaseModel):
+    subtotal: float
+    vat: float
+    grand: float
+
+
+class OrderOut(Order):
+    """Response shape: stored order + totals computed by calc.py, so clients
+    can display amounts without re-implementing the discount/VAT formula."""
+    items: List[OrderItemOut] = []
+    totals: OrderTotals
 
 
 class OrderItemInput(BaseModel):
@@ -414,14 +492,43 @@ def create_access_token(user: dict) -> str:
         "email": user["email"],
         "role": user["role"],
         "client_id": user.get("client_id"),
+        # Token version: bumped on password change/reset and role change, which
+        # invalidates every token issued before. Missing = 0 (older tokens).
+        "tv": user.get("token_version", 0),
         "iat": now,
         "exp": now + timedelta(minutes=JWT_EXPIRE_MINUTES),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 
+PASSWORD_RULES_MESSAGE = "Password must be at least 8 characters long and contain at least one letter and one digit"
+
+
 def _password_is_strong_enough(password: str) -> bool:
-    return len(password) >= 8
+    return (
+        len(password) >= 8
+        and any(c.isalpha() for c in password)
+        and any(c.isdigit() for c in password)
+    )
+
+
+def ensure_strong_password(password: str) -> None:
+    if not _password_is_strong_enough(password):
+        raise HTTPException(status_code=400, detail=PASSWORD_RULES_MESSAGE)
+
+
+def generate_temporary_password() -> str:
+    # No look-alike characters (0/O, 1/l/I) since people may retype it from
+    # the email by hand. Always contains a letter and a digit.
+    letters = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
+    digits = "23456789"
+    chars = [secrets.choice(letters) for _ in range(8)] + [secrets.choice(digits) for _ in range(4)]
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
 
 
 def _hash_reset_token(token: str) -> str:
@@ -468,6 +575,89 @@ def _build_reset_email_body(user_name: str, reset_link: str) -> str:
         f"This link expires in {PASSWORD_RESET_EXPIRE_MINUTES} minutes.\n"
         "If you did not request this, you can ignore this email."
     )
+
+
+def _mobile_app_download_url() -> Optional[str]:
+    """Absolute APK link from app-update.json, or None if no release is published."""
+    try:
+        data = json.loads(APP_UPDATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not data.get("enabled") or not data.get("download_url"):
+        return None
+    url = data["download_url"]
+    return url if url.startswith("http") else f"{PUBLIC_BACKEND_URL}{url}"
+
+
+def _build_invite_email_body(name: str, email: str, role: Role, temporary_password: str) -> str:
+    lines = [
+        f"Zdravo {name},",
+        "",
+        "Otvoren vam je nalog u aplikaciji Easy Order.",
+        "",
+        f"Email za prijavu: {email}",
+        f"Privremena lozinka: {temporary_password}",
+        "",
+        "Pri prvoj prijavi bićete zamoljeni da postavite novu lozinku.",
+        "",
+    ]
+    apk_url = _mobile_app_download_url()
+    if apk_url:
+        lines += [f"Android aplikacija (APK): {apk_url}", ""]
+    if role in (Role.ADMIN, Role.SUPERADMIN):
+        lines += [f"Administratorski portal: {ADMIN_WEB_URL}", ""]
+    lines += [
+        "---",
+        f"Hi {name}, an Easy Order account was created for you.",
+        f"Login: {email} / temporary password: {temporary_password}",
+        "You will be asked to set a new password on first login.",
+    ]
+    return "\n".join(lines)
+
+
+async def _send_invite_email(name: str, email: str, role: Role, temporary_password: str) -> bool:
+    """Returns True if the email went out. Never raises - a failed email must
+    not fail the account creation (the caller falls back to showing the
+    password to the creator)."""
+    if not _smtp_is_configured():
+        logger.warning("SMTP not configured - invite email for %s not sent", email)
+        return False
+    body = _build_invite_email_body(name, email, role, temporary_password)
+    try:
+        await asyncio.to_thread(_send_smtp_email_sync, email, "Easy Order - pristup aplikaciji / account access", body)
+        return True
+    except Exception as exc:
+        logger.exception("Failed to send invite email to %s: %s", email, exc)
+        return False
+
+
+async def _invite_user(user: User) -> InviteResult:
+    """Stores a new user with a generated temporary password, emails it, and
+    forces a password change on first login."""
+    temporary_password = generate_temporary_password()
+    raw = user.dict()
+    raw["email"] = normalize_email(raw["email"])
+    raw["must_change_password"] = True
+    raw["token_version"] = 0
+    raw["password_hash"] = hash_password(temporary_password)
+    await db.users.insert_one({**raw, "_id": user.id})
+    user.must_change_password = True
+    sent = await _send_invite_email(user.name, raw["email"], user.role, temporary_password)
+    return InviteResult(invite_sent=sent, temporary_password=None if sent else temporary_password)
+
+
+# ---------------- Brute-force limits ----------------
+async def _recent_attempts(key: str, window: timedelta) -> int:
+    since = datetime.now(timezone.utc) - window
+    return await db.auth_attempts.count_documents({"key": key, "created_at": {"$gte": since}})
+
+
+async def _record_attempt(key: str) -> None:
+    await db.auth_attempts.insert_one({"_id": str(uuid.uuid4()), "key": key, "created_at": datetime.now(timezone.utc)})
+
+
+def _login_key(email: str) -> str:
+    return f"login:{normalize_email(email)}"
 
 
 def _build_test_email_body() -> str:
@@ -536,11 +726,45 @@ def cloudinary_available() -> bool:
     return bool(cfg.cloud_name and cfg.api_key and cfg.api_secret)
 
 
+_CLOUDINARY_PRODUCT_URL = re.compile(
+    rf"res\.cloudinary\.com/[^/]+/image/upload/(?:.+/)?(?:v\d+/)?({re.escape(PRODUCT_IMAGE_FOLDER)}/[^/.]+)\.\w+$"
+)
+
+
+def _product_image_public_id(url: Optional[str]) -> Optional[str]:
+    """public_id of an image this app uploaded, or None for anything else
+    (external URLs, data URIs) - those are never deleted."""
+    if not url:
+        return None
+    match = _CLOUDINARY_PRODUCT_URL.search(url)
+    return match.group(1) if match else None
+
+
+async def _delete_product_image(url: Optional[str]) -> None:
+    """Best effort: frees space on the Cloudinary plan when a product image is
+    replaced or the product is deleted. Order snapshots keep the old URL, but
+    no screen displays order item images, so nothing visible breaks."""
+    public_id = _product_image_public_id(url)
+    if not public_id or not cloudinary_available():
+        return
+    try:
+        await asyncio.to_thread(cloudinary.uploader.destroy, public_id, resource_type="image")
+    except Exception as exc:
+        logger.warning("Could not delete Cloudinary image %s: %s", public_id, exc)
+
+
 async def find_user_by_email(email: str) -> Optional[dict]:
-    return await db.users.find_one(
-        {"email": re.compile(f"^{re.escape(email)}$", re.IGNORECASE)},
-        {"_id": 0},
-    )
+    # Emails are stored lowercase (see _migrate_user_emails_to_lowercase), so
+    # this is an exact, index-backed lookup.
+    return await db.users.find_one({"email": normalize_email(email)}, {"_id": 0})
+
+
+async def _migrate_user_emails_to_lowercase() -> None:
+    """One-off for accounts created before emails were normalized. Idempotent."""
+    async for doc in db.users.find({}, {"_id": 1, "email": 1}):
+        email = doc.get("email") or ""
+        if email != normalize_email(email):
+            await db.users.update_one({"_id": doc["_id"]}, {"$set": {"email": normalize_email(email)}})
 
 
 async def client_is_active(client_id: Optional[str]) -> bool:
@@ -555,9 +779,11 @@ async def client_is_active(client_id: Optional[str]) -> bool:
 security = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(
+async def get_authenticated_user(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> User:
+    """Valid token + active user/client. Does NOT enforce the first-login
+    password change - only for the few routes that must work before it."""
     if creds is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
@@ -567,11 +793,23 @@ async def get_current_user(
     raw = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0})
     if not raw or not raw.get("active", True):
         raise HTTPException(status_code=401, detail="User not found or inactive")
+    if payload.get("tv", 0) != raw.get("token_version", 0):
+        # Password was changed/reset (or role changed) after this token was issued.
+        raise HTTPException(status_code=401, detail="Session expired, please log in again")
     # Checked on every request (not only at login) so deactivating a client
     # also cuts off tokens that were issued before the deactivation.
     if not await client_is_active(raw.get("client_id")):
         raise HTTPException(status_code=401, detail="Client account is disabled")
     return User(**raw)
+
+
+async def get_current_user(user: User = Depends(get_authenticated_user)) -> User:
+    """Default dependency for every business route."""
+    if user.must_change_password:
+        # 403, not 401: the session is valid, clients should send the user to
+        # the change-password screen instead of logging them out.
+        raise HTTPException(status_code=403, detail="Password change required")
+    return user
 
 
 def require_roles(*roles: Role):
@@ -639,9 +877,20 @@ api_router = APIRouter(prefix="/api")
 
 @api_router.post("/auth/login", response_model=TokenResponse)
 async def login(inp: LoginInput):
+    key = _login_key(inp.email)
+    window = timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+    # Counted per email (not IP): admin-web proxies logins server-to-server,
+    # so every portal login would share the same IP.
+    if await _recent_attempts(key, window) >= LOGIN_MAX_FAILURES:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed login attempts. Try again in {LOGIN_LOCKOUT_MINUTES} minutes.",
+        )
     raw = await find_user_by_email(inp.email)
     if not raw or not raw.get("active", True) or not verify_password(inp.password, raw["password_hash"]):
+        await _record_attempt(key)
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    await db.auth_attempts.delete_many({"key": key})
     # After the password check, so this can't be used to probe which emails exist.
     if not await client_is_active(raw.get("client_id")):
         raise HTTPException(status_code=403, detail="Client account is disabled")
@@ -651,8 +900,15 @@ async def login(inp: LoginInput):
 
 @api_router.post("/auth/forgot-password", response_model=ForgotPasswordResponse)
 async def forgot_password(inp: ForgotPasswordInput):
-    user = await find_user_by_email(inp.email)
     debug_token: Optional[str] = None
+    key = f"forgot:{normalize_email(inp.email)}"
+    if await _recent_attempts(key, timedelta(hours=1)) >= FORGOT_PASSWORD_MAX_PER_HOUR:
+        # Same generic response as always - a 429 here would reveal nothing
+        # useful to the user and would let an attacker probe the limiter.
+        logger.warning("Forgot-password rate limit hit for %s", inp.email)
+        return ForgotPasswordResponse()
+    await _record_attempt(key)
+    user = await find_user_by_email(inp.email)
 
     if user and user.get("active", True) and await client_is_active(user.get("client_id")):
         raw_token = await _create_password_reset_token_record(user, inp.channel)
@@ -669,8 +925,7 @@ async def forgot_password(inp: ForgotPasswordInput):
 
 @api_router.post("/auth/reset-password", response_model=GenericOkResponse)
 async def reset_password(inp: ResetPasswordInput):
-    if not _password_is_strong_enough(inp.new_password):
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
+    ensure_strong_password(inp.new_password)
 
     record = await _get_valid_reset_record(inp.token)
     if not record:
@@ -680,10 +935,7 @@ async def reset_password(inp: ResetPasswordInput):
     if not user or not user.get("active", True):
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {"password_hash": hash_password(inp.new_password)}},
-    )
+    await _set_password(user["id"], inp.new_password)
     # Invalidate all outstanding reset tokens for this user after a successful reset.
     await db.password_reset_tokens.update_many(
         {"user_id": user["id"], "used_at": None},
@@ -698,19 +950,49 @@ async def test_email(inp: TestEmailInput, current_user: User = Depends(require_r
     try:
         await _send_test_email(inp.to_email, inp.subject)
     except Exception as exc:
+        # Details stay in the server log - SMTP errors can include host/user info.
         logger.exception("SMTP test email failed for %s: %s", inp.to_email, exc)
-        raise HTTPException(status_code=500, detail=f"SMTP test failed: {str(exc)}") from exc
+        raise HTTPException(status_code=500, detail="SMTP test failed, check server logs") from exc
 
     return TestEmailResponse(sent_to=inp.to_email, subject=inp.subject)
 
 
+async def _set_password(user_id: str, new_password: str) -> dict:
+    """Sets a password the user chose themselves: clears the first-login flag
+    and bumps token_version so every older session is logged out."""
+    updated = await db.users.find_one_and_update(
+        {"id": user_id},
+        {
+            "$set": {"password_hash": hash_password(new_password), "must_change_password": False},
+            "$inc": {"token_version": 1},
+        },
+        projection={"_id": 0},
+        return_document=True,
+    )
+    return updated
+
+
+@api_router.post("/auth/change-password", response_model=TokenResponse)
+async def change_password(inp: ChangePasswordInput, current_user: User = Depends(get_authenticated_user)):
+    raw = await db.users.find_one({"id": current_user.id}, {"_id": 0})
+    if not verify_password(inp.current_password, raw["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if inp.new_password == inp.current_password:
+        raise HTTPException(status_code=400, detail="New password must be different from the current one")
+    ensure_strong_password(inp.new_password)
+    updated = await _set_password(current_user.id, inp.new_password)
+    # The old token is now invalid (token_version bumped) - hand back a fresh
+    # one so the user stays logged in on this device.
+    return TokenResponse(access_token=create_access_token(updated), user=User(**updated))
+
+
 @api_router.get("/auth/me", response_model=User)
-async def me(current_user: User = Depends(get_current_user)):
+async def me(current_user: User = Depends(get_authenticated_user)):
     return current_user
 
 
 @api_router.post("/auth/logout")
-async def logout(current_user: User = Depends(get_current_user)):
+async def logout(current_user: User = Depends(get_authenticated_user)):
     return {"ok": True}
 
 
@@ -719,6 +1001,14 @@ async def upload_product_image(
     file: UploadFile = File(...),
     current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN)),
 ):
+    if (file.content_type or "").lower() not in IMAGE_ALLOWED_TYPES:
+        raise HTTPException(status_code=415, detail="Only JPEG, PNG, WEBP or HEIC images are allowed")
+    data = await file.read(IMAGE_MAX_BYTES + 1)
+    if len(data) > IMAGE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413, detail=f"Image is too large (max {IMAGE_MAX_BYTES // (1024 * 1024)} MB)"
+        )
+
     if not cloudinary_available():
         raise HTTPException(
             status_code=500,
@@ -726,14 +1016,20 @@ async def upload_product_image(
         )
 
     try:
-        result = cloudinary.uploader.upload(
-            file.file,
-            folder="easy-order/products",
+        # Upload-time ("incoming") transformation: Cloudinary stores only the
+        # shrunk version - max 1000x1000, WEBP, auto quality - typically well
+        # under 200 KB, which keeps the free-plan storage from filling up.
+        result = await asyncio.to_thread(
+            cloudinary.uploader.upload,
+            data,
+            folder=PRODUCT_IMAGE_FOLDER,
             resource_type="image",
-            transformation=[{"quality": "auto"}, {"fetch_format": "auto"}],
+            format="webp",
+            transformation=[{"width": 1000, "height": 1000, "crop": "limit"}, {"quality": "auto:good"}],
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Image upload failed: {str(exc)}") from exc
+        logger.exception("Cloudinary upload failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Image upload failed") from exc
 
     return {
         "url": result.get("secure_url") or result.get("url"),
@@ -753,15 +1049,14 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
     if await find_user_by_email(inp.admin_email):
         raise HTTPException(status_code=400, detail="Email already in use")
 
-    client_obj = Client(**inp.dict(exclude={"admin_name", "admin_email", "admin_password"}))
+    client_obj = Client(**inp.dict(exclude={"admin_name", "admin_email"}))
     await db.clients.insert_one({**client_obj.dict(), "_id": client_obj.id})
 
-    admin_obj = User(email=inp.admin_email, name=inp.admin_name, role=Role.ADMIN, client_id=client_obj.id)
-    admin_raw = admin_obj.dict()
-    admin_raw["password_hash"] = hash_password(inp.admin_password)
-    await db.users.insert_one({**admin_raw, "_id": admin_obj.id})
-
-    return ClientCreateResponse(client=client_obj, admin_user=admin_obj)
+    admin_obj = User(
+        email=normalize_email(inp.admin_email), name=inp.admin_name, role=Role.ADMIN, client_id=client_obj.id
+    )
+    invite = await _invite_user(admin_obj)
+    return ClientCreateResponse(client=client_obj, admin_user=admin_obj, **invite.dict())
 
 
 @api_router.get("/clients/{client_id}", response_model=Client)
@@ -805,7 +1100,7 @@ async def list_users(client_id: Optional[str] = None, current_user: User = Depen
     return [User(**v) for v in docs]
 
 
-@api_router.post("/users", response_model=User)
+@api_router.post("/users", response_model=UserInviteResponse)
 async def create_user(inp: UserInput, current_user: User = Depends(get_current_user)):
     if current_user.role == Role.OPERATOR:
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -826,11 +1121,9 @@ async def create_user(inp: UserInput, current_user: User = Depends(get_current_u
                 raise HTTPException(status_code=400, detail="Valid client_id is required for this role")
             client_id = inp.client_id
 
-    obj = User(email=inp.email, name=inp.name, phone=inp.phone, role=role, client_id=client_id)
-    raw = obj.dict()
-    raw["password_hash"] = hash_password(inp.password)
-    await db.users.insert_one({**raw, "_id": obj.id})
-    return obj
+    obj = User(email=normalize_email(inp.email), name=inp.name, phone=inp.phone, role=role, client_id=client_id)
+    invite = await _invite_user(obj)
+    return UserInviteResponse(**obj.dict(), **invite.dict())
 
 
 @api_router.put("/users/{user_id}", response_model=User)
@@ -861,10 +1154,18 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
         updated["phone"] = inp.phone
     if inp.active is not None:
         updated["active"] = inp.active
+    role_changed = inp.role is not None and inp.role != target.get("role")
     if inp.role is not None:
         updated["role"] = inp.role
     if inp.password:
+        ensure_strong_password(inp.password)
         updated["password_hash"] = hash_password(inp.password)
+        # Set by someone else (admin/superadmin) = temporary, the user must
+        # replace it. Changing your own password here doesn't force that.
+        updated["must_change_password"] = user_id != current_user.id
+    if inp.password or role_changed:
+        # Old tokens carry the old role/password - log them out everywhere.
+        updated["token_version"] = target.get("token_version", 0) + 1
     await db.users.replace_one({"id": user_id}, {**updated, "_id": user_id})
     return User(**updated)
 
@@ -952,13 +1253,16 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
         "additional_discounts": normalize_additional_discounts(additional),
     }
     await db.products.replace_one({"id": product_id}, {**updated, "_id": product_id})
+    if existing.get("image") != updated.get("image"):
+        await _delete_product_image(existing.get("image"))
     return Product(**updated)
 
 
 @api_router.delete("/products/{product_id}")
 async def delete_product(product_id: str, current_user: User = Depends(require_manager)):
-    await get_scoped_or_404("products", product_id, current_user)
+    existing = await get_scoped_or_404("products", product_id, current_user)
     await db.products.delete_one({"id": product_id})
+    await _delete_product_image(existing.get("image"))
     return {"ok": True}
 
 
@@ -988,7 +1292,18 @@ def _allowed_additional_discount(product: dict, requested: Optional[float]) -> f
     return float(requested)
 
 
-@api_router.get("/orders", response_model=List[Order])
+def _order_out(doc: dict) -> OrderOut:
+    items = [{**item, "line_net": round(line_net(item), 2)} for item in doc.get("items", [])]
+    totals = compute_order_totals(doc)
+    return OrderOut(
+        **{**doc, "items": items},
+        totals=OrderTotals(
+            subtotal=round(totals["subtotal"], 2), vat=round(totals["vat"], 2), grand=round(totals["grand"], 2)
+        ),
+    )
+
+
+@api_router.get("/orders", response_model=List[OrderOut])
 async def list_orders(
     customer_id: Optional[str] = None,
     portal: bool = False,
@@ -998,21 +1313,21 @@ async def list_orders(
     if customer_id:
         query = {**query, "customer_id": customer_id}
     docs = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(None)
-    orders = []
-    for value in docs:
-        if portal and current_user.role == Role.SUPERADMIN:
-            client = await db.clients.find_one({"id": value.get("client_id")}, {"_id": 0, "name": 1})
-            value = {**value, "client_name": client.get("name") if client else None}
-        orders.append(Order(**value))
-    return orders
+    if portal and current_user.role == Role.SUPERADMIN:
+        # One query for all client names instead of one per order.
+        client_ids = list({d.get("client_id") for d in docs})
+        clients = await db.clients.find({"id": {"$in": client_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(None)
+        names = {c["id"]: c.get("name") for c in clients}
+        docs = [{**d, "client_name": names.get(d.get("client_id"))} for d in docs]
+    return [_order_out(d) for d in docs]
 
 
-@api_router.get("/orders/{order_id}", response_model=Order)
+@api_router.get("/orders/{order_id}", response_model=OrderOut)
 async def get_order(order_id: str, current_user: User = Depends(get_current_user)):
-    return Order(**await get_scoped_or_404("orders", order_id, current_user))
+    return _order_out(await get_scoped_or_404("orders", order_id, current_user))
 
 
-@api_router.post("/orders", response_model=Order)
+@api_router.post("/orders", response_model=OrderOut)
 async def create_order(inp: OrderInput, current_user: User = Depends(get_current_user)):
     client_id = await resolve_write_client_id(current_user, inp.client_id)
     if not inp.items:
@@ -1053,9 +1368,17 @@ async def create_order(inp: OrderInput, current_user: User = Depends(get_current
             ordered_qty=line.ordered_qty,
         ))
 
-    obj = Order(client_id=client_id, customer_id=customer["id"], customer_name=customer["name"], items=items)
-    await db.orders.insert_one({**obj.dict(), "_id": obj.id})
-    return obj
+    obj = Order(
+        client_id=client_id,
+        customer_id=customer["id"],
+        customer_name=customer["name"],
+        items=items,
+        created_by_user_id=current_user.id,
+        created_by_name=current_user.name,
+    )
+    doc = obj.dict()
+    await db.orders.insert_one({**doc, "_id": obj.id})
+    return _order_out(doc)
 
 
 @api_router.delete("/orders/{order_id}")
@@ -1075,7 +1398,6 @@ async def app_update():
     if not APP_UPDATE_FILE.exists():
         return {"enabled": False}
     try:
-        import json
         return json.loads(APP_UPDATE_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise HTTPException(status_code=503, detail="App update metadata is unavailable")
@@ -1150,7 +1472,16 @@ async def stats_dashboard(
         raise HTTPException(status_code=400, detail="from_date must be before to_date")
 
     query = {} if current_user.role == Role.SUPERADMIN else {"client_id": current_user.client_id}
-    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(None)
+    # created_at is an ISO-8601 UTC string, so a string range works in Mongo
+    # and avoids loading every order ever placed. The loop below re-checks
+    # with real datetimes for any legacy format.
+    created_range: Dict[str, str] = {}
+    if start:
+        created_range["$gte"] = start.isoformat()
+    if end:
+        created_range["$lt"] = (end + timedelta(days=1)).isoformat()
+    order_query = {**query, "created_at": created_range} if created_range else query
+    orders = await db.orders.find(order_query, {"_id": 0}).sort("created_at", -1).to_list(None)
     filtered_orders = []
     for order in orders:
         try:
@@ -1260,14 +1591,57 @@ async def stats_client(client_id: str, current_user: User = Depends(require_role
 
 
 # ---------------- Seed ----------------
+DEMO_CUSTOMERS = [
+    {"name": "Maxi Market d.o.o.", "address": "Bulevar oslobođenja 1, Novi Sad", "pib": "101234567",
+     "phone": "+381 21 123456", "email": "nabavka@maxi-demo.rs"},
+    {"name": "Delikates Prodavnica", "address": "Knez Mihailova 10, Beograd", "pib": "107654321",
+     "phone": "+381 11 7654321", "email": "info@delikates-demo.rs"},
+]
+# Values the older integration tests (test_easy_order/iteration3/iteration4) assert on.
+DEMO_PRODUCTS = [
+    {"name": "Ulje Bundeve 250ml", "manufacturer": "Bački Dukat", "price_no_vat": 450, "vat_rate": 20,
+     "discount": 5, "discounts": [0, 5, 10], "pieces_per_package": 12, "boxes_per_transport": 40},
+    {"name": "Kokosovo ulje 150ml", "manufacturer": "Bački Dukat", "price_no_vat": 380, "vat_rate": 20,
+     "discount": 0, "discounts": [0, 3, 7], "pieces_per_package": 12, "boxes_per_transport": 50},
+    {"name": "Jabukovo sirce 1L", "manufacturer": "Zdrava Hrana", "price_no_vat": 220, "vat_rate": 10,
+     "discount": 10, "discounts": [0, 10, 15], "pieces_per_package": 6, "boxes_per_transport": 60},
+]
+
+
+async def _seed_demo_data() -> None:
+    """Local/CI only (never IS_PRODUCTION): a demo client with an admin,
+    customers and products, so tests run against an empty database."""
+    client = await db.clients.find_one({"name": "Demo Wholesaler"}, {"_id": 0})
+    if not client:
+        client_obj = Client(name="Demo Wholesaler")
+        client = client_obj.dict()
+        await db.clients.insert_one({**client, "_id": client_obj.id})
+    client_id = client["id"]
+
+    if not await find_user_by_email(DEMO_ADMIN_EMAIL):
+        admin = User(email=normalize_email(DEMO_ADMIN_EMAIL), name="Demo Admin", role=Role.ADMIN, client_id=client_id)
+        raw = {**admin.dict(), "token_version": 0, "password_hash": hash_password(DEMO_ADMIN_PASSWORD)}
+        await db.users.insert_one({**raw, "_id": admin.id})
+
+    for data in DEMO_CUSTOMERS:
+        if not await db.customers.find_one({"client_id": client_id, "name": data["name"]}):
+            obj = Customer(client_id=client_id, **data)
+            await db.customers.insert_one({**obj.dict(), "_id": obj.id})
+    for data in DEMO_PRODUCTS:
+        if not await db.products.find_one({"client_id": client_id, "name": data["name"]}):
+            obj = Product(client_id=client_id, **data)
+            await db.products.insert_one({**obj.dict(), "_id": obj.id})
+
+
 async def seed_data():
-    if await db.clients.count_documents({}) == 0:
-        demo_client = Client(name="Demo Wholesaler")
-        await db.clients.insert_one({**demo_client.dict(), "_id": demo_client.id})
-        demo_client_id = demo_client.id
-    else:
-        first = await db.clients.find_one({}, {"_id": 0, "id": 1})
-        demo_client_id = first["id"]
+    # Opt-in, not just "not production": a local backend may point at the
+    # real Atlas database (backend/.env), and a demo admin with a public
+    # password must never land there.
+    if SEED_DEMO_DATA:
+        if IS_PRODUCTION:
+            logger.error("SEED_DEMO_DATA is ignored in production")
+        else:
+            await _seed_demo_data()
 
     if not await find_user_by_email(SUPERADMIN_EMAIL):
         if SUPERADMIN_PASSWORD == DEFAULT_SUPERADMIN_PASSWORD:
@@ -1280,8 +1654,9 @@ async def seed_data():
             logger.warning(
                 "SUPERADMIN_PASSWORD not set in backend/.env - using an insecure default password."
             )
-        superadmin = User(email=SUPERADMIN_EMAIL, name="Super Admin", role=Role.SUPERADMIN, client_id=None)
+        superadmin = User(email=normalize_email(SUPERADMIN_EMAIL), name="Super Admin", role=Role.SUPERADMIN, client_id=None)
         raw = superadmin.dict()
+        raw["token_version"] = 0
         raw["password_hash"] = hash_password(SUPERADMIN_PASSWORD)
         await db.users.insert_one({**raw, "_id": superadmin.id})
 

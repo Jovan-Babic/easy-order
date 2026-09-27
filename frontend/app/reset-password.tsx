@@ -38,8 +38,9 @@ export default function ResetPasswordScreen() {
       setError(t("missingResetToken"));
       return;
     }
-    if (newPassword.length < 8) {
-      setError(t("passwordTooShort"));
+    // Same rule as the backend: 8+ characters with a letter and a digit.
+    if (newPassword.length < 8 || !/[A-Za-z]/.test(newPassword) || !/\d/.test(newPassword)) {
+      setError(t("passwordRules"));
       return;
     }
     if (newPassword !== confirmPassword) {

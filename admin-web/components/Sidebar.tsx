@@ -75,6 +75,12 @@ export function Sidebar({ user }: { user: NavUser }) {
         <p className="truncate text-sm font-semibold text-onSurface">{user.name}</p>
         <p className="truncate text-xs text-muted">{user.email}</p>
         <p className="mb-3 text-xs uppercase text-muted">{user.role}</p>
+        <Link
+          href="/change-password"
+          className="mb-2 block w-full rounded-md border border-border px-3 py-1.5 text-center text-sm font-semibold text-onSurfaceSecondary hover:bg-surfaceTertiary"
+        >
+          {t("changePassword")}
+        </Link>
         <button
           onClick={logout}
           className="w-full rounded-md border border-border px-3 py-1.5 text-sm font-semibold text-onSurfaceSecondary hover:bg-surfaceTertiary"

@@ -10,6 +10,9 @@ export type User = {
   role: Role;
   client_id?: string | null;
   active: boolean;
+  // True until an invited user replaces their temporary password; the
+  // backend rejects every business call until then (see RouteGuard).
+  must_change_password?: boolean;
   created_at: string;
 };
 
@@ -65,6 +68,7 @@ export type OrderItem = {
   discount?: number;
   additional_discount?: number;
   ordered_qty: number;
+  line_net?: number; // server-computed, only on responses
 };
 
 export type Order = {
@@ -73,8 +77,40 @@ export type Order = {
   customer_id: string;
   customer_name: string;
   items: OrderItem[];
+  status?: string;
+  created_by_user_id?: string | null;
+  created_by_name?: string | null;
+  // Server-computed (backend/calc.py), only on responses.
+  totals?: { subtotal: number; vat: number; grand: number };
   created_at: string;
 };
+
+/** What the backend accepts per order line - it takes everything else
+ * (name, price, VAT, ...) from the stored product. */
+export type OrderLineInput = {
+  product_id: string;
+  ordered_qty: number;
+  discount?: number;
+  additional_discount?: number;
+};
+
+export class ApiError extends Error {
+  status: number;
+  detail: string;
+
+  constructor(status: number, body: string) {
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body);
+      if (typeof parsed?.detail === "string") detail = parsed.detail;
+    } catch {
+      // not JSON - keep the raw text
+    }
+    super(`API ${status}: ${detail}`);
+    this.status = status;
+    this.detail = detail;
+  }
+}
 
 // Pushed in by AuthContext — api.ts is a plain module, not a hook, so it
 // can't useContext itself.
@@ -86,6 +122,11 @@ export function setAuthToken(token: string | null) {
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn;
+}
+
+let onPasswordChangeRequired: (() => void) | null = null;
+export function setPasswordChangeRequiredHandler(fn: (() => void) | null) {
+  onPasswordChangeRequired = fn;
 }
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
@@ -100,12 +141,17 @@ async function req<T>(path: string, options?: RequestInit): Promise<T> {
       ...(options?.headers as Record<string, string> | undefined),
     },
   });
-  if (res.status === 401) {
+  if (res.status === 401 && !path.startsWith("/auth/login")) {
+    // A wrong password on the login screen is also a 401 - that must not
+    // look like "session expired".
     onUnauthorized?.();
   }
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
+    const error = new ApiError(res.status, await res.text());
+    if (res.status === 403 && error.detail === "Password change required") {
+      onPasswordChangeRequired?.();
+    }
+    throw error;
   }
   return res.json();
 }
@@ -122,6 +168,11 @@ export const api = {
     req<{ ok: boolean; message: string }>("/auth/forgot-password", {
       method: "POST",
       body: JSON.stringify({ email, channel }),
+    }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    req<TokenResponse>("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
     }),
   resetPassword: (token: string, newPassword: string) =>
     req<{ ok: boolean }>("/auth/reset-password", {
@@ -160,7 +211,7 @@ export const api = {
   listOrders: (customerId?: string) =>
     req<Order[]>(`/orders${customerId ? `?customer_id=${customerId}` : ""}`),
   getOrder: (id: string) => req<Order>(`/orders/${id}`),
-  createOrder: (o: Partial<Order>) =>
+  createOrder: (o: { customer_id: string; items: OrderLineInput[] }) =>
     req<Order>("/orders", { method: "POST", body: JSON.stringify(o) }),
   deleteOrder: (id: string) =>
     req<{ ok: boolean }>(`/orders/${id}`, { method: "DELETE" }),

@@ -21,7 +21,7 @@ import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
-import { api, Customer, Product } from "@/src/api";
+import { api, ApiError, Customer, Product } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
 
@@ -98,8 +98,19 @@ function parseCountryCodeConfig(rawValue?: string): CountryCodeOption[] {
   return codes.map((code) => COUNTRY_CODE_LOOKUP[code] || { code, flag: "🌍", label: code });
 }
 
-const COUNTRY_CODES = parseCountryCodeConfig((globalThis as any).process?.env?.EXPO_PUBLIC_COUNTRY_CODES);
+// Must be the literal `process.env.EXPO_PUBLIC_*` form - Expo only inlines
+// env vars written exactly like this at build time.
+const COUNTRY_CODES = parseCountryCodeConfig(process.env.EXPO_PUBLIC_COUNTRY_CODES);
 const DISCOUNT_OPTIONS = [0, 5, 15, 25, 30];
+
+// Supplier discount typed by the admin: "7,5" / "7.5" -> 7.5; empty -> 0;
+// anything unparsable or outside 0-100 -> null (rejected on save).
+function parseDiscount(raw: string | number | undefined): number | null {
+  const text = String(raw ?? "").trim().replace(",", ".");
+  if (text === "") return 0;
+  const value = Number(text);
+  return Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
+}
 
 function parsePhone(rawPhone?: string) {
   const value = (rawPhone || "").trim();
@@ -160,7 +171,7 @@ export default function AdminScreen() {
   const openAdd = () => {
     setEditing(null);
     setForm(tab === "products"
-      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: 0, discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "" }
+      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "" }
       : { name: "", address: "", email: "", phone: "", countryCode: "+381", phoneNumber: "", pib: "" });
     setCountryCodeOpen(false);
     setPermMsg(false);
@@ -178,7 +189,9 @@ export default function AdminScreen() {
             manufacturer: item.manufacturer || "",
             price_no_vat: String(item.price_no_vat ?? ""),
             vat_rate: String(item.vat_rate ?? "20"),
-            discount: DISCOUNT_OPTIONS.includes(item.discount ?? 0) ? (item.discount ?? 0) : 0,
+            // Keep whatever the product has - it used to be reset to 0 when it
+            // wasn't one of the chips, silently wiping e.g. a 10% discount.
+            discount: String(item.discount ?? 0),
             discounts: [...DISCOUNT_OPTIONS],
             additional_discounts: item.additional_discounts && item.additional_discounts.length
               ? item.additional_discounts.filter((v: number) => Number.isInteger(v) && v >= 0 && v <= 15)
@@ -221,6 +234,12 @@ export default function AdminScreen() {
       aspect: [1, 1],
     });
     if (res.canceled || !res.assets?.[0]?.uri) return;
+    // Backend limit (IMAGE_MAX_BYTES) - checked here too so the user gets a
+    // clear message instead of a failed upload. fileSize can be missing.
+    if ((res.assets[0].fileSize ?? 0) > 4 * 1024 * 1024) {
+      showToast?.(t("imageTooLarge"));
+      return;
+    }
 
     const file = {
       uri: res.assets[0].uri,
@@ -233,12 +252,18 @@ export default function AdminScreen() {
       setForm((f: any) => ({ ...f, image: remoteUrl }));
     } catch (error) {
       console.error("Image upload failed", error);
-      showToast?.("Image upload failed");
+      // 413/415 from the backend carry a readable reason (too large / wrong type).
+      showToast?.(error instanceof ApiError ? error.detail : "Image upload failed");
     }
   };
 
   const save = async () => {
     if (!form.name?.trim()) return;
+    const discountValue = parseDiscount(form.discount);
+    if (tab === "products" && discountValue === null) {
+      showToast(t("discountInvalid"));
+      return;
+    }
     try {
       setSaving(true);
       if (tab === "products") {
@@ -248,7 +273,7 @@ export default function AdminScreen() {
           manufacturer: form.manufacturer,
           price_no_vat: Number(form.price_no_vat) || 0,
           vat_rate: Number(form.vat_rate) || 0,
-          discount: DISCOUNT_OPTIONS.includes(Number(form.discount)) ? Number(form.discount) : 0,
+          discount: discountValue ?? 0,
           discounts: [...DISCOUNT_OPTIONS],
           additional_discounts: (form.additional_discounts && form.additional_discounts.length
             ? form.additional_discounts
@@ -421,19 +446,33 @@ export default function AdminScreen() {
                     <Text style={styles.discHint}>{t("setDefault")}</Text>
                     <View style={styles.discChips}>
                       {DISCOUNT_OPTIONS.map((d) => {
-                        const isDefault = form.discount === d;
+                        const isDefault = form.discount !== "" && parseDiscount(form.discount) === d;
                         return (
                           <Pressable
                             key={String(d)}
                             testID={`disc-chip-${d}`}
                             style={[styles.discChip, isDefault && styles.discChipDefault]}
-                            onPress={() => setForm((f: any) => ({ ...f, discount: d }))}
+                            onPress={() => setForm((f: any) => ({ ...f, discount: String(d) }))}
                           >
                             {isDefault && <Ionicons name="star" size={12} color="#fff" style={{ marginRight: 4 }} />}
                             <Text style={[styles.discChipText, isDefault && styles.discChipTextDefault]}>{d}%</Text>
                           </Pressable>
                         );
                       })}
+                    </View>
+                    {/* Chips are shortcuts; any 0-100 value can be typed (only admins edit products). */}
+                    <View style={styles.discInputRow}>
+                      <Text style={[styles.discHint, { marginTop: 0 }]}>{t("orEnterDiscount")}</Text>
+                      <TextInput
+                        testID="form-discount-input"
+                        value={form.discount}
+                        onChangeText={(v) => setForm((f: any) => ({ ...f, discount: v.replace(/[^0-9.,]/g, "") }))}
+                        keyboardType="decimal-pad"
+                        style={styles.discInput}
+                        placeholder="0"
+                        placeholderTextColor={colors.muted}
+                      />
+                      <Text style={[styles.discHint, { marginTop: 0 }]}>%</Text>
                     </View>
                   </View>
 
@@ -645,6 +684,18 @@ const styles = StyleSheet.create({
   },
   discChipDefault: { backgroundColor: colors.brand, borderColor: colors.brand },
   discChipText: { fontSize: font.base, fontWeight: "700", color: colors.onSurfaceSecondary },
+  discInputRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.sm },
+  discInput: {
+    minWidth: 72,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    fontSize: font.base,
+    color: colors.onSurface,
+    textAlign: "right",
+  },
   discChipTextDefault: { color: "#fff" },
   phoneRow: {
     flexDirection: "row",

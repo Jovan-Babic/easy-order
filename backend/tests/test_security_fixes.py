@@ -11,9 +11,11 @@ import uuid
 
 import requests
 
+from helpers import activate_invited_user
+
 BASE_URL = os.environ.get(
     "EXPO_PUBLIC_BACKEND_URL",
-    "https://order-invoice-app-2.preview.emergentagent.com",
+    "http://localhost:8000",
 ).rstrip("/")
 API = f"{BASE_URL}/api"
 PASSWORD = "TestPass123!"
@@ -50,18 +52,16 @@ class TestSetup:
             "name": f"TEST_Sec_{suffix}",
             "admin_name": "TEST Sec Admin",
             "admin_email": S.admin_email,
-            "admin_password": PASSWORD,
         })
         assert r.status_code == 200, r.text
         S.client_id = r.json()["client"]["id"]
         S.admin_id = r.json()["admin_user"]["id"]
-        S.admin = _login(S.admin_email)
+        S.admin = activate_invited_user(S.admin_email, r.json()["temporary_password"], PASSWORD)
 
         # Second admin in the same client.
         r = superadmin_client.post(f"{API}/users", json={
             "email": f"test-sec-admin2-{suffix}@easyorder.dev",
             "name": "TEST Sec Admin 2",
-            "password": PASSWORD,
             "role": "admin",
             "client_id": S.client_id,
         })
@@ -70,10 +70,10 @@ class TestSetup:
 
         op_email = f"test-sec-op-{suffix}@easyorder.dev"
         r = S.admin.post(f"{API}/users", json={
-            "email": op_email, "name": "TEST Sec Operator", "password": PASSWORD, "role": "operator",
+            "email": op_email, "name": "TEST Sec Operator", "role": "operator",
         })
         assert r.status_code == 200, r.text
-        S.operator = _login(op_email)
+        S.operator = activate_invited_user(op_email, r.json()["temporary_password"], PASSWORD)
 
         r = S.admin.post(f"{API}/products", json={
             "name": "TEST_Sec_Product",
@@ -94,10 +94,9 @@ class TestSetup:
             "name": f"TEST_SecOther_{suffix}",
             "admin_name": "TEST Other Admin",
             "admin_email": f"test-sec-other-{suffix}@easyorder.dev",
-            "admin_password": PASSWORD,
         })
         assert r.status_code == 200, r.text
-        other = _login(f"test-sec-other-{suffix}@easyorder.dev")
+        other = activate_invited_user(f"test-sec-other-{suffix}@easyorder.dev", r.json()["temporary_password"], PASSWORD)
         S.foreign_product_id = other.post(f"{API}/products", json={"name": "TEST_Foreign", "price_no_vat": 1}).json()["id"]
         S.foreign_customer_id = other.post(f"{API}/customers", json={"name": "TEST_ForeignCust"}).json()["id"]
 

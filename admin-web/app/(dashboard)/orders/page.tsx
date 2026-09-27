@@ -19,7 +19,12 @@ type Order = {
     discount?: number;
     additional_discount?: number;
     vat_rate?: number;
+    line_net: number;
   }[];
+  // Computed by the backend (backend/calc.py) - no money math on this page.
+  totals: { subtotal: number; vat: number; grand: number };
+  status: string;
+  created_by_name?: string | null;
   created_at: string;
 };
 
@@ -34,10 +39,6 @@ type Customer = {
 
 function discount(item: Order["items"][number]) {
   return Math.max(0, Math.min(100, (item.discount ?? 0) + (item.additional_discount ?? 0)));
-}
-
-function lineNet(item: Order["items"][number]) {
-  return (item.price_no_vat ?? 0) * item.ordered_qty * (1 - discount(item) / 100);
 }
 
 function money(value: number) {
@@ -90,6 +91,8 @@ export default function OrdersPage() {
               {isSuperAdmin && <th className="px-4 py-3">{t("client")}</th>}
               <th className="px-4 py-3">{t("customer")}</th>
               <th className="px-4 py-3">{t("items")}</th>
+              <th className="px-4 py-3 text-right">{t("grandTotal")}</th>
+              <th className="px-4 py-3">{t("createdBy")}</th>
               <th className="px-4 py-3">{t("date")}</th>
               <th className="no-print px-4 py-3 text-right">{t("actions")}</th>
             </tr>
@@ -100,6 +103,8 @@ export default function OrdersPage() {
                 {isSuperAdmin && <td className="px-4 py-3 text-onSurfaceSecondary">{o.client_name ?? o.client_id}</td>}
                 <td className="px-4 py-3 font-semibold text-onSurface">{o.customer_name}</td>
                 <td className="px-4 py-3 text-onSurfaceSecondary">{o.items.length}</td>
+                <td className="px-4 py-3 text-right font-semibold text-onSurface">{money(o.totals.grand)}</td>
+                <td className="px-4 py-3 text-onSurfaceSecondary">{o.created_by_name || "—"}</td>
                 <td className="px-4 py-3 text-onSurfaceSecondary">
                   {new Date(o.created_at).toLocaleDateString()}
                 </td>
@@ -123,7 +128,7 @@ export default function OrdersPage() {
             ))}
             {orders.length === 0 && (
               <tr>
-                <td colSpan={isSuperAdmin ? 5 : 4} className="px-4 py-6 text-center text-muted">
+                <td colSpan={isSuperAdmin ? 7 : 6} className="px-4 py-6 text-center text-muted">
                   {t("noOrdersYet")}
                 </td>
               </tr>
@@ -165,6 +170,7 @@ export default function OrdersPage() {
               <div className="mb-6 grid gap-x-8 gap-y-1 text-sm sm:grid-cols-2">
                 {isSuperAdmin && <p><strong>{t("client")}:</strong> {selectedOrder.client_name ?? selectedOrder.client_id}</p>}
                 <p><strong>{t("customer")}:</strong> {selectedOrder.customer_name}</p>
+                {selectedOrder.created_by_name && <p><strong>{t("createdBy")}:</strong> {selectedOrder.created_by_name}</p>}
                 {customer?.pib && <p><strong>{t("taxIdPib")}:</strong> {customer.pib}</p>}
                 {customer?.address && <p><strong>{t("address")}:</strong> {customer.address}</p>}
                 {customer?.phone && <p><strong>{t("phone")}:</strong> {customer.phone}</p>}
@@ -194,26 +200,20 @@ export default function OrdersPage() {
                         <td className="px-2 py-3 text-right">{item.ordered_qty}</td>
                         <td className="px-2 py-3 text-right">{money(item.price_no_vat ?? 0)}</td>
                         <td className="px-2 py-3 text-right">{discount(item)}%</td>
-                        <td className="px-2 py-3 text-right font-semibold">{money(lineNet(item))}</td>
+                        <td className="px-2 py-3 text-right font-semibold">{money(item.line_net)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
 
-              {(() => {
-                const subtotal = selectedOrder.items.reduce((sum, item) => sum + lineNet(item), 0);
-                const vat = selectedOrder.items.reduce((sum, item) => sum + lineNet(item) * ((item.vat_rate ?? 0) / 100), 0);
-                return (
-                  <div className="ml-auto mt-6 max-w-xs space-y-2 text-sm">
-                    <div className="flex justify-between"><span>{t("subtotal")}</span><span>{money(subtotal)}</span></div>
-                    <div className="flex justify-between"><span>{t("vat")}</span><span>{money(vat)}</span></div>
-                    <div className="flex justify-between border-t-2 border-brand pt-2 text-lg font-extrabold text-brand">
-                      <span>{t("grandTotal")}</span><span>{money(subtotal + vat)}</span>
-                    </div>
-                  </div>
-                );
-              })()}
+              <div className="ml-auto mt-6 max-w-xs space-y-2 text-sm">
+                <div className="flex justify-between"><span>{t("subtotal")}</span><span>{money(selectedOrder.totals.subtotal)}</span></div>
+                <div className="flex justify-between"><span>{t("vat")}</span><span>{money(selectedOrder.totals.vat)}</span></div>
+                <div className="flex justify-between border-t-2 border-brand pt-2 text-lg font-extrabold text-brand">
+                  <span>{t("grandTotal")}</span><span>{money(selectedOrder.totals.grand)}</span>
+                </div>
+              </div>
                   </>
                 );
               })()}

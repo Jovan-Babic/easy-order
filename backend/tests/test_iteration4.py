@@ -1,7 +1,7 @@
 """Iteration 4 backend tests: product `discounts` array (multi-discount) + order flow with chosen discount."""
 import os
 
-BASE_URL = os.environ["EXPO_PUBLIC_BACKEND_URL"].rstrip("/")
+BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "http://localhost:8000").rstrip("/")
 API = f"{BASE_URL}/api"
 
 # client fixture comes from conftest.py (authenticated as the demo Admin)
@@ -81,7 +81,8 @@ class TestProductDiscountsCRUD:
             client.delete(f"{API}/products/{pid}")
 
     def test_create_without_discounts_defaults_to_empty(self, client):
-        """If discounts not provided, backend accepts and defaults [] (backwards compat)."""
+        """If discounts not provided, backend accepts it and the list holds just the
+        default discount (normalize_discounts always includes it)."""
         payload = {
             "name": "TEST_NoDiscArr",
             "price_no_vat": 50,
@@ -91,7 +92,7 @@ class TestProductDiscountsCRUD:
         assert r.status_code == 200
         pid = r.json()["id"]
         try:
-            assert r.json()["discounts"] == []
+            assert r.json()["discounts"] == [0]
         finally:
             client.delete(f"{API}/products/{pid}")
 
