@@ -169,6 +169,21 @@ class TestImageUpload:
         big = b"\x89PNG" + b"0" * (4 * 1024 * 1024)
         assert self._post(api_client, "big.png", big, "image/png").status_code == 413
 
+    def _delete(self, session, url):
+        headers = {"Authorization": session.headers["Authorization"]}
+        return requests.delete(f"{API}/upload-image", headers=headers, params={"url": url})
+
+    def test_delete_rejects_foreign_url(self, api_client):
+        assert self._delete(api_client, "https://example.com/x.png").status_code == 400
+
+    def test_delete_refuses_image_in_use(self, api_client):
+        url = "https://res.cloudinary.com/demo/image/upload/v1/easy-order/products/TEST_inuse.webp"
+        product = api_client.post(f"{API}/products", json={"name": "TEST_ImgInUse", "image": url, "price_no_vat": 1}).json()
+        try:
+            assert self._delete(api_client, url).status_code == 409
+        finally:
+            api_client.delete(f"{API}/products/{product['id']}")
+
 
 class TestOrderFields:
     def test_order_has_status_author_and_totals(self, api_client):

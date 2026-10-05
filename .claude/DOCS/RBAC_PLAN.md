@@ -186,8 +186,8 @@ Primer: naručeno 10, magacin ima 7. Magacioner upiše `picked_qty = 7`, faktura
 
 ## 10. Faze
 
-### Faza 0 — Popravka uploada slika (pre svega ostalog)
-Sekcija 12. Nezavisno od magacina, može odmah.
+### Faza 0 — Popravka uploada slika (pre svega ostalog) — ✅ urađeno
+Sekcija 12. Nezavisno od magacina. Implementirano: upload tek na „Sačuvaj“ (mobilna + portal), `DELETE /upload-image`, `backend/scripts/cleanup_orphan_images.py`, testovi. Skriptu pokrenuti ručno (prvo bez `--apply`) nad pravom bazom.
 
 ### Faza 1 — Uloga i dozvole
 Backend tačke 1–5 i 9, portal pristup po ruti + izbor uloge u `/users`, mobilna tabovi po ulozi, testovi dozvola.

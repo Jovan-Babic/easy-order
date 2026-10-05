@@ -206,6 +206,9 @@ export const api = {
     });
     return response.url;
   },
+  // Cleanup when a product write fails after its image was uploaded on "Save".
+  deleteUploadedImage: (url: string) =>
+    req<{ ok: boolean }>(`/upload-image?url=${encodeURIComponent(url)}`, { method: 'DELETE' }),
 
   // orders
   listOrders: (customerId?: string) =>

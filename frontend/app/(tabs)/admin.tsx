@@ -149,6 +149,8 @@ export default function AdminScreen() {
   const [countryCodeOpen, setCountryCodeOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [permMsg, setPermMsg] = useState(false);
+  // Picked image stays local until "Save"; nothing is uploaded before that.
+  const [pendingImage, setPendingImage] = useState<{ uri: string; name: string; type: string } | null>(null);
   const additionalDiscountOptions = Array.from({ length: 16 }, (_, i) => i);
 
   const load = useCallback(async () => {
@@ -168,7 +170,13 @@ export default function AdminScreen() {
     }, [load])
   );
 
+  const closeForm = () => {
+    setFormOpen(false);
+    setPendingImage(null);
+  };
+
   const openAdd = () => {
+    setPendingImage(null);
     setEditing(null);
     setForm(tab === "products"
       ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "" }
@@ -180,6 +188,7 @@ export default function AdminScreen() {
 
   const openEdit = (item: any) => {
     const customerPhone = parsePhone(item.phone || "");
+    setPendingImage(null);
     setEditing(item);
     setForm(
       tab === "products"
@@ -241,20 +250,12 @@ export default function AdminScreen() {
       return;
     }
 
-    const file = {
+    // Only keep the local file + preview; it is uploaded on "Save" (see save()).
+    setPendingImage({
       uri: res.assets[0].uri,
       name: res.assets[0].fileName || `product-${Date.now()}.jpg`,
       type: res.assets[0].mimeType || "image/jpeg",
-    } as any;
-
-    try {
-      const remoteUrl = await api.uploadProductImage(file as File);
-      setForm((f: any) => ({ ...f, image: remoteUrl }));
-    } catch (error) {
-      console.error("Image upload failed", error);
-      // 413/415 from the backend carry a readable reason (too large / wrong type).
-      showToast?.(error instanceof ApiError ? error.detail : "Image upload failed");
-    }
+    });
   };
 
   const save = async () => {
@@ -264,12 +265,25 @@ export default function AdminScreen() {
       showToast(t("discountInvalid"));
       return;
     }
+    let uploadedUrl: string | null = null;
     try {
       setSaving(true);
       if (tab === "products") {
+        let imageUrl = form.image;
+        if (pendingImage) {
+          try {
+            uploadedUrl = await api.uploadProductImage(pendingImage as unknown as File);
+          } catch (error) {
+            console.error("Image upload failed", error);
+            // 413/415 from the backend carry a readable reason (too large / wrong type).
+            showToast?.(error instanceof ApiError ? error.detail : "Image upload failed");
+            return;
+          }
+          imageUrl = uploadedUrl;
+        }
         const payload = {
           name: form.name.trim(),
-          image: form.image,
+          image: imageUrl,
           manufacturer: form.manufacturer,
           price_no_vat: Number(form.price_no_vat) || 0,
           vat_rate: Number(form.vat_rate) || 0,
@@ -297,8 +311,12 @@ export default function AdminScreen() {
         else await api.createCustomer(payload);
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      setFormOpen(false);
+      closeForm();
       await load();
+    } catch (error) {
+      // The product wasn't saved - don't leave the just-uploaded image orphaned.
+      if (uploadedUrl) api.deleteUploadedImage(uploadedUrl).catch(() => {});
+      throw error;
     } finally {
       setSaving(false);
     }
@@ -404,8 +422,8 @@ export default function AdminScreen() {
       </Pressable>
 
       {/* Form modal */}
-      <Modal visible={formOpen} transparent animationType="slide" onRequestClose={() => setFormOpen(false)}>
-        <Pressable style={styles.backdrop} onPress={() => setFormOpen(false)} />
+      <Modal visible={formOpen} transparent animationType="slide" onRequestClose={closeForm}>
+        <Pressable style={styles.backdrop} onPress={closeForm} />
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
           <View style={[styles.sheet, { paddingBottom: safeBottom + spacing.lg }]}>
             <View style={styles.sheetHandle} />
@@ -418,8 +436,8 @@ export default function AdminScreen() {
               {tab === "products" && (
                 <>
                   <Pressable testID="pick-image-button" style={styles.imagePicker} onPress={pickImage}>
-                    {form.image ? (
-                      <Image source={{ uri: form.image }} style={styles.pickedImage} contentFit="cover" />
+                    {pendingImage || form.image ? (
+                      <Image source={{ uri: pendingImage?.uri || form.image }} style={styles.pickedImage} contentFit="cover" />
                     ) : (
                       <>
                         <Ionicons name="image-outline" size={32} color={colors.muted} />
@@ -555,7 +573,7 @@ export default function AdminScreen() {
               <View style={{ height: spacing.md }} />
               <Button title={t("save")} icon="checkmark" onPress={save} loading={saving} disabled={!form.name?.trim()} testID="form-save-button" />
               <View style={{ height: spacing.sm }} />
-              <Button title={t("cancel")} variant="ghost" onPress={() => setFormOpen(false)} testID="form-cancel-button" />
+              <Button title={t("cancel")} variant="ghost" onPress={closeForm} testID="form-cancel-button" />
             </ScrollView>
           </View>
         </KeyboardAvoidingView>

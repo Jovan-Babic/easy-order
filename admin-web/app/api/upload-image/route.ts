@@ -8,3 +8,8 @@ export async function POST(req: NextRequest) {
     body: formData,
   }));
 }
+
+export async function DELETE(req: NextRequest) {
+  const url = req.nextUrl.searchParams.get("url") || "";
+  return proxyJson(await backendFetch(`/upload-image?url=${encodeURIComponent(url)}`, { method: "DELETE" }));
+}
