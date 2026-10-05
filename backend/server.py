@@ -1095,6 +1095,14 @@ async def delete_client(client_id: str, current_user: User = Depends(require_rol
     return {"ok": True}
 
 
+@api_router.post("/clients/{client_id}/activate")
+async def activate_client(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    result = await db.clients.update_one({"id": client_id}, {"$set": {"active": True}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return {"ok": True}
+
+
 # ---------------- Users ----------------
 @api_router.get("/users", response_model=List[User])
 async def list_users(client_id: Optional[str] = None, current_user: User = Depends(get_current_user)):

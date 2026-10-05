@@ -84,6 +84,15 @@ export default function ClientsPage() {
     await load();
   };
 
+  const activate = async (c: Client) => {
+    const res = await fetch(`/api/clients/${c.id}/activate`, { method: "POST" });
+    if (!res.ok) {
+      setError(t("failedActivateClient"));
+      return;
+    }
+    await load();
+  };
+
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
@@ -211,9 +220,13 @@ export default function ClientsPage() {
                       <Link href={`/clients/${c.id}`} className="font-semibold text-brand hover:underline">
                         {t("view")}
                       </Link>
-                      {c.active && (
+                      {c.active ? (
                         <button onClick={() => setPendingDelete(c)} className="font-semibold text-error hover:underline">
                           {t("delete")}
+                        </button>
+                      ) : (
+                        <button onClick={() => activate(c)} className="font-semibold text-success hover:underline">
+                          {t("activate")}
                         </button>
                       )}
                     </div>
