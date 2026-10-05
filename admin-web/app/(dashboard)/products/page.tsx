@@ -84,6 +84,9 @@ export default function ProductsPage() {
   const [form, setForm] = useState<ProductFormState>(emptyForm());
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [pendingDelete, setPendingDelete] = useState<Product | null>(null);
+  // A newly picked image stays local until "Save"; nothing is uploaded before that.
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name || id;
 
@@ -109,7 +112,19 @@ export default function ProductsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  const clearPendingImage = () => {
+    setPendingFile(null);
+    setPreviewUrl(null);
+  };
+
   const closeForm = () => {
+    clearPendingImage();
     setShowForm(false);
     setEditingId(null);
     setForm(emptyForm());
@@ -118,6 +133,7 @@ export default function ProductsPage() {
   };
 
   const openCreateForm = () => {
+    clearPendingImage();
     setEditingId(null);
     setError(null);
     setFieldErrors({});
@@ -126,6 +142,7 @@ export default function ProductsPage() {
   };
 
   const openEditForm = (product: Product) => {
+    clearPendingImage();
     setEditingId(product.id);
     setError(null);
     setForm({
@@ -178,43 +195,44 @@ export default function ProductsPage() {
     return Object.keys(nextErrors).length === 0;
   };
 
-  const updateImageFromFile = async (file: File | null) => {
+  const selectImageFile = (file: File | null) => {
     if (!file) return;
     if (file.size > MAX_IMAGE_BYTES) {
       setError(t("imageTooLarge"));
       return;
     }
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      const res = await fetch("/api/upload-image", {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setError(body.detail || t("imageUploadFailed"));
-        return;
-      }
-      const json = await res.json();
-      setForm((prev) => ({ ...prev, image: json.url }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("imageUploadFailed"));
-    }
+    setError(null);
+    setPendingFile(file);
+    setPreviewUrl(URL.createObjectURL(file));
   };
+
+  const deleteUploadedImage = (url: string) =>
+    fetch(`/api/upload-image?url=${encodeURIComponent(url)}`, { method: "DELETE" }).catch(() => {});
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!validateForm()) return;
     setSaving(true);
+    let uploadedUrl: string | null = null;
     try {
+      let imageUrl = form.image;
+      if (pendingFile) {
+        const formData = new FormData();
+        formData.append("file", pendingFile);
+        const upRes = await fetch("/api/upload-image", { method: "POST", body: formData });
+        if (!upRes.ok) {
+          const body = await upRes.json().catch(() => ({}));
+          setError(body.detail || t("imageUploadFailed"));
+          return;
+        }
+        uploadedUrl = (await upRes.json()).url;
+        imageUrl = uploadedUrl as string;
+      }
       const parsedDiscount = toNumber(form.discount);
       const payload: Record<string, unknown> = {
         name: form.name.trim(),
-        image: form.image,
+        image: imageUrl,
         manufacturer: form.manufacturer,
         price_no_vat: toNumber(form.price_no_vat),
         vat_rate: toNumber(form.vat_rate),
@@ -231,12 +249,16 @@ export default function ProductsPage() {
       const method = editingId ? "PUT" : "POST";
       const res = await fetch(endpoint, { method, body: JSON.stringify(payload) });
       if (!res.ok) {
+        if (uploadedUrl) await deleteUploadedImage(uploadedUrl);
         const body = await res.json().catch(() => ({}));
         setError(body.detail || t("productSaveFailed"));
         return;
       }
       closeForm();
       await load();
+    } catch (err) {
+      if (uploadedUrl) await deleteUploadedImage(uploadedUrl);
+      setError(err instanceof Error ? err.message : t("productSaveFailed"));
     } finally {
       setSaving(false);
     }
@@ -297,9 +319,9 @@ export default function ProductsPage() {
             <form onSubmit={submit} className="grid gap-4">
               <div className="grid gap-4 sm:grid-cols-[140px_1fr]">
                 <div className="h-32 w-32 overflow-hidden rounded-lg border border-border bg-surface">
-                  {form.image ? (
+                  {previewUrl || form.image ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={form.image} alt={t("productPreview")} className="h-full w-full object-cover" />
+                    <img src={previewUrl || form.image} alt={t("productPreview")} className="h-full w-full object-cover" />
                   ) : (
                     <div className="flex h-full items-center justify-center text-xs text-muted">{t("noImage")}</div>
                   )}
@@ -309,13 +331,16 @@ export default function ProductsPage() {
                   <input
                     type="file"
                     accept="image/*"
-                    onChange={(e) => updateImageFromFile(e.target.files?.[0] || null)}
+                    onChange={(e) => selectImageFile(e.target.files?.[0] || null)}
                     className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm"
                   />
                   <input
                     placeholder={t("orPasteImageUrl")}
                     value={form.image}
-                    onChange={(e) => setField("image", e.target.value)}
+                    onChange={(e) => {
+                      clearPendingImage();
+                      setField("image", e.target.value);
+                    }}
                     className="w-full rounded-md border border-border px-3 py-2 text-sm"
                   />
                 </div>

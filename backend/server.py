@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, File, UploadFile
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, File, Query, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
@@ -1043,6 +1043,21 @@ async def upload_product_image(
         "url": result.get("secure_url") or result.get("url"),
         "public_id": result.get("public_id"),
     }
+
+
+@api_router.delete("/upload-image")
+async def delete_uploaded_image(
+    url: str = Query(..., max_length=2048),
+    current_user: User = Depends(require_manager),
+):
+    """Cleanup for an image uploaded on 'Save' whose product write then failed.
+    Only our own folder is touched, and never an image a product still uses."""
+    if not _product_image_public_id(url):
+        raise HTTPException(status_code=400, detail="Not an image uploaded by this app")
+    if await db.products.find_one({"image": url}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Image is in use by a product")
+    await _delete_product_image(url)
+    return {"ok": True}
 
 
 # ---------------- Clients (tenant companies) ----------------
