@@ -20,6 +20,7 @@ export function buildInvoiceText(order: Order, lang: Lang, contact?: InvoiceCont
   if (contact?.address) lines.push(`${t.address}: ${contact.address}`);
   if (contact?.phone) lines.push(`${t.phone}: ${contact.phone}`);
   if (contact?.email) lines.push(`${t.email}: ${contact.email}`);
+  if (order.invoice_number) lines.push(`${t.invoiceNumber}: ${order.invoice_number}`);
   lines.push(`${t.date}: ${dayjs(order.created_at).format("DD.MM.YYYY HH:mm")}`);
   lines.push("");
 
@@ -101,6 +102,7 @@ export function buildInvoiceHtml(order: Order, lang: Lang, contact?: InvoiceCont
       </div>
       <div class="meta">
         <div><strong>${t.customer}:</strong> ${escapeHtml(order.customer_name)}</div>
+        ${order.invoice_number ? `<div><strong>${t.invoiceNumber}:</strong> ${escapeHtml(order.invoice_number)}</div>` : ""}
         ${contact?.pib ? `<div><strong>${t.pib}:</strong> ${escapeHtml(contact.pib)}</div>` : ""}
         ${contact?.address ? `<div><strong>${t.address}:</strong> ${escapeHtml(contact.address)}</div>` : ""}
         ${contact?.phone ? `<div><strong>${t.phone}:</strong> ${escapeHtml(contact.phone)}</div>` : ""}

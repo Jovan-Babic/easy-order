@@ -16,7 +16,7 @@ import dayjs from "dayjs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
-import { api, ApiError, Order, OrderStatus } from "@/src/api";
+import { api, ApiError, ClientInfo, Order, OrderStatus } from "@/src/api";
 import { Button } from "@/src/components/Button";
 import { StatusBadge } from "@/src/components/StatusBadge";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
@@ -34,12 +34,19 @@ export default function WarehouseScreen() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectNote, setRejectNote] = useState("");
+  const [client, setClient] = useState<ClientInfo | null>(null);
+  const [invoiceNo, setInvoiceNo] = useState("");
 
   const load = useCallback(async (pull = false) => {
     try {
       if (pull) setRefreshing(true);
       else setLoading(true);
-      setOrders(await api.listOrders({ status: QUEUE }));
+      const [list, me] = await Promise.all([
+        api.listOrders({ status: QUEUE }),
+        api.getMyClient().catch(() => null),
+      ]);
+      setOrders(list);
+      setClient(me);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -79,7 +86,8 @@ export default function WarehouseScreen() {
     o.status === "in_progress" &&
     o.items.length > 0 &&
     o.items.every((i) => i.picked_qty != null) &&
-    o.items.some((i) => (i.picked_qty ?? 0) > 0);
+    o.items.some((i) => (i.picked_qty ?? 0) > 0) &&
+    (client?.invoice_numbering !== "manual" || invoiceNo.trim() !== "");
 
   return (
     <View style={styles.container}>
@@ -217,13 +225,22 @@ export default function WarehouseScreen() {
                           />
                         ) : (
                           <>
+                            {client?.invoice_numbering === "manual" && (
+                              <TextInput
+                                testID={`invoice-no-${item.id}`}
+                                style={styles.input}
+                                placeholder={t("invoiceNumber")}
+                                value={invoiceNo}
+                                onChangeText={setInvoiceNo}
+                              />
+                            )}
                             <Button
                               title={t("shipOrder")}
                               testID={`ship-${item.id}`}
                               icon="send"
                               loading={busy}
                               disabled={busy || !canShip(item)}
-                              onPress={() => run(item.id, () => api.changeOrderStatus(item.id, "shipped"))}
+                              onPress={() => run(item.id, () => api.changeOrderStatus(item.id, "shipped", undefined, invoiceNo.trim() || undefined))}
                             />
                             <Button
                               title={t("returnToQueue")}

@@ -1,49 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { useSession } from "@/lib/session-provider";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { OrderPrintModal } from "@/components/OrderPrintModal";
+import { StatusBadge } from "@/components/StatusBadge";
+import { Order, OrderStatus, STATUS_LABEL_KEYS, money } from "@/lib/orders";
 
-type Order = {
-  id: string;
-  client_id: string;
-  client_name?: string;
-  customer_id: string;
-  customer_name: string;
-  items: {
-    name: string;
-    manufacturer?: string;
-    price_no_vat?: number;
-    ordered_qty: number;
-    discount?: number;
-    additional_discount?: number;
-    vat_rate?: number;
-    line_net: number;
-  }[];
-  // Computed by the backend (backend/calc.py) - no money math on this page.
-  totals: { subtotal: number; vat: number; grand: number };
-  status: string;
-  created_by_name?: string | null;
-  created_at: string;
-};
-
-type Customer = {
-  id: string;
-  name: string;
-  address?: string;
-  email?: string;
-  phone?: string;
-  pib?: string;
-};
-
-function discount(item: Order["items"][number]) {
-  return Math.max(0, Math.min(100, (item.discount ?? 0) + (item.additional_discount ?? 0)));
-}
-
-function money(value: number) {
-  return value.toLocaleString("sr-RS", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
+const STATUSES = Object.keys(STATUS_LABEL_KEYS) as OrderStatus[];
 
 export default function OrdersPage() {
   const { t } = useLanguage();
@@ -51,46 +16,78 @@ export default function OrdersPage() {
   const isSuperAdmin = session.role === "superadmin";
   const canDelete = session.role === "superadmin" || session.role === "admin";
   const [orders, setOrders] = useState<Order[]>([]);
-  const [customers, setCustomers] = useState<Record<string, Customer>>({});
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Order | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
-  const load = async () => {
+  const load = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (statusFilter) params.set("status", statusFilter);
+    if (fromDate) params.set("from_date", fromDate);
+    if (toDate) params.set("to_date", toDate);
     try {
-      const [ordersResponse, customersResponse] = await Promise.all([fetch("/api/orders"), fetch("/api/customers")]);
-      if (!ordersResponse.ok) throw new Error("Failed to load orders");
-      const orderList = (await ordersResponse.json()) as Order[];
-      const customerList = customersResponse.ok ? ((await customersResponse.json()) as Customer[]) : [];
-      setOrders(orderList);
-      setCustomers(Object.fromEntries(customerList.map((customer) => [customer.id, customer])));
+      const res = await fetch(`/api/orders?${params.toString()}`);
+      if (!res.ok) throw new Error("Failed to load orders");
+      setOrders((await res.json()) as Order[]);
     } catch {
       setOrders([]);
-      setCustomers({});
     }
-  };
+  }, [statusFilter, fromDate, toDate]);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   const remove = async () => {
     if (!pendingDelete) return;
     const response = await fetch(`/api/orders/${pendingDelete.id}`, { method: "DELETE" });
     setPendingDelete(null);
-    if (!response.ok) return;
+    if (!response.ok) {
+      // Only new orders can be deleted; the backend says so with a 409.
+      const body = await response.json().catch(() => ({}));
+      setError(typeof body.detail === "string" ? body.detail : t("actionFailed"));
+      return;
+    }
+    setError(null);
     if (selectedOrder?.id === pendingDelete.id) setSelectedOrder(null);
     await load();
   };
 
+  const field = "rounded-md border border-border bg-surfaceSecondary px-3 py-1.5 text-sm";
+
   return (
     <div className="orders-page">
       <h1 className="mb-6 text-2xl font-extrabold text-onSurface">{t("orders")}</h1>
+
+      <div className="no-print mb-4 flex flex-wrap items-end gap-3">
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={field}>
+          <option value="">{t("allStatuses")}</option>
+          {STATUSES.map((s) => (
+            <option key={s} value={s}>{t(STATUS_LABEL_KEYS[s])}</option>
+          ))}
+        </select>
+        <label className="text-xs font-semibold text-muted">
+          {t("fromDate")}
+          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className={`${field} ml-2`} />
+        </label>
+        <label className="text-xs font-semibold text-muted">
+          {t("toDate")}
+          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className={`${field} ml-2`} />
+        </label>
+      </div>
+      {error && <p className="no-print mb-3 text-sm text-error">{error}</p>}
+
       <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
         <table className="w-full text-left text-sm">
           <thead className="border-b border-border text-xs uppercase text-muted">
             <tr>
               {isSuperAdmin && <th className="px-4 py-3">{t("client")}</th>}
               <th className="px-4 py-3">{t("customer")}</th>
+              <th className="px-4 py-3">{t("status")}</th>
+              <th className="px-4 py-3">{t("invoiceNumber")}</th>
               <th className="px-4 py-3">{t("items")}</th>
               <th className="px-4 py-3 text-right">{t("grandTotal")}</th>
               <th className="px-4 py-3">{t("createdBy")}</th>
@@ -103,12 +100,12 @@ export default function OrdersPage() {
               <tr key={o.id} className="border-b border-border last:border-0">
                 {isSuperAdmin && <td className="px-4 py-3 text-onSurfaceSecondary">{o.client_name ?? o.client_id}</td>}
                 <td className="px-4 py-3 font-semibold text-onSurface">{o.customer_name}</td>
+                <td className="px-4 py-3"><StatusBadge status={o.status} /></td>
+                <td className="px-4 py-3 text-onSurfaceSecondary">{o.invoice_number || "—"}</td>
                 <td className="px-4 py-3 text-onSurfaceSecondary">{o.items.length}</td>
                 <td className="px-4 py-3 text-right font-semibold text-onSurface">{money(o.totals.grand)}</td>
                 <td className="px-4 py-3 text-onSurfaceSecondary">{o.created_by_name || "—"}</td>
-                <td className="px-4 py-3 text-onSurfaceSecondary">
-                  {new Date(o.created_at).toLocaleDateString()}
-                </td>
+                <td className="px-4 py-3 text-onSurfaceSecondary">{new Date(o.created_at).toLocaleDateString()}</td>
                 <td className="no-print px-4 py-3 text-right">
                   <button
                     type="button"
@@ -117,7 +114,7 @@ export default function OrdersPage() {
                   >
                     {t("details")}
                   </button>
-                  {canDelete && (
+                  {canDelete && o.status === "new" && (
                     <button
                       type="button"
                       onClick={() => setPendingDelete(o)}
@@ -131,7 +128,7 @@ export default function OrdersPage() {
             ))}
             {orders.length === 0 && (
               <tr>
-                <td colSpan={isSuperAdmin ? 7 : 6} className="px-4 py-6 text-center text-muted">
+                <td colSpan={isSuperAdmin ? 9 : 8} className="px-4 py-6 text-center text-muted">
                   {t("noOrdersYet")}
                 </td>
               </tr>
@@ -140,100 +137,7 @@ export default function OrdersPage() {
         </table>
       </div>
 
-      {selectedOrder && (
-        <div className="print-overlay fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4 sm:p-8">
-          <div className="print-modal mx-auto max-w-4xl rounded-lg bg-white shadow-xl">
-            <div className="no-print flex items-center justify-between border-b border-border px-6 py-4">
-              <h2 className="text-xl font-extrabold text-onSurface">{t("orderDetails")}</h2>
-              <button
-                type="button"
-                onClick={() => setSelectedOrder(null)}
-                className="rounded-md border border-border px-3 py-1.5 text-sm font-semibold text-onSurfaceSecondary hover:bg-surfaceTertiary"
-              >
-                {t("close")}
-              </button>
-            </div>
-
-            <article className="print-document p-6 text-onSurface sm:p-10">
-              {(() => {
-                const customer = customers[selectedOrder.customer_id];
-                return (
-                  <>
-              <div className="document-header mb-6 flex items-start justify-between border-b-2 border-brand pb-4">
-                <div>
-                  <p className="text-2xl font-extrabold text-brand">Easy Order</p>
-                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-muted">{t("orderDetails")}</p>
-                </div>
-                <div className="text-right text-sm text-muted">
-                  <p>{new Date(selectedOrder.created_at).toLocaleString()}</p>
-                  <p>{t("orderNumber")}: {selectedOrder.id}</p>
-                </div>
-              </div>
-
-              <div className="mb-6 grid gap-x-8 gap-y-1 text-sm sm:grid-cols-2">
-                {isSuperAdmin && <p><strong>{t("client")}:</strong> {selectedOrder.client_name ?? selectedOrder.client_id}</p>}
-                <p><strong>{t("customer")}:</strong> {selectedOrder.customer_name}</p>
-                {selectedOrder.created_by_name && <p><strong>{t("createdBy")}:</strong> {selectedOrder.created_by_name}</p>}
-                {customer?.pib && <p><strong>{t("taxIdPib")}:</strong> {customer.pib}</p>}
-                {customer?.address && <p><strong>{t("address")}:</strong> {customer.address}</p>}
-                {customer?.phone && <p><strong>{t("phone")}:</strong> {customer.phone}</p>}
-                {customer?.email && <p><strong>{t("email")}:</strong> {customer.email}</p>}
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="border-b-2 border-brand text-xs uppercase text-muted">
-                    <tr>
-                      <th className="px-2 py-2">#</th>
-                      <th className="px-2 py-2">{t("productName")}</th>
-                      <th className="px-2 py-2 text-right">{t("orderedPieces")}</th>
-                      <th className="px-2 py-2 text-right">{t("priceExclVat")}</th>
-                      <th className="px-2 py-2 text-right">{t("discount")}</th>
-                      <th className="px-2 py-2 text-right">{t("lineTotal")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedOrder.items.map((item, index) => (
-                      <tr key={`${selectedOrder.id}-${item.name}-${index}`} className="border-b border-border">
-                        <td className="px-2 py-3">{index + 1}</td>
-                        <td className="px-2 py-3 font-semibold">
-                          {item.name}
-                          {item.manufacturer && <span className="block text-xs font-normal text-muted">{item.manufacturer}</span>}
-                        </td>
-                        <td className="px-2 py-3 text-right">{item.ordered_qty}</td>
-                        <td className="px-2 py-3 text-right">{money(item.price_no_vat ?? 0)}</td>
-                        <td className="px-2 py-3 text-right">{discount(item)}%</td>
-                        <td className="px-2 py-3 text-right font-semibold">{money(item.line_net)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="ml-auto mt-6 max-w-xs space-y-2 text-sm">
-                <div className="flex justify-between"><span>{t("subtotal")}</span><span>{money(selectedOrder.totals.subtotal)}</span></div>
-                <div className="flex justify-between"><span>{t("vat")}</span><span>{money(selectedOrder.totals.vat)}</span></div>
-                <div className="flex justify-between border-t-2 border-brand pt-2 text-lg font-extrabold text-brand">
-                  <span>{t("grandTotal")}</span><span>{money(selectedOrder.totals.grand)}</span>
-                </div>
-              </div>
-                  </>
-                );
-              })()}
-            </article>
-
-            <div className="no-print flex justify-end border-t border-border px-6 py-4">
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="rounded-md bg-brand px-4 py-2 font-bold text-onBrand hover:opacity-90"
-              >
-                {t("printPdf")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {selectedOrder && <OrderPrintModal order={selectedOrder} onClose={() => setSelectedOrder(null)} />}
       {pendingDelete && (
         <ConfirmDialog itemName={pendingDelete.customer_name} onCancel={() => setPendingDelete(null)} onConfirm={remove} />
       )}

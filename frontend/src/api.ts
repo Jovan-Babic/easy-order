@@ -72,6 +72,13 @@ export type OrderItem = {
   line_net?: number; // server-computed, only on responses
 };
 
+export type ClientInfo = {
+  id: string;
+  name: string;
+  invoice_numbering: "auto" | "manual";
+  invoice_prefix?: string;
+};
+
 export type OrderStatus = "new" | "in_progress" | "shipped" | "rejected" | "canceled";
 
 export type StatusChange = {
@@ -93,6 +100,7 @@ export type Order = {
   status_history?: StatusChange[];
   assigned_to_name?: string | null;
   shipped_at?: string | null;
+  invoice_number?: string | null;
   created_by_user_id?: string | null;
   created_by_name?: string | null;
   // Server-computed (backend/calc.py), only on responses.
@@ -235,8 +243,12 @@ export const api = {
     const q = qs.toString();
     return req<Order[]>(`/orders${q ? `?${q}` : ""}`);
   },
-  changeOrderStatus: (id: string, status: OrderStatus, note?: string) =>
-    req<Order>(`/orders/${id}/status`, { method: "POST", body: JSON.stringify({ status, note }) }),
+  changeOrderStatus: (id: string, status: OrderStatus, note?: string, invoiceNumber?: string) =>
+    req<Order>(`/orders/${id}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status, note, invoice_number: invoiceNumber }),
+    }),
+  getMyClient: () => req<ClientInfo>("/clients/me"),
   setPickedQty: (id: string, items: { product_id: string; picked_qty: number | null }[]) =>
     req<Order>(`/orders/${id}/items`, { method: "PATCH", body: JSON.stringify({ items }) }),
   getOrder: (id: string) => req<Order>(`/orders/${id}`),

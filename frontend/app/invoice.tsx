@@ -145,6 +145,7 @@ export default function InvoiceScreen() {
                 {!!customerPib && <Row label={t("pib")} value={customerPib} />}
                 {!!customerAddress && <Row label={t("address")} value={customerAddress} />}
                 {!!customerPhone && <Row label={t("phone")} value={customerPhone} />}
+                {!!order.invoice_number && <Row label={t("invoiceNumber")} value={order.invoice_number} bold />}
                 <Row label={t("date")} value={dayjs(order.created_at).format("DD.MM.YYYY HH:mm")} />
                 {!!customerEmail && <Row label={t("email")} value={customerEmail} />}
               </View>

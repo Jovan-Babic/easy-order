@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ClientFields } from "@/components/ClientFields";
+import { ClientFormFields, clientPayload, deleteUploadedLogo, emptyClientFields, uploadLogo } from "@/lib/clientForm";
 
 type Client = {
   id: string;
@@ -14,7 +16,7 @@ type Client = {
   active: boolean;
 };
 
-const emptyForm = { name: "", email: "", phone: "", pib: "", admin_name: "", admin_email: "" };
+const emptyAdmin = { admin_name: "", admin_email: "" };
 
 // The first admin gets a generated temporary password by email; it only
 // comes back in the response when that email could not be sent.
@@ -25,7 +27,10 @@ export default function ClientsPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState<ClientFormFields>(emptyClientFields);
+  const [admin, setAdmin] = useState(emptyAdmin);
+  const [pendingLogo, setPendingLogo] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Client | null>(null);
@@ -52,9 +57,13 @@ export default function ClientsPage() {
     e.preventDefault();
     setError(null);
     setSaving(true);
+    let uploaded: string | null = null;
     try {
-      const res = await fetch("/api/clients", { method: "POST", body: JSON.stringify(form) });
+      if (pendingLogo) uploaded = await uploadLogo(pendingLogo);
+      const payload = { ...clientPayload(form, uploaded ?? ""), ...admin };
+      const res = await fetch("/api/clients", { method: "POST", body: JSON.stringify(payload) });
       if (!res.ok) {
+        if (uploaded) await deleteUploadedLogo(uploaded);
         const body = await res.json().catch(() => ({}));
         setError(body.detail || t("failedCreateClient"));
         return;
@@ -65,9 +74,15 @@ export default function ClientsPage() {
         sent: created.invite_sent,
         temporaryPassword: created.temporary_password,
       });
-      setForm(emptyForm);
+      setForm(emptyClientFields);
+      setAdmin(emptyAdmin);
+      setPendingLogo(null);
+      setLogoPreview("");
       setShowForm(false);
       await load();
+    } catch (err) {
+      if (uploaded) await deleteUploadedLogo(uploaded);
+      setError(err instanceof Error ? err.message : t("failedCreateClient"));
     } finally {
       setSaving(false);
     }
@@ -107,47 +122,34 @@ export default function ClientsPage() {
 
       {showForm && (
         <form onSubmit={submit} className="mb-8 grid max-w-xl gap-3 rounded-lg bg-surfaceSecondary p-6 shadow-sm">
-          <h2 className="font-bold text-onSurface">{t("company")}</h2>
-          <input
-            required
-            placeholder={t("companyName")}
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
-          <input
-            placeholder={t("companyEmail")}
-            value={form.email}
-            onChange={(e) => setForm({ ...form, email: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
-          <input
-            placeholder={t("companyPhone")}
-            value={form.phone}
-            onChange={(e) => setForm({ ...form, phone: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
-          <input
-            placeholder={t("taxIdPib")}
-            value={form.pib}
-            onChange={(e) => setForm({ ...form, pib: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
+          <ClientFields
+            form={form}
+            setForm={setForm}
+            logoPreview={logoPreview}
+            onPickLogo={(file) => {
+              setPendingLogo(file);
+              setLogoPreview(URL.createObjectURL(file));
+            }}
+            onRemoveLogo={() => {
+              setPendingLogo(null);
+              setLogoPreview("");
+            }}
           />
 
           <h2 className="mt-2 font-bold text-onSurface">{t("firstAdminUser")}</h2>
           <input
             required
             placeholder={t("adminName")}
-            value={form.admin_name}
-            onChange={(e) => setForm({ ...form, admin_name: e.target.value })}
+            value={admin.admin_name}
+            onChange={(e) => setAdmin({ ...admin, admin_name: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
           />
           <input
             required
             type="email"
             placeholder={t("adminEmail")}
-            value={form.admin_email}
-            onChange={(e) => setForm({ ...form, admin_email: e.target.value })}
+            value={admin.admin_email}
+            onChange={(e) => setAdmin({ ...admin, admin_email: e.target.value })}
             className="rounded-md border border-border px-3 py-2"
           />
           <p className="text-sm text-muted">{t("inviteInfo")}</p>
