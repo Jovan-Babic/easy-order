@@ -152,7 +152,12 @@ def now_iso() -> str:
 class Role(str, Enum):
     SUPERADMIN = "superadmin"
     ADMIN = "admin"
-    OPERATOR = "operator"
+    OPERATOR = "operator"  # UI: "Komercijalista" - creates orders
+    WAREHOUSE = "warehouse"  # UI: "Magacin" - processes orders
+
+
+# Roles an admin may create/edit/delete (always within their own client).
+ADMIN_MANAGEABLE_ROLES = {Role.OPERATOR, Role.WAREHOUSE}
 
 
 class Client(BaseModel):
@@ -612,7 +617,7 @@ def _build_invite_email_body(name: str, email: str, role: Role, temporary_passwo
     apk_url = _mobile_app_download_url()
     if apk_url:
         lines += [f"Android aplikacija (APK): {apk_url}", ""]
-    if role in (Role.ADMIN, Role.SUPERADMIN):
+    if role in (Role.ADMIN, Role.SUPERADMIN, Role.WAREHOUSE):
         lines += [f"Administratorski portal: {ADMIN_WEB_URL}", ""]
     lines += [
         "---",
@@ -828,9 +833,11 @@ def require_roles(*roles: Role):
     return _dep
 
 
-# Admin-level writes (catalog, customers, deleting orders). Operators only
-# read the catalog and create orders.
+# Admin-level writes (catalog, customers, deleting orders, user management).
+# Operators only read the catalog and create orders; warehouse only reads.
 require_manager = require_roles(Role.SUPERADMIN, Role.ADMIN)
+# Roles that may place orders (warehouse processes them, never creates).
+require_order_creator = require_roles(Role.SUPERADMIN, Role.ADMIN, Role.OPERATOR)
 
 
 # ---------------- Tenant scoping helpers ----------------
@@ -1120,9 +1127,7 @@ async def activate_client(client_id: str, current_user: User = Depends(require_r
 
 # ---------------- Users ----------------
 @api_router.get("/users", response_model=List[User])
-async def list_users(client_id: Optional[str] = None, current_user: User = Depends(get_current_user)):
-    if current_user.role == Role.OPERATOR:
-        raise HTTPException(status_code=403, detail="Forbidden")
+async def list_users(client_id: Optional[str] = None, current_user: User = Depends(require_manager)):
     if current_user.role == Role.SUPERADMIN:
         query = {"client_id": client_id} if client_id else {}
     else:
@@ -1132,16 +1137,16 @@ async def list_users(client_id: Optional[str] = None, current_user: User = Depen
 
 
 @api_router.post("/users", response_model=UserInviteResponse)
-async def create_user(inp: UserInput, current_user: User = Depends(get_current_user)):
-    if current_user.role == Role.OPERATOR:
-        raise HTTPException(status_code=403, detail="Forbidden")
+async def create_user(inp: UserInput, current_user: User = Depends(require_manager)):
     if await find_user_by_email(inp.email):
         raise HTTPException(status_code=400, detail="Email already in use")
 
     if current_user.role == Role.ADMIN:
-        # Admins may only create Operators for their own client - payload
-        # role/client_id are ignored, never trusted.
-        role = Role.OPERATOR
+        # Admins may only create operators/warehouse for their own client -
+        # the payload client_id is ignored, never trusted.
+        if inp.role not in ADMIN_MANAGEABLE_ROLES:
+            raise HTTPException(status_code=403, detail="Admins cannot assign this role")
+        role = inp.role
         client_id = current_user.client_id
     else:  # SUPERADMIN
         role = inp.role
@@ -1158,16 +1163,14 @@ async def create_user(inp: UserInput, current_user: User = Depends(get_current_u
 
 
 @api_router.put("/users/{user_id}", response_model=User)
-async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = Depends(get_current_user)):
-    if current_user.role == Role.OPERATOR:
-        raise HTTPException(status_code=403, detail="Forbidden")
+async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = Depends(require_manager)):
     target = await get_scoped_or_404("users", user_id, current_user)
     if current_user.role == Role.ADMIN:
         is_self = target["id"] == current_user.id
-        if not is_self and target.get("role") != Role.OPERATOR:
+        if not is_self and target.get("role") not in ADMIN_MANAGEABLE_ROLES:
             # Otherwise one admin could reset another admin's password and
             # take over their account, or deactivate them.
-            raise HTTPException(status_code=403, detail="Admins can only manage operators")
+            raise HTTPException(status_code=403, detail="Admins can only manage operators and warehouse users")
         # Compare against the stored values: the admin-web edit form always
         # sends `active` (and may send the current role), so only an actual
         # change is rejected - re-sending the same value is fine.
@@ -1175,7 +1178,7 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
         active_changes = inp.active is not None and inp.active != target.get("active", True)
         if is_self and (role_changes or active_changes):
             raise HTTPException(status_code=403, detail="Cannot change your own role or status")
-        if inp.role is not None and inp.role != Role.OPERATOR:
+        if inp.role is not None and inp.role not in ADMIN_MANAGEABLE_ROLES:
             raise HTTPException(status_code=403, detail="Admins cannot assign this role")
 
     updated = {**target}
@@ -1202,14 +1205,12 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
 
 
 @api_router.delete("/users/{user_id}")
-async def delete_user(user_id: str, current_user: User = Depends(get_current_user)):
-    if current_user.role == Role.OPERATOR:
-        raise HTTPException(status_code=403, detail="Forbidden")
+async def delete_user(user_id: str, current_user: User = Depends(require_manager)):
     target = await get_scoped_or_404("users", user_id, current_user)
     if user_id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
-    if current_user.role == Role.ADMIN and target.get("role") != Role.OPERATOR:
-        raise HTTPException(status_code=403, detail="Admins can only manage operators")
+    if current_user.role == Role.ADMIN and target.get("role") not in ADMIN_MANAGEABLE_ROLES:
+        raise HTTPException(status_code=403, detail="Admins can only manage operators and warehouse users")
     await db.users.delete_one({"id": user_id})
     return {"ok": True}
 
@@ -1334,16 +1335,52 @@ def _order_out(doc: dict) -> OrderOut:
     )
 
 
+def _order_scope_query(user: User) -> dict:
+    """Tenant scope for orders, plus: an operator sees only their own."""
+    query = _scope_query(user)
+    if user.role == Role.OPERATOR:
+        query = {**query, "created_by_user_id": user.id}
+    return query
+
+
+def _parse_date(value: str, name: str) -> datetime:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{name} must be YYYY-MM-DD")
+
+
 @api_router.get("/orders", response_model=List[OrderOut])
 async def list_orders(
     customer_id: Optional[str] = None,
     portal: bool = False,
+    status: Optional[List[str]] = Query(None),
+    created_by_user_id: Optional[str] = None,
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    limit: Optional[int] = Query(None, ge=1, le=500),
+    skip: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
 ):
-    query = _scope_query(current_user)
+    query = _order_scope_query(current_user)
     if customer_id:
         query = {**query, "customer_id": customer_id}
-    docs = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(None)
+    if status:
+        query = {**query, "status": {"$in": status}}
+    # Ignored for operators: they are already limited to their own orders.
+    if created_by_user_id and current_user.role != Role.OPERATOR:
+        query = {**query, "created_by_user_id": created_by_user_id}
+    date_range = {}
+    if from_date:
+        date_range["$gte"] = _parse_date(from_date, "from_date").isoformat()
+    if to_date:
+        date_range["$lt"] = (_parse_date(to_date, "to_date") + timedelta(days=1)).isoformat()
+    if date_range:
+        query = {**query, "created_at": date_range}
+    cursor = db.orders.find(query, {"_id": 0}).sort("created_at", -1).skip(skip)
+    if limit:
+        cursor = cursor.limit(limit)
+    docs = await cursor.to_list(None)
     if portal and current_user.role == Role.SUPERADMIN:
         # One query for all client names instead of one per order.
         client_ids = list({d.get("client_id") for d in docs})
@@ -1355,11 +1392,14 @@ async def list_orders(
 
 @api_router.get("/orders/{order_id}", response_model=OrderOut)
 async def get_order(order_id: str, current_user: User = Depends(get_current_user)):
-    return _order_out(await get_scoped_or_404("orders", order_id, current_user))
+    order = await get_scoped_or_404("orders", order_id, current_user)
+    if current_user.role == Role.OPERATOR and order.get("created_by_user_id") != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")  # someone else's order
+    return _order_out(order)
 
 
 @api_router.post("/orders", response_model=OrderOut)
-async def create_order(inp: OrderInput, current_user: User = Depends(get_current_user)):
+async def create_order(inp: OrderInput, current_user: User = Depends(require_order_creator)):
     client_id = await resolve_write_client_id(current_user, inp.client_id)
     if not inp.items:
         raise HTTPException(status_code=400, detail="Order must contain at least one item")

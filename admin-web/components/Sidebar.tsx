@@ -7,7 +7,7 @@ import { Lang, TranslationKey, useLanguage } from "@/lib/i18n";
 type NavUser = {
   name: string;
   email: string;
-  role: "superadmin" | "admin";
+  role: "superadmin" | "admin" | "warehouse";
 };
 
 const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly string[] }> = [
@@ -16,8 +16,8 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/users", labelKey: "users", roles: ["superadmin", "admin"] },
   { href: "/products", labelKey: "products", roles: ["superadmin", "admin"] },
   { href: "/customers", labelKey: "customers", roles: ["superadmin", "admin"] },
-  { href: "/orders", labelKey: "orders", roles: ["superadmin", "admin"] },
-  { href: "/app", labelKey: "app", roles: ["superadmin", "admin"] },
+  { href: "/orders", labelKey: "orders", roles: ["superadmin", "admin", "warehouse"] },
+  { href: "/app", labelKey: "app", roles: ["superadmin", "admin", "warehouse"] },
 ];
 
 const showAppMenu = process.env.NEXT_PUBLIC_SHOW_APP_MENU === "true";

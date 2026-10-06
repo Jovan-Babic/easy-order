@@ -19,7 +19,25 @@ function getSecret(): Uint8Array | null {
   return new TextEncoder().encode(DEV_JWT_SECRET);
 }
 
-export type Role = "superadmin" | "admin" | "operator";
+export type Role = "superadmin" | "admin" | "operator" | "warehouse";
+
+// Warehouse staff get a slice of the portal: orders (+ the warehouse module
+// from phase 5) and the app download page. Everything else is admin-only.
+// This is a UX gate - FastAPI enforces the same per role.
+const WAREHOUSE_PATHS = ["/orders", "/warehouse", "/app", "/change-password", "/api/orders", "/api/customers", "/api/products"];
+
+export function homePath(role: Role): string {
+  return role === "warehouse" ? "/orders" : "/dashboard";
+}
+
+export function isPathAllowed(role: Role, pathname: string): boolean {
+  if (role === "operator") return false; // mobile only
+  if (role === "warehouse") {
+    return WAREHOUSE_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  }
+  if (pathname.startsWith("/clients") || pathname.startsWith("/api/clients")) return role === "superadmin";
+  return true;
+}
 
 export type SessionClaims = {
   sub: string;

@@ -5,7 +5,7 @@ import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 
-type Role = "superadmin" | "admin" | "operator";
+type Role = "superadmin" | "admin" | "operator" | "warehouse";
 
 type User = {
   id: string;
@@ -160,10 +160,18 @@ export default function UsersPage() {
   const [inviteNotice, setInviteNotice] = useState<InviteNotice | null>(null);
   const [listError, setListError] = useState<string | null>(null);
 
-  // Mirrors the backend: an admin manages only operators (and edits
-  // themselves); a superadmin manages everyone.
-  const canEdit = (u: User) => isSuperAdmin || u.role === "operator" || u.id === session.id;
-  const canDelete = (u: User) => u.id !== session.id && (isSuperAdmin || u.role === "operator");
+  // Mirrors the backend: an admin manages only operators and warehouse
+  // users (and edits themselves); a superadmin manages everyone.
+  const isAdminManageable = (u: User) => u.role === "operator" || u.role === "warehouse";
+  const canEdit = (u: User) => isSuperAdmin || isAdminManageable(u) || u.id === session.id;
+  const canDelete = (u: User) => u.id !== session.id && (isSuperAdmin || isAdminManageable(u));
+  const roleLabel = (role: Role) =>
+    ({
+      operator: t("userRoleOperator"),
+      warehouse: t("userRoleWarehouse"),
+      admin: t("userRoleAdmin"),
+      superadmin: t("userRoleSuperAdmin"),
+    })[role];
 
   const parsePhone = (rawPhone: string | undefined) => {
     if (!rawPhone) return { countryCode: "+381", phoneNumber: "" };
@@ -217,7 +225,7 @@ export default function UsersPage() {
     try {
       const payload = isSuperAdmin
         ? { ...form, phone }
-        : { name: form.name, email: form.email, phone, role: "operator" };
+        : { name: form.name, email: form.email, phone, role: form.role };
       const res = await fetch("/api/users", { method: "POST", body: JSON.stringify(payload) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -276,7 +284,7 @@ export default function UsersPage() {
       // yourself, and your own password goes through /change-password (which
       // keeps you logged in; a change here would end the session).
       if (!isSelf) payload.active = editForm.active === "true";
-      if (isSuperAdmin && !isSelf) payload.role = editForm.role;
+      if (!isSelf) payload.role = editForm.role;
       if (!isSelf && editForm.password.trim()) payload.password = editForm.password;
 
       const res = await fetch(`/api/users/${editingUser.id}`, {
@@ -368,6 +376,7 @@ export default function UsersPage() {
                 className="rounded-md border border-border px-3 py-2"
               >
                 <option value="operator">{t("userRoleOperator")}</option>
+                <option value="warehouse">{t("userRoleWarehouse")}</option>
                 <option value="admin">{t("userRoleAdmin")}</option>
                 <option value="superadmin">{t("userRoleSuperAdmin")}</option>
               </select>
@@ -388,7 +397,17 @@ export default function UsersPage() {
               )}
             </>
           ) : (
-            <p className="text-sm text-muted">{t("accountScope")}</p>
+            <>
+              <select
+                value={form.role}
+                onChange={(e) => setForm({ ...form, role: e.target.value as Role })}
+                className="rounded-md border border-border px-3 py-2"
+              >
+                <option value="operator">{t("userRoleOperator")}</option>
+                <option value="warehouse">{t("userRoleWarehouse")}</option>
+              </select>
+              <p className="text-sm text-muted">{t("accountScope")}</p>
+            </>
           )}
 
           {error && <p className="text-sm text-error">{error}</p>}
@@ -459,15 +478,16 @@ export default function UsersPage() {
                   <p className="-mt-2 text-xs text-muted">{t("adminSetPasswordHint")}</p>
                 </>
               )}
-              {isSuperAdmin && editingUser.id !== session.id && (
+              {editingUser.id !== session.id && (
                 <select
                   value={editForm.role}
                   onChange={(e) => setEditForm({ ...editForm, role: e.target.value as Role })}
                   className="rounded-md border border-border px-3 py-2"
                 >
                   <option value="operator">{t("userRoleOperator")}</option>
-                  <option value="admin">{t("userRoleAdmin")}</option>
-                  <option value="superadmin">{t("userRoleSuperAdmin")}</option>
+                  <option value="warehouse">{t("userRoleWarehouse")}</option>
+                  {isSuperAdmin && <option value="admin">{t("userRoleAdmin")}</option>}
+                  {isSuperAdmin && <option value="superadmin">{t("userRoleSuperAdmin")}</option>}
                 </select>
               )}
               {editingUser.id !== session.id && (
@@ -551,7 +571,7 @@ export default function UsersPage() {
                   <td className="px-4 py-3 font-semibold text-onSurface">{u.name}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{u.email}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{u.phone || "-"}</td>
-                  <td className="px-4 py-3 capitalize text-onSurfaceSecondary">{u.role}</td>
+                  <td className="px-4 py-3 text-onSurfaceSecondary">{roleLabel(u.role)}</td>
                   <td className="px-4 py-3">
                     <span className={u.active ? "text-success" : "text-error"}>
                       {u.active ? t("active") : t("inactive")}
