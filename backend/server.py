@@ -347,7 +347,16 @@ class Product(BaseModel):
     additional_discounts: List[int] = Field(default_factory=lambda: [0])
     pieces_per_package: Optional[int] = 0
     boxes_per_transport: Optional[int] = 0
+    # Pieces in the warehouse. None = stock is not tracked for this product.
+    # Only changed through /stock/* and order shipments, never via ProductInput.
+    stock_qty: Optional[int] = None
     created_at: str = Field(default_factory=now_iso)
+
+
+class ProductOut(Product):
+    """List response: stock plus what open orders (new/in_progress) reserve."""
+    reserved_qty: int = 0
+    available_qty: Optional[int] = None  # stock_qty - reserved_qty; None when untracked
 
 
 class ProductInput(BaseModel):
@@ -1396,10 +1405,30 @@ async def delete_customer(customer_id: str, current_user: User = Depends(require
 
 
 # ---------------- Products ----------------
-@api_router.get("/products", response_model=List[Product])
+async def _reserved_by_product(scope: dict) -> Dict[str, int]:
+    """Pieces committed to orders that are not shipped yet (new + in_progress)."""
+    reserved: Dict[str, int] = {}
+    open_orders = db.orders.find(
+        {**scope, "status": {"$in": [OrderStatus.NEW.value, OrderStatus.IN_PROGRESS.value]}},
+        {"_id": 0, "items.product_id": 1, "items.ordered_qty": 1},
+    )
+    async for order in open_orders:
+        for item in order.get("items", []):
+            reserved[item["product_id"]] = reserved.get(item["product_id"], 0) + (item.get("ordered_qty") or 0)
+    return reserved
+
+
+@api_router.get("/products", response_model=List[ProductOut])
 async def list_products(current_user: User = Depends(get_current_user)):
-    docs = await db.products.find(_scope_query(current_user), {"_id": 0}).sort("created_at", 1).to_list(None)
-    return [Product(**v) for v in docs]
+    scope = _scope_query(current_user)
+    docs = await db.products.find(scope, {"_id": 0}).sort("created_at", 1).to_list(None)
+    reserved = await _reserved_by_product(scope)
+    out = []
+    for v in docs:
+        r = reserved.get(v["id"], 0)
+        stock = v.get("stock_qty")
+        out.append(ProductOut(**v, reserved_qty=r, available_qty=None if stock is None else stock - r))
+    return out
 
 
 @api_router.post("/products", response_model=Product)
@@ -1434,7 +1463,11 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
         "discounts": normalize_discounts(discounts, discount_value),
         "additional_discounts": normalize_additional_discounts(additional),
     }
-    await db.products.replace_one({"id": product_id}, {**updated, "_id": product_id})
+    # $set instead of replace_one: a concurrent stock change ($inc) must not
+    # be overwritten by this stale copy of the product.
+    await db.products.update_one(
+        {"id": product_id}, {"$set": {k: v for k, v in updated.items() if k not in ("_id", "stock_qty")}}
+    )
     if existing.get("image") != updated.get("image"):
         await _delete_product_image(existing.get("image"))
     return Product(**updated)
@@ -1790,6 +1823,11 @@ async def change_order_status(
     if result.matched_count == 0:
         raise HTTPException(status_code=409, detail="Order was changed in the meantime")
     updated_doc = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if target == OrderStatus.SHIPPED.value:
+        await _move_stock_for_order(updated_doc, -1, "shipment", current_user)
+    elif current == OrderStatus.SHIPPED.value:
+        # An admin took a shipped order back: the goods return to stock.
+        await _move_stock_for_order(updated_doc, +1, "reversal", current_user)
     if target in (OrderStatus.SHIPPED.value, OrderStatus.REJECTED.value):
         await _send_order_status_email(updated_doc, target, note, current_user)
     return _order_out(updated_doc)
@@ -1875,6 +1913,114 @@ async def _compute_client_stats(client_id: str) -> ClientStats:
         total_vat=round(total_vat, 2),
         total_grand=round(total_net + total_vat, 2),
     )
+
+
+# ---------------- Warehouse stock (PLAN_STANJE_MAGACINA.md) ----------------
+require_stock_writer = require_roles(Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)
+
+
+class StockMovement(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    client_id: str
+    product_id: str
+    product_name: str = ""
+    delta: int
+    balance_after: Optional[int] = None
+    type: str  # receipt | adjustment | shipment | reversal
+    order_id: Optional[str] = None
+    note: Optional[str] = None
+    created_by_user_id: Optional[str] = None
+    created_by_name: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class StockLineInput(BaseModel):
+    product_id: str
+    qty: int = Field(gt=0, le=1_000_000)
+
+
+class StockReceiptInput(BaseModel):
+    items: List[StockLineInput] = Field(min_length=1)
+    note: Optional[str] = Field(default=None, max_length=300)
+
+
+class StockAdjustmentInput(BaseModel):
+    product_id: str
+    counted_qty: int = Field(ge=0, le=1_000_000)
+    note: str = Field(min_length=1, max_length=300)
+
+
+async def _record_movement(
+    product: dict, delta: int, kind: str, user: Optional[User], order_id: Optional[str] = None, note: Optional[str] = None
+) -> None:
+    fresh = await db.products.find_one({"id": product["id"]}, {"_id": 0, "stock_qty": 1})
+    movement = StockMovement(
+        client_id=product["client_id"],
+        product_id=product["id"],
+        product_name=product.get("name", ""),
+        delta=delta,
+        balance_after=(fresh or {}).get("stock_qty"),
+        type=kind,
+        order_id=order_id,
+        note=note,
+        created_by_user_id=user.id if user else None,
+        created_by_name=user.name if user else None,
+    )
+    await db.stock_movements.insert_one({**movement.dict(), "_id": movement.id})
+
+
+async def _add_stock(product: dict, delta: int, kind: str, user: Optional[User], order_id=None, note=None) -> None:
+    """Receipt-style change: starts tracking (from 0) when stock was untracked."""
+    first = await db.products.update_one({"id": product["id"], "stock_qty": None}, {"$set": {"stock_qty": delta}})
+    if first.matched_count == 0:
+        await db.products.update_one({"id": product["id"]}, {"$inc": {"stock_qty": delta}})
+    await _record_movement(product, delta, kind, user, order_id, note)
+
+
+async def _move_stock_for_order(order: dict, direction: int, kind: str, user: User) -> None:
+    """Shipment (-picked) / reversal (+picked) for products whose stock is
+    tracked; untracked products are left alone. May go negative on purpose."""
+    for item in order.get("items", []):
+        qty = item.get("picked_qty") or 0
+        if qty <= 0:
+            continue
+        product = await db.products.find_one({"id": item["product_id"]}, {"_id": 0})
+        if not product or product.get("stock_qty") is None:
+            continue
+        await db.products.update_one({"id": product["id"]}, {"$inc": {"stock_qty": direction * qty}})
+        await _record_movement(product, direction * qty, kind, user, order_id=order["id"])
+
+
+@api_router.post("/stock/receipts")
+async def stock_receipt(inp: StockReceiptInput, current_user: User = Depends(require_stock_writer)):
+    products = []
+    for line in inp.items:
+        products.append(await get_scoped_or_404("products", line.product_id, current_user))
+    for product, line in zip(products, inp.items):
+        await _add_stock(product, line.qty, "receipt", current_user, note=inp.note)
+    return {"ok": True, "count": len(products)}
+
+
+@api_router.post("/stock/adjustments")
+async def stock_adjustment(inp: StockAdjustmentInput, current_user: User = Depends(require_stock_writer)):
+    product = await get_scoped_or_404("products", inp.product_id, current_user)
+    delta = inp.counted_qty - (product.get("stock_qty") or 0)
+    await db.products.update_one({"id": product["id"]}, {"$set": {"stock_qty": inp.counted_qty}})
+    await _record_movement(product, delta, "adjustment", current_user, note=inp.note)
+    return {"ok": True, "delta": delta}
+
+
+@api_router.get("/stock/movements", response_model=List[StockMovement])
+async def stock_movements(
+    product_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    current_user: User = Depends(require_stock_writer),
+):
+    query = _scope_query(current_user)
+    if product_id:
+        query["product_id"] = product_id
+    docs = await db.stock_movements.find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(None)
+    return [StockMovement(**d) for d in docs]
 
 
 # ---------------- Reports ----------------
