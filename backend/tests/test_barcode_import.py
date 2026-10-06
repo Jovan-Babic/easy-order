@@ -178,3 +178,11 @@ def test_import_needs_manager_and_valid_file(api_client):
     assert no_cols.status_code == 400
     tpl = api_client.get(f"{API}/products/import-template")
     assert tpl.status_code == 200 and tpl.content[:2] == b"PK"
+    # the example file itself is a valid import
+    dry = api_client.post(
+        f"{API}/products/import",
+        params={"dry_run": "true"},
+        files={"file": ("primer.xlsx", tpl.content, "application/octet-stream")},
+        headers={"Content-Type": None},
+    )
+    assert dry.status_code == 200 and dry.json()["summary"]["error"] == 0, dry.text

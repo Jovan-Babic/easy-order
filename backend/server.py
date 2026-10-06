@@ -1580,6 +1580,20 @@ _IMPORT_TEMPLATE_HEADERS = [
 ]
 
 
+# Downloadable example: includes a product without a barcode (matched by name)
+# and a text price with a comma, both of which the import accepts.
+_IMPORT_EXAMPLE_ROWS = [
+    ("Jaffa keks 150g", "8601000000018", "Jaffa", 46.5, 20, 12, 48, 240),
+    ("Plazma keks 300g", "8601000000025", "Bambi", 189.9, 20, 10, 40, 120),
+    ("Smoki 50g", None, "Bambi", 39, 20, 24, 96, 0),
+    ("Mleko 2.8% 1l", "8601000000049", "Imlek", "124,5", 10, 12, 72, 360),
+    ("Jogurt 2.8% 1l", "8601000000056", "Imlek", 118, 10, 12, 72, 300),
+    ("Ulje suncokretovo 1l", "8601000000063", "Dijamant", 259, 20, 12, 60, 180),
+    ("Brašno T-500 1kg", "8601000000070", "Mlin", "79,9", 10, 10, 100, 500),
+    ("Kafa Grand 200g", "8601000000087", "Strauss", 299, 20, 12, 48, None),
+]
+
+
 def _import_header_key(value: Any) -> str:
     text = str(value or "").lower()
     for src, dst in (("đ", "dj"), ("č", "c"), ("ć", "c"), ("š", "s"), ("ž", "z")):
@@ -1616,7 +1630,9 @@ async def product_import_template(current_user: User = Depends(require_manager))
     ws = wb.active
     ws.title = "Artikli"
     ws.append([label for _, label in _IMPORT_TEMPLATE_HEADERS])
-    ws.append(["Primer artikal", "8600000000017", "Proizvođač d.o.o.", 100, 20, 12, 48, 240])
+    # name, barcode, manufacturer, price, vat, pieces/pack, pieces/transport, stock
+    for row in _IMPORT_EXAMPLE_ROWS:
+        ws.append(list(row))
     for cell in ws["B"][1:]:  # barcodes as text keep leading zeros
         cell.number_format = "@"
     for col, width in zip("ABCDEFGH", (32, 18, 22, 14, 8, 20, 30, 16)):
