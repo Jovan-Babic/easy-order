@@ -1877,6 +1877,106 @@ async def _compute_client_stats(client_id: str) -> ClientStats:
     )
 
 
+# ---------------- Reports ----------------
+class StatusCount(BaseModel):
+    count: int = 0
+    grand: float = 0  # incl. VAT; by packed quantity once shipped
+
+
+class PersonReport(BaseModel):
+    user_id: Optional[str] = None
+    name: str
+    total: int = 0
+    shipped: int = 0
+    rejected: int = 0
+    canceled: int = 0
+
+
+class OrdersReport(BaseModel):
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+    order_count: int
+    by_status: Dict[str, StatusCount]
+    by_creator: List[PersonReport]  # sales reps: orders they placed
+    by_handler: List[PersonReport]  # who shipped/rejected orders (warehouse)
+    avg_hours_to_ship: Optional[float] = None
+
+
+def _last_transition(order: dict, to_status: str) -> Optional[dict]:
+    for entry in reversed(order.get("status_history") or []):
+        if entry.get("to_status") == to_status:
+            return entry
+    return None
+
+
+@api_router.get("/reports/orders", response_model=OrdersReport)
+async def orders_report(
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive (by created_at)"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    client_id: Optional[str] = None,
+    current_user: User = Depends(require_manager),
+):
+    """Order counts per status, per sales rep and per warehouse handler for a
+    period. Admin: own client. Superadmin: all clients, or one via client_id."""
+    query = _scope_query(current_user)
+    if current_user.role == Role.SUPERADMIN and client_id:
+        query = {"client_id": client_id}
+    date_range = {}
+    if from_date:
+        date_range["$gte"] = _parse_date(from_date, "from_date").isoformat()
+    if to_date:
+        date_range["$lt"] = (_parse_date(to_date, "to_date") + timedelta(days=1)).isoformat()
+    if date_range:
+        query["created_at"] = date_range
+    orders = await db.orders.find(query, {"_id": 0}).to_list(None)
+
+    by_status: Dict[str, StatusCount] = {s.value: StatusCount() for s in OrderStatus}
+    creators: Dict[str, PersonReport] = {}
+    handlers: Dict[str, PersonReport] = {}
+    ship_hours: List[float] = []
+
+    def person(bucket: Dict[str, PersonReport], user_id: Optional[str], name: Optional[str]) -> PersonReport:
+        key = user_id or name or "?"
+        if key not in bucket:
+            bucket[key] = PersonReport(user_id=user_id, name=name or "-")
+        return bucket[key]
+
+    for order in orders:
+        status = _status_value(order)
+        bucket = by_status.setdefault(status, StatusCount())
+        bucket.count += 1
+        bucket.grand = round(bucket.grand + compute_order_totals(order)["grand"], 2)
+
+        creator = person(creators, order.get("created_by_user_id"), order.get("created_by_name"))
+        creator.total += 1
+        if status in ("shipped", "rejected", "canceled"):
+            setattr(creator, status, getattr(creator, status) + 1)
+
+        for final in ("shipped", "rejected"):
+            if status == final:
+                entry = _last_transition(order, final)
+                if entry:
+                    h = person(handlers, entry.get("changed_by_user_id"), entry.get("changed_by_name"))
+                    h.total += 1
+                    setattr(h, final, getattr(h, final) + 1)
+        if status == "shipped" and order.get("shipped_at"):
+            try:
+                delta = datetime.fromisoformat(order["shipped_at"]) - datetime.fromisoformat(order["created_at"])
+                ship_hours.append(delta.total_seconds() / 3600)
+            except ValueError:
+                pass
+
+    return OrdersReport(
+        from_date=from_date,
+        to_date=to_date,
+        order_count=len(orders),
+        by_status=by_status,
+        by_creator=sorted(creators.values(), key=lambda p: -p.total),
+        by_handler=sorted(handlers.values(), key=lambda p: -p.total),
+        avg_hours_to_ship=round(sum(ship_hours) / len(ship_hours), 1) if ship_hours else None,
+    )
+
+
 @api_router.get("/stats/overview", response_model=StatsResponse)
 async def stats_overview(current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN))):
     if current_user.role == Role.SUPERADMIN:
