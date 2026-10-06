@@ -16,12 +16,22 @@ import { useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
-import { api, ApiError, Product } from "@/src/api";
+import { api, ApiError, Product, StockBatch } from "@/src/api";
 import { BarcodeScanner, ScanFeedback } from "@/src/components/BarcodeScanner";
 import { Button } from "@/src/components/Button";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
+import { displayToIso, formatDateInput, isoToDisplay } from "@/src/utils/expiry";
 
 type Props = { mode: "receipt" | "count" };
+
+/** One expiry date of a product with expiry tracking: its date and pieces.
+ *  `undated` = the stock that has no date (count mode only). */
+type ExpRow = { key: string; date: string; qty: string; undated?: boolean };
+
+let rowCounter = 0;
+const newRow = (init: Partial<ExpRow> = {}): ExpRow => ({ key: `r${++rowCounter}`, date: "", qty: "", ...init });
+const rowDate = (r: ExpRow) => (r.undated ? "" : displayToIso(r.date) ?? "x");
+const totalPieces = (rows: ExpRow[]) => rows.reduce((sum, r) => sum + (Number(r.qty) || 0), 0);
 
 /** Warehouse stock entry on the phone: scan (or search) products into a list,
  *  edit quantities, confirm once. Receipt adds, count sets the counted qty. */
@@ -31,6 +41,9 @@ export function StockScanPanel({ mode }: Props) {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [qtys, setQtys] = useState<Record<string, string>>({});
+  // Products with expiry tracking: pieces per expiry date instead of one number.
+  const [rows, setRows] = useState<Record<string, ExpRow[]>>({});
+  const [batchInfo, setBatchInfo] = useState<Record<string, StockBatch[]>>({});
   const [order, setOrder] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [note, setNote] = useState("");
@@ -59,11 +72,40 @@ export function StockScanPanel({ mode }: Props) {
   // Latest quantities, so several scans in a row add up before React re-renders.
   const qtyRef = useRef<Record<string, string>>({});
   qtyRef.current = qtys;
+  const rowsRef = useRef<Record<string, ExpRow[]>>({});
+  rowsRef.current = rows;
+
+  const loadBatches = async (id: string) => {
+    try {
+      const batches = await api.productBatches(id);
+      setBatchInfo((prev) => ({ ...prev, [id]: batches }));
+    } catch {
+      // Only informational: the entry works without it.
+    }
+  };
+
+  const setProductRows = (id: string, next: ExpRow[]) => {
+    rowsRef.current = { ...rowsRef.current, [id]: next };
+    setRows(rowsRef.current);
+  };
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
 
   // Scan or pick = one more piece on that line (a fresh line starts at 1).
-  const addOne = (id: string) => {
+  const addOne = (p: Product) => {
+    const id = p.id;
+    if (p.track_expiry) {
+      // A scan adds a piece to the latest expiry row; the date is typed on the card.
+      const current = rowsRef.current[id] ?? [];
+      const last = current[current.length - 1];
+      setProductRows(
+        id,
+        last ? [...current.slice(0, -1), { ...last, qty: String((Number(last.qty) || 0) + 1) }] : [newRow({ qty: "1" })]
+      );
+      if (!current.length) loadBatches(id);
+      setOrder((prev) => (prev.includes(id) ? prev : [id, ...prev]));
+      return totalPieces(rowsRef.current[id]);
+    }
     const next = (Number(qtyRef.current[id]) || 0) + 1;
     qtyRef.current = { ...qtyRef.current, [id]: String(next) };
     setQtys(qtyRef.current);
@@ -88,7 +130,7 @@ export function StockScanPanel({ mode }: Props) {
         return { ok: false, label: t("networkError") };
       }
     }
-    const qty = addOne(product.id);
+    const qty = addOne(product);
     return { ok: true, label: `${product.name} · ${qty}` };
   };
 
@@ -97,7 +139,7 @@ export function StockScanPanel({ mode }: Props) {
     try {
       const updated = await api.linkBarcode(product.id, unknownCode);
       setProducts((prev) => prev.map((p) => (p.id === updated.id ? { ...p, barcode: updated.barcode } : p)));
-      addOne(product.id);
+      addOne({ ...product, barcode: updated.barcode });
       showToast(t("barcodeLinked"));
       setUnknownCode(null);
     } catch (e) {
@@ -117,7 +159,7 @@ export function StockScanPanel({ mode }: Props) {
         boxes_per_transport: v.boxes ? Number(v.boxes) : undefined,
       });
       setProducts((prev) => [...prev, created]);
-      addOne(created.id);
+      addOne(created);
       showToast(t("productAdded"));
       setUnknownCode(null);
       setUnknownMode("choice");
@@ -137,28 +179,51 @@ export function StockScanPanel({ mode }: Props) {
   }, [products, search]);
 
   const lines = order.filter((id) => byId.has(id));
-  const valid =
-    lines.length > 0 &&
-    lines.every((id) => qtys[id] !== "" && qtys[id] != null && (mode === "count" || Number(qtys[id]) > 0)) &&
-    (mode === "receipt" || note.trim() !== "");
+  const rowsOk = (list: ExpRow[]) =>
+    list.length > 0 &&
+    list.every((r) => r.qty !== "" && (mode === "count" || Number(r.qty) > 0) && rowDate(r) !== "x") &&
+    new Set(list.map(rowDate)).size === list.length;
+  const lineOk = (id: string) =>
+    byId.get(id)?.track_expiry
+      ? rowsOk(rows[id] ?? [])
+      : qtys[id] !== "" && qtys[id] != null && (mode === "count" || Number(qtys[id]) > 0);
+  const valid = lines.length > 0 && lines.every(lineOk) && (mode === "receipt" || note.trim() !== "");
 
   const confirm = async () => {
     Keyboard.dismiss();
     setBusy(true);
     try {
+      const tracked = (id: string) => byId.get(id)?.track_expiry === true;
       if (mode === "receipt") {
         await api.stockReceipt(
-          lines.map((id) => ({ product_id: id, qty: Number(qtys[id]) })),
+          lines.flatMap((id) =>
+            tracked(id)
+              ? rows[id].map((r) => ({ product_id: id, qty: Number(r.qty), expiry_date: displayToIso(r.date)! }))
+              : [{ product_id: id, qty: Number(qtys[id]) }]
+          ),
           note.trim() || undefined
         );
       } else {
         await api.stockCount(
-          lines.map((id) => ({ product_id: id, counted_qty: Number(qtys[id]) })),
+          lines.map((id) =>
+            tracked(id)
+              ? {
+                  product_id: id,
+                  batches: rows[id].map((r) => ({
+                    expiry_date: r.undated ? null : displayToIso(r.date),
+                    counted_qty: Number(r.qty),
+                  })),
+                }
+              : { product_id: id, counted_qty: Number(qtys[id]) }
+          ),
           note.trim()
         );
       }
       showToast(t("stockSaved"));
       setQtys({});
+      setRows({});
+      rowsRef.current = {};
+      setBatchInfo({});
       setOrder([]);
       setNote("");
       await load();
@@ -200,7 +265,7 @@ export function StockScanPanel({ mode }: Props) {
                 key={p.id}
                 style={styles.match}
                 onPress={() => {
-                  addOne(p.id);
+                  addOne(p);
                   setSearch("");
                 }}
               >
@@ -214,6 +279,23 @@ export function StockScanPanel({ mode }: Props) {
         ListEmptyComponent={<Text style={styles.empty}>{t("scanToStart")}</Text>}
         renderItem={({ item: id }) => {
           const p = byId.get(id)!;
+          if (p.track_expiry) {
+            return (
+              <ExpiryCard
+                product={p}
+                mode={mode}
+                rows={rows[id] ?? []}
+                batches={batchInfo[id] ?? []}
+                onChange={(next) => setProductRows(id, next)}
+                onRemove={() => {
+                  setOrder((prev) => prev.filter((x) => x !== id));
+                  const { [id]: _removed, ...rest } = rowsRef.current;
+                  rowsRef.current = rest;
+                  setRows(rest);
+                }}
+              />
+            );
+          }
           const tracked = p.stock_qty != null;
           const book = p.stock_qty ?? 0;
           const entered = Number(qtys[id]) || 0;
@@ -330,6 +412,105 @@ export function StockScanPanel({ mode }: Props) {
           )}
         </View>
       </Modal>
+    </View>
+  );
+}
+
+/** Line card for a product with expiry tracking: one row per expiry date. */
+function ExpiryCard({
+  product,
+  mode,
+  rows,
+  batches,
+  onChange,
+  onRemove,
+}: {
+  product: Product;
+  mode: "receipt" | "count";
+  rows: ExpRow[];
+  batches: StockBatch[];
+  onChange: (rows: ExpRow[]) => void;
+  onRemove: () => void;
+}) {
+  const { t } = useApp();
+  const update = (key: string, patch: Partial<ExpRow>) =>
+    onChange(rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  const dates = rows.map(rowDate);
+  // Count mode: existing batches that aren't on the card yet, one tap to add.
+  const addable = mode === "count" ? batches.filter((b) => !dates.includes(b.expiry_date ?? "")) : [];
+  return (
+    <View style={[styles.card, { alignItems: "stretch", flexDirection: "column" }]}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={styles.name}>{product.name}</Text>
+          {!!product.barcode && <Text style={styles.sub}>{product.barcode}</Text>}
+          <Text style={styles.sub}>
+            {t("bookStock")}: {product.stock_qty ?? t("notTracked")}
+          </Text>
+          {batches.length > 0 && (
+            <Text style={styles.sub}>
+              {t("stockByExpiry")}:{" "}
+              {batches.map((b) => `${b.expiry_date ? isoToDisplay(b.expiry_date) : t("undatedStock")} × ${b.qty}`).join(" · ")}
+            </Text>
+          )}
+        </View>
+        <Pressable hitSlop={8} accessibilityLabel={t("remove")} onPress={onRemove}>
+          <Ionicons name="close-circle" size={24} color={colors.muted} />
+        </Pressable>
+      </View>
+      {rows.map((r) => (
+        <View key={r.key} style={styles.expRow}>
+          {r.undated ? (
+            <Text style={[styles.expDate, styles.expUndated]}>{t("undatedStock")}</Text>
+          ) : (
+            <TextInput
+              testID={`exp-date-${product.id}`}
+              style={[styles.expDate, r.date !== "" && displayToIso(r.date) === null && styles.expInvalid]}
+              placeholder={t("expiryDate")}
+              placeholderTextColor={colors.muted}
+              keyboardType="number-pad"
+              maxLength={10}
+              value={r.date}
+              onChangeText={(v) => update(r.key, { date: formatDateInput(v) })}
+            />
+          )}
+          <TextInput
+            testID={`exp-qty-${product.id}`}
+            style={styles.qty}
+            keyboardType="number-pad"
+            value={r.qty}
+            onChangeText={(v) => update(r.key, { qty: v.replace(/[^0-9]/g, "") })}
+          />
+          {rows.length > 1 && (
+            <Pressable hitSlop={8} onPress={() => onChange(rows.filter((x) => x.key !== r.key))}>
+              <Ionicons name="remove-circle-outline" size={22} color={colors.muted} />
+            </Pressable>
+          )}
+        </View>
+      ))}
+      {rows.length > 0 && !rows.every((r) => r.undated || displayToIso(r.date) !== null) && (
+        <Text style={[styles.sub, { color: colors.warning }]}>{t("expiryDateInvalid")}</Text>
+      )}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, marginTop: spacing.sm }}>
+        <Pressable style={styles.chip} onPress={() => onChange([...rows, newRow()])}>
+          <Ionicons name="add" size={16} color={colors.brand} />
+          <Text style={styles.chipText}>{t("addExpiryRow")}</Text>
+        </Pressable>
+        {addable.map((b) => (
+          <Pressable
+            key={b.id}
+            style={styles.chip}
+            onPress={() =>
+              onChange([
+                ...rows,
+                b.expiry_date ? newRow({ date: isoToDisplay(b.expiry_date) }) : newRow({ undated: true }),
+              ])
+            }
+          >
+            <Text style={styles.chipText}>{b.expiry_date ? isoToDisplay(b.expiry_date) : t("undatedStock")}</Text>
+          </Pressable>
+        ))}
+      </View>
     </View>
   );
 }
@@ -477,6 +658,30 @@ const styles = StyleSheet.create({
     color: colors.onSurface,
     backgroundColor: colors.surface,
   },
+  expRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, marginTop: spacing.sm },
+  expDate: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    fontSize: font.base,
+    color: colors.onSurface,
+    backgroundColor: colors.surface,
+  },
+  expUndated: { color: colors.muted, borderStyle: "dashed" },
+  expInvalid: { borderColor: colors.warning },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderColor: colors.brand,
+    borderRadius: radius.pill,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+  },
+  chipText: { color: colors.brand, fontSize: font.sm, fontWeight: "600" },
   modal: { flex: 1, backgroundColor: colors.surface, paddingHorizontal: spacing.lg, paddingBottom: spacing.xl },
   modalTitle: { fontSize: font.xl, fontWeight: "800", color: colors.onSurface },
 });

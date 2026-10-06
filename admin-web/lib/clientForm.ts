@@ -12,6 +12,7 @@ export type ClientFormFields = {
   invoice_prefix: string;
   invoice_numbering: "auto" | "manual";
   invoice_next_seq: string; // "" = leave the counter alone
+  expiry_alert_days: string; // e.g. "30, 15, 5"
 };
 
 export const emptyClientFields: ClientFormFields = {
@@ -26,6 +27,7 @@ export const emptyClientFields: ClientFormFields = {
   invoice_prefix: "",
   invoice_numbering: "auto",
   invoice_next_seq: "",
+  expiry_alert_days: "30, 15, 5",
 };
 
 // Uploads the picked logo; returns its URL, or throws with the backend's message.
@@ -42,6 +44,15 @@ export async function uploadLogo(file: File): Promise<string> {
 export const deleteUploadedLogo = (url: string) =>
   fetch(`/api/upload-image?url=${encodeURIComponent(url)}`, { method: "DELETE" }).catch(() => {});
 
+// "30, 15, 5" -> [30, 15, 5]; null (= keep the stored thresholds) when empty/invalid.
+export function parseAlertDays(text: string): number[] | null {
+  const days = text
+    .split(/[,;\s]+/)
+    .filter(Boolean)
+    .map((v) => Math.trunc(Number(v)));
+  return days.length && days.every((d) => Number.isInteger(d) && d >= 1 && d <= 365) ? days : null;
+}
+
 // Body for POST/PUT /clients (without the admin fields on create).
 export function clientPayload(form: ClientFormFields, logo: string) {
   const next = Math.trunc(Number(form.invoice_next_seq));
@@ -57,5 +68,6 @@ export function clientPayload(form: ClientFormFields, logo: string) {
     invoice_prefix: form.invoice_prefix.trim().toUpperCase(),
     invoice_numbering: form.invoice_numbering,
     invoice_next_seq: form.invoice_next_seq !== "" && next >= 1 ? next : null,
+    expiry_alert_days: parseAlertDays(form.expiry_alert_days),
   };
 }

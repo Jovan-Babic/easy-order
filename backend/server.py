@@ -23,7 +23,7 @@ from enum import Enum
 import uuid
 import bcrypt
 import jwt
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from email.message import EmailMessage
 from urllib.parse import quote
 import cloudinary
@@ -148,6 +148,12 @@ async def lifespan(app: FastAPI):
         )
     except Exception as exc:
         logger.error("Could not create unique index on products.barcode: %s", exc)
+    try:
+        # One batch per product and expiry date (expiry_date null = undated stock).
+        await db.stock_batches.create_index([("product_id", 1), ("expiry_date", 1)], unique=True)
+        await db.stock_batches.create_index([("client_id", 1), ("expiry_date", 1)])
+    except Exception as exc:
+        logger.error("Could not create indexes on stock_batches: %s", exc)
     await _migrate_user_emails_to_lowercase()
     try:
         await db.users.create_index("email", unique=True)
@@ -163,6 +169,9 @@ async def lifespan(app: FastAPI):
     logger.info("Backend started with MongoDB (%s)", os.environ["DB_NAME"])
     yield
     mongo_client.close()
+
+
+DEFAULT_EXPIRY_ALERT_DAYS = [5, 15, 30]  # ascending (default 30/15/5 days)
 
 
 def now_iso() -> str:
@@ -194,6 +203,8 @@ class Client(BaseModel):
     logo: Optional[str] = ""
     invoice_prefix: Optional[str] = ""
     invoice_numbering: str = "auto"  # "auto" | "manual"
+    # Days before expiry at which batches show up as warnings (warehouse/admin).
+    expiry_alert_days: List[int] = Field(default_factory=lambda: list(DEFAULT_EXPIRY_ALERT_DAYS))
     # Read-only: the number the next shipped order will get (auto numbering).
     invoice_next_seq: Optional[int] = None
     active: bool = True
@@ -211,6 +222,8 @@ class ClientInput(BaseModel):
     logo: Optional[str] = ""
     invoice_prefix: Optional[str] = ""
     invoice_numbering: str = "auto"
+    # None = keep the stored thresholds (default 30/15/5 days).
+    expiry_alert_days: Optional[List[int]] = None
     # Only ever raises the counter (to continue a series from an old system).
     invoice_next_seq: Optional[int] = Field(default=None, ge=1)
 
@@ -360,6 +373,9 @@ class Product(BaseModel):
     # False = delisted/draft: hidden from sales reps and can't be ordered, but
     # stock, history and past orders stay. Documents without the field are active.
     active: bool = True
+    # Expiry tracking (PLAN_ROK_TRAJANJA.md): stock is then kept in batches
+    # (stock_batches: expiry date + pieces) and stock_qty is their sum.
+    track_expiry: bool = False
     # Pieces in the warehouse. None = stock is not tracked for this product.
     # Only changed through /stock/* and order shipments, never via ProductInput.
     stock_qty: Optional[int] = None
@@ -369,7 +385,10 @@ class Product(BaseModel):
 class ProductOut(Product):
     """List response: stock plus what open orders (new/in_progress) reserve."""
     reserved_qty: int = 0
-    available_qty: Optional[int] = None  # stock_qty - reserved_qty; None when untracked
+    available_qty: Optional[int] = None  # stock_qty - reserved_qty - expired_qty; None when untracked
+    # Expiry info is for warehouse/admin only; sales reps always get the defaults.
+    expired_qty: int = 0
+    next_expiry: Optional[str] = None  # earliest expiry date among batches still in stock
 
 
 class ProductInput(BaseModel):
@@ -389,7 +408,16 @@ class ProductInput(BaseModel):
     barcode: Optional[str] = None
     # None = keep. Activating a product that has no price yet is refused.
     active: Optional[bool] = None
+    # None = keep. Switching it on turns the current stock into an undated batch.
+    track_expiry: Optional[bool] = None
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
+
+
+class PickedBatch(BaseModel):
+    """Part of a packed line taken from one batch (snapshot kept on the order)."""
+    batch_id: Optional[str] = None
+    expiry_date: Optional[str] = None  # None = undated stock
+    qty: int
 
 
 class OrderItem(BaseModel):
@@ -406,6 +434,9 @@ class OrderItem(BaseModel):
     ordered_qty: int = 0
     # Set by the warehouse while packing; None = not checked yet.
     picked_qty: Optional[int] = None
+    # Only for products with expiry tracking, filled when packed/shipped.
+    # Never shown to sales reps.
+    picked_batches: Optional[List[PickedBatch]] = None
 
 
 class OrderStatus(str, Enum):
@@ -1215,6 +1246,16 @@ def _validated_invoice_settings(inp: ClientInput) -> dict:
     return {"invoice_prefix": prefix}
 
 
+def _validated_alert_days(days: Optional[List[int]]) -> Optional[List[int]]:
+    """None = not sent (keep). Otherwise 1-6 distinct day counts, 1..365, ascending."""
+    if days is None:
+        return None
+    unique = sorted(set(days))
+    if not 1 <= len(unique) <= 6 or unique[0] < 1 or unique[-1] > 365:
+        raise HTTPException(status_code=400, detail="expiry_alert_days: 1-6 different values between 1 and 365")
+    return unique
+
+
 async def _raise_invoice_counter(client_id: str, next_seq: Optional[int]) -> None:
     """Continue a series from an old system: the next number becomes
     `next_seq`. Only ever raises the counter - lowering could reuse a number."""
@@ -1238,8 +1279,13 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
     if await find_user_by_email(inp.admin_email):
         raise HTTPException(status_code=400, detail="Email already in use")
     settings = _validated_invoice_settings(inp)
+    alert_days = _validated_alert_days(inp.expiry_alert_days)
+    if alert_days:
+        settings["expiry_alert_days"] = alert_days
 
-    client_obj = Client(**{**inp.dict(exclude={"admin_name", "admin_email", "invoice_next_seq"}), **settings})
+    client_obj = Client(
+        **{**inp.dict(exclude={"admin_name", "admin_email", "invoice_next_seq", "expiry_alert_days"}), **settings}
+    )
     await db.clients.insert_one({**client_obj.dict(exclude={"invoice_next_seq"}), "_id": client_obj.id})
     await _raise_invoice_counter(client_obj.id, inp.invoice_next_seq)
 
@@ -1277,7 +1323,10 @@ async def update_client(client_id: str, inp: ClientInput, current_user: User = D
         raise HTTPException(status_code=404, detail="Client not found")
     settings = _validated_invoice_settings(inp)
     await _raise_invoice_counter(client_id, inp.invoice_next_seq)
-    updated = {**existing, **inp.dict(exclude={"invoice_next_seq"}), **settings}
+    alert_days = _validated_alert_days(inp.expiry_alert_days)
+    if alert_days:
+        settings["expiry_alert_days"] = alert_days
+    updated = {**existing, **inp.dict(exclude={"invoice_next_seq", "expiry_alert_days"}), **settings}
     await db.clients.replace_one({"id": client_id}, {**updated, "_id": client_id})
     if existing.get("logo") != updated.get("logo"):
         await _delete_product_image(existing.get("logo"))
@@ -1591,6 +1640,24 @@ async def _reserved_by_product(scope: dict) -> Dict[str, int]:
     return reserved
 
 
+def _product_out(doc: dict, reserved: int, expiry: Optional[dict], user: User) -> ProductOut:
+    """Stock fields for one product. Expired pieces don't count as available.
+    Sales reps get no expiry information at all (only the lower availability)."""
+    stock = doc.get("stock_qty")
+    expired = (expiry or {}).get("expired_qty", 0)
+    out = ProductOut(
+        **{**doc, "track_expiry": bool(doc.get("track_expiry"))},
+        reserved_qty=reserved,
+        available_qty=None if stock is None else stock - reserved - expired,
+    )
+    if user.role != Role.OPERATOR:
+        out.expired_qty = expired
+        out.next_expiry = (expiry or {}).get("next_expiry")
+    else:
+        out.track_expiry = False
+    return out
+
+
 @api_router.get("/products", response_model=List[ProductOut])
 async def list_products(current_user: User = Depends(get_current_user)):
     scope = _scope_query(current_user)
@@ -1599,12 +1666,8 @@ async def list_products(current_user: User = Depends(get_current_user)):
     visible = {**scope, "active": {"$ne": False}} if current_user.role == Role.OPERATOR else scope
     docs = await db.products.find(visible, {"_id": 0}).sort("created_at", 1).to_list(None)
     reserved = await _reserved_by_product(scope)
-    out = []
-    for v in docs:
-        r = reserved.get(v["id"], 0)
-        stock = v.get("stock_qty")
-        out.append(ProductOut(**v, reserved_qty=r, available_qty=None if stock is None else stock - r))
-    return out
+    expiry = await _expiry_info(scope)
+    return [_product_out(v, reserved.get(v["id"], 0), expiry.get(v["id"]), current_user) for v in docs]
 
 
 @api_router.post("/products", response_model=Product)
@@ -1616,6 +1679,7 @@ async def create_product(inp: ProductInput, current_user: User = Depends(require
     payload["additional_discounts"] = normalize_additional_discounts(inp.additional_discounts)
     payload["barcode"] = await _checked_barcode(client_id, inp.barcode)
     payload["active"] = True if inp.active is None else inp.active
+    payload["track_expiry"] = bool(inp.track_expiry)
     obj = Product(**payload, client_id=client_id)
     await db.products.insert_one({**obj.dict(), "_id": obj.id})
     return obj
@@ -1643,12 +1707,16 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
     }
     was_active = existing.get("active", True)
     updated["active"] = was_active if inp.active is None else inp.active
+    was_tracking = bool(existing.get("track_expiry"))
+    updated["track_expiry"] = was_tracking if inp.track_expiry is None else inp.track_expiry
     if updated["active"] and not was_active and not (updated.get("price_no_vat") or 0) > 0:
         raise HTTPException(status_code=400, detail="Set a price before activating the product")
     if inp.barcode is None:
         updated["barcode"] = existing.get("barcode")
     else:
         updated["barcode"] = await _checked_barcode(existing["client_id"], inp.barcode, exclude_id=product_id)
+    if updated["track_expiry"] != was_tracking:
+        await _switch_expiry_tracking(existing, updated["track_expiry"])
     # $set instead of replace_one: a concurrent stock change ($inc) must not
     # be overwritten by this stale copy of the product.
     await db.products.update_one(
@@ -1663,6 +1731,7 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
 async def delete_product(product_id: str, current_user: User = Depends(require_manager)):
     existing = await get_scoped_or_404("products", product_id, current_user)
     await db.products.delete_one({"id": product_id})
+    await db.stock_batches.delete_many({"product_id": product_id})
     await _delete_product_image(existing.get("image"))
     return {"ok": True}
 
@@ -1709,8 +1778,8 @@ async def product_by_barcode(code: str, current_user: User = Depends(get_current
     if not doc:
         raise HTTPException(status_code=404, detail="Product not found")
     r = (await _reserved_by_product(scope)).get(doc["id"], 0)
-    stock = doc.get("stock_qty")
-    return ProductOut(**doc, reserved_qty=r, available_qty=None if stock is None else stock - r)
+    expiry = await _expiry_info(scope, product_id=doc["id"])
+    return _product_out(doc, r, expiry.get(doc["id"]), current_user)
 
 
 @api_router.post("/products/{product_id}/barcode", response_model=Product)
@@ -1770,25 +1839,28 @@ _IMPORT_HEADERS = {
     "boxespertransport": "boxes_per_transport", "transportnopakovanje": "boxes_per_transport",
     "transportno": "boxes_per_transport", "komadaunatransportnom": "boxes_per_transport",
     "stockqty": "stock_qty", "stanje": "stock_qty", "kolicina": "stock_qty", "nastanju": "stock_qty",
+    "trackexpiry": "track_expiry", "pratirok": "track_expiry", "pratirokove": "track_expiry",
+    "pratirokatrajanja": "track_expiry",
 }
 _IMPORT_TEMPLATE_HEADERS = [
     ("name", "Naziv"), ("barcode", "Barkod"), ("manufacturer", "Proizvođač"), ("price_no_vat", "Cena bez PDV"),
     ("vat_rate", "PDV %"), ("pieces_per_package", "Komada u pakovanju"),
     ("boxes_per_transport", "Transportno pakovanje (komada)"), ("stock_qty", "Stanje (komada)"),
+    ("track_expiry", "Prati rok (da/ne)"),
 ]
 
 
 # Downloadable example: includes a product without a barcode (matched by name)
 # and a text price with a comma, both of which the import accepts.
 _IMPORT_EXAMPLE_ROWS = [
-    ("Jaffa keks 150g", "8601000000018", "Jaffa", 46.5, 20, 12, 48, 240),
-    ("Plazma keks 300g", "8601000000025", "Bambi", 189.9, 20, 10, 40, 120),
-    ("Smoki 50g", None, "Bambi", 39, 20, 24, 96, 0),
-    ("Mleko 2.8% 1l", "8601000000049", "Imlek", "124,5", 10, 12, 72, 360),
-    ("Jogurt 2.8% 1l", "8601000000056", "Imlek", 118, 10, 12, 72, 300),
-    ("Ulje suncokretovo 1l", "8601000000063", "Dijamant", 259, 20, 12, 60, 180),
-    ("Brašno T-500 1kg", "8601000000070", "Mlin", "79,9", 10, 10, 100, 500),
-    ("Kafa Grand 200g", "8601000000087", "Strauss", 299, 20, 12, 48, None),
+    ("Jaffa keks 150g", "8601000000018", "Jaffa", 46.5, 20, 12, 48, 240, "ne"),
+    ("Plazma keks 300g", "8601000000025", "Bambi", 189.9, 20, 10, 40, 120, "ne"),
+    ("Smoki 50g", None, "Bambi", 39, 20, 24, 96, 0, "ne"),
+    ("Mleko 2.8% 1l", "8601000000049", "Imlek", "124,5", 10, 12, 72, 360, "da"),
+    ("Jogurt 2.8% 1l", "8601000000056", "Imlek", 118, 10, 12, 72, 300, "da"),
+    ("Ulje suncokretovo 1l", "8601000000063", "Dijamant", 259, 20, 12, 60, 180, "ne"),
+    ("Brašno T-500 1kg", "8601000000070", "Mlin", "79,9", 10, 10, 100, 500, "ne"),
+    ("Kafa Grand 200g", "8601000000087", "Strauss", 299, 20, 12, 48, None, "ne"),
 ]
 
 
@@ -1833,7 +1905,7 @@ async def product_import_template(current_user: User = Depends(require_manager))
         ws.append(list(row))
     for cell in ws["B"][1:]:  # barcodes as text keep leading zeros
         cell.number_format = "@"
-    for col, width in zip("ABCDEFGH", (32, 18, 22, 14, 8, 20, 30, 16)):
+    for col, width in zip("ABCDEFGHI", (32, 18, 22, 14, 8, 20, 30, 16, 18)):
         ws.column_dimensions[col].width = width
     buf = io.BytesIO()
     wb.save(buf)
@@ -1910,6 +1982,14 @@ async def import_products(
         manufacturer = str(values.get("manufacturer") or "").strip()
         if manufacturer:
             parsed["manufacturer"] = manufacturer
+        raw_track = str(values.get("track_expiry") or "").strip().lower()
+        if raw_track:
+            if raw_track in ("da", "yes", "true", "1", "x"):
+                parsed["track_expiry"] = True
+            elif raw_track in ("ne", "no", "false", "0"):
+                parsed["track_expiry"] = False
+            else:
+                errors.append("Prati rok must be da or ne")
 
         product = by_barcode.get(code) if code else None
         if product is None and name:
@@ -1926,6 +2006,15 @@ async def import_products(
             clash = by_barcode.get(code)
             if clash and clash["id"] != product["id"]:
                 errors.append("Barcode belongs to another product")
+        if (
+            product is not None
+            and parsed.get("track_expiry") is False
+            and product.get("track_expiry")
+            and await db.stock_batches.find_one(
+                {"product_id": product["id"], "expiry_date": {"$ne": None}, "qty": {"$ne": 0}}, {"_id": 1}
+            )
+        ):
+            errors.append("Can't switch off expiry tracking while dated batches are in stock")
         if code:
             seen_barcodes.setdefault(code, row_no)
         if product is not None:
@@ -1954,6 +2043,8 @@ async def import_products(
                 await db.products.insert_one({**obj.dict(), "_id": obj.id})
                 product = obj.dict()
             elif vals:
+                if "track_expiry" in vals and vals["track_expiry"] != bool(product.get("track_expiry")):
+                    await _switch_expiry_tracking(product, vals["track_expiry"])
                 await db.products.update_one({"id": product["id"]}, {"$set": vals})
             if stock is not None:
                 fresh = await db.products.find_one({"id": product["id"]}, {"_id": 0})
@@ -2008,6 +2099,11 @@ def _order_out(doc: dict) -> OrderOut:
     )
 
 
+def _without_batches(doc: dict) -> dict:
+    """Sales reps never see which batches (expiry dates) an order was packed from."""
+    return {**doc, "items": [{k: v for k, v in i.items() if k != "picked_batches"} for i in doc.get("items", [])]}
+
+
 def _order_scope_query(user: User) -> dict:
     """Tenant scope for orders, plus: an operator sees only their own."""
     query = _scope_query(user)
@@ -2060,6 +2156,8 @@ async def list_orders(
         clients = await db.clients.find({"id": {"$in": client_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(None)
         names = {c["id"]: c.get("name") for c in clients}
         docs = [{**d, "client_name": names.get(d.get("client_id"))} for d in docs]
+    if current_user.role == Role.OPERATOR:
+        docs = [_without_batches(d) for d in docs]
     return [_order_out(d) for d in docs]
 
 
@@ -2068,7 +2166,7 @@ async def get_order(order_id: str, current_user: User = Depends(get_current_user
     order = await get_scoped_or_404("orders", order_id, current_user)
     if current_user.role == Role.OPERATOR and order.get("created_by_user_id") != current_user.id:
         raise HTTPException(status_code=404, detail="Not found")  # someone else's order
-    return _order_out(order)
+    return _order_out(_without_batches(order) if current_user.role == Role.OPERATOR else order)
 
 
 async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict, List[OrderItem]]:
@@ -2184,9 +2282,17 @@ class StatusChangeInput(BaseModel):
     invoice_number: Optional[str] = Field(default=None, max_length=40)
 
 
+class PickedBatchInput(BaseModel):
+    batch_id: str
+    qty: int = Field(gt=0, le=1_000_000)
+
+
 class PickedItemInput(BaseModel):
     product_id: str
     picked_qty: Optional[int] = None  # None = un-check the line
+    # Optional manual batch choice (must add up to picked_qty); without it the
+    # server takes the earliest-expiring batches (FEFO) when the order ships.
+    batches: Optional[List[PickedBatchInput]] = None
 
 
 class PickedItemsInput(BaseModel):
@@ -2320,6 +2426,29 @@ async def change_order_status(
     return _order_out(updated_doc)
 
 
+async def _validated_picked_batches(item: dict, line: PickedItemInput) -> List[dict]:
+    """The warehouse's own batch choice for one line: only for products with
+    expiry tracking, from this product's batches, in-date, adding up to picked_qty."""
+    product = await db.products.find_one({"id": item["product_id"]}, {"_id": 0, "track_expiry": 1})
+    if not (product or {}).get("track_expiry"):
+        raise HTTPException(status_code=400, detail=f"{item['name']} has no expiry tracking")
+    if line.picked_qty is None or sum(b.qty for b in line.batches) != line.picked_qty:
+        raise HTTPException(status_code=400, detail=f"Batches for {item['name']} must add up to picked_qty")
+    today = _today().isoformat()
+    picks: Dict[str, dict] = {}
+    for b in line.batches:
+        batch = await db.stock_batches.find_one({"id": b.batch_id, "product_id": item["product_id"]}, {"_id": 0})
+        if not batch:
+            raise HTTPException(status_code=400, detail=f"Unknown batch for {item['name']}")
+        if batch.get("expiry_date") and batch["expiry_date"] < today:
+            raise HTTPException(status_code=400, detail=f"Batch for {item['name']} has expired")
+        pick = picks.setdefault(batch["id"], {"batch_id": batch["id"], "expiry_date": batch.get("expiry_date"), "qty": 0})
+        pick["qty"] += b.qty
+        if pick["qty"] > batch["qty"]:
+            raise HTTPException(status_code=400, detail=f"Not enough pieces in the chosen batch of {item['name']}")
+    return list(picks.values())
+
+
 @api_router.patch("/orders/{order_id}/items", response_model=OrderOut)
 async def update_picked_items(
     order_id: str,
@@ -2341,6 +2470,10 @@ async def update_picked_items(
             raise HTTPException(
                 status_code=400, detail=f"picked_qty for {item['name']} must be between 0 and {item.get('ordered_qty', 0)}"
             )
+        if line.batches is not None:
+            item["picked_batches"] = await _validated_picked_batches(item, line)
+        elif line.picked_qty != item.get("picked_qty"):
+            item.pop("picked_batches", None)  # a different quantity: let FEFO decide again
         item["picked_qty"] = line.picked_qty
 
     update: Dict[str, Any] = {"items": items}
@@ -2410,6 +2543,8 @@ class StockMovement(BaseModel):
     client_id: str
     product_id: str
     product_name: str = ""
+    batch_id: Optional[str] = None
+    expiry_date: Optional[str] = None
     delta: int
     balance_after: Optional[int] = None
     type: str  # receipt | adjustment | shipment | reversal
@@ -2423,6 +2558,8 @@ class StockMovement(BaseModel):
 class StockLineInput(BaseModel):
     product_id: str
     qty: int = Field(gt=0, le=1_000_000)
+    # Required for products with expiry tracking (YYYY-MM-DD), ignored otherwise.
+    expiry_date: Optional[str] = None
 
 
 class StockReceiptInput(BaseModel):
@@ -2430,20 +2567,93 @@ class StockReceiptInput(BaseModel):
     note: Optional[str] = Field(default=None, max_length=300)
 
 
+class BatchCount(BaseModel):
+    expiry_date: Optional[str] = None  # None = undated stock
+    counted_qty: int = Field(ge=0, le=1_000_000)
+
+
 class StockAdjustmentInput(BaseModel):
     product_id: str
-    counted_qty: int = Field(ge=0, le=1_000_000)
+    # Plain products: counted_qty. Products with expiry tracking: `batches`,
+    # the full count per expiry date (batches left out are set to 0).
+    counted_qty: Optional[int] = Field(default=None, ge=0, le=1_000_000)
+    batches: Optional[List[BatchCount]] = Field(default=None, max_length=100)
     note: str = Field(min_length=1, max_length=300)
 
 
+class StockBatch(BaseModel):
+    id: str
+    client_id: str
+    product_id: str
+    expiry_date: Optional[str] = None
+    qty: int = 0
+    created_at: str = ""
+    days_left: Optional[int] = None  # negative = already expired
+    expired: bool = False
+
+
+def _today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+def _normalize_expiry(value: Optional[str], required: bool = False) -> Optional[str]:
+    """YYYY-MM-DD, not absurdly far away (typo guard); None = undated."""
+    if value is None or not str(value).strip():
+        if required:
+            raise HTTPException(status_code=400, detail="expiry_date is required (YYYY-MM-DD)")
+        return None
+    try:
+        parsed = datetime.strptime(str(value).strip(), "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="expiry_date must be YYYY-MM-DD")
+    today = _today()
+    if parsed.year < 2000 or parsed > today.replace(year=today.year + 20):
+        raise HTTPException(status_code=400, detail="expiry_date is out of range")
+    return parsed.isoformat()
+
+
+def _batch_out(doc: dict) -> StockBatch:
+    expiry = doc.get("expiry_date")
+    days_left = (datetime.strptime(expiry, "%Y-%m-%d").date() - _today()).days if expiry else None
+    return StockBatch(**{**doc, "days_left": days_left, "expired": days_left is not None and days_left < 0})
+
+
+async def _expiry_info(scope: dict, product_id: Optional[str] = None) -> Dict[str, dict]:
+    """Per product with batches in stock: pieces already expired, and the
+    earliest expiry date among the pieces that are still fine."""
+    query = {**scope, "qty": {"$gt": 0}}
+    if product_id:
+        query["product_id"] = product_id
+    today = _today().isoformat()
+    info: Dict[str, dict] = {}
+    async for b in db.stock_batches.find(query, {"_id": 0, "product_id": 1, "expiry_date": 1, "qty": 1}):
+        entry = info.setdefault(b["product_id"], {"expired_qty": 0, "next_expiry": None})
+        expiry = b.get("expiry_date")
+        if expiry is None:
+            continue
+        if expiry < today:
+            entry["expired_qty"] += b["qty"]
+        elif entry["next_expiry"] is None or expiry < entry["next_expiry"]:
+            entry["next_expiry"] = expiry
+    return info
+
+
 async def _record_movement(
-    product: dict, delta: int, kind: str, user: Optional[User], order_id: Optional[str] = None, note: Optional[str] = None
+    product: dict,
+    delta: int,
+    kind: str,
+    user: Optional[User],
+    order_id: Optional[str] = None,
+    note: Optional[str] = None,
+    batch: Optional[dict] = None,
 ) -> None:
     fresh = await db.products.find_one({"id": product["id"]}, {"_id": 0, "stock_qty": 1})
     movement = StockMovement(
         client_id=product["client_id"],
         product_id=product["id"],
         product_name=product.get("name", ""),
+        batch_id=(batch or {}).get("id"),
+        expiry_date=(batch or {}).get("expiry_date"),
         delta=delta,
         balance_after=(fresh or {}).get("stock_qty"),
         type=kind,
@@ -2455,17 +2665,123 @@ async def _record_movement(
     await db.stock_movements.insert_one({**movement.dict(), "_id": movement.id})
 
 
-async def _add_stock(product: dict, delta: int, kind: str, user: Optional[User], order_id=None, note=None) -> None:
-    """Receipt-style change: starts tracking (from 0) when stock was untracked."""
-    first = await db.products.update_one({"id": product["id"], "stock_qty": None}, {"$set": {"stock_qty": delta}})
-    if first.matched_count == 0:
+async def _batch_inc(product: dict, expiry: Optional[str], delta: int) -> dict:
+    """Adds `delta` pieces to the product's batch for that expiry date,
+    creating the batch when it doesn't exist (expiry None = undated)."""
+    new_id = str(uuid.uuid4())
+    return await db.stock_batches.find_one_and_update(
+        {"product_id": product["id"], "expiry_date": expiry},
+        {
+            "$inc": {"qty": delta},
+            "$setOnInsert": {
+                "_id": new_id,
+                "id": new_id,
+                "client_id": product["client_id"],
+                "created_at": now_iso(),
+            },
+        },
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+
+
+async def _apply_delta(
+    product: dict,
+    delta: int,
+    kind: str,
+    user: Optional[User],
+    order_id: Optional[str] = None,
+    note: Optional[str] = None,
+    expiry: Optional[str] = None,
+    start_tracking: bool = False,
+) -> None:
+    """stock_qty += delta, the batch too for products with expiry tracking
+    (so stock_qty stays the sum of the batches), plus one movement row.
+    `start_tracking`: untracked stock (None) starts from 0 instead of failing."""
+    if start_tracking:
+        first = await db.products.update_one({"id": product["id"], "stock_qty": None}, {"$set": {"stock_qty": delta}})
+        if first.matched_count == 0:
+            await db.products.update_one({"id": product["id"]}, {"$inc": {"stock_qty": delta}})
+    else:
         await db.products.update_one({"id": product["id"]}, {"$inc": {"stock_qty": delta}})
-    await _record_movement(product, delta, kind, user, order_id, note)
+    batch = await _batch_inc(product, expiry, delta) if product.get("track_expiry") else None
+    await _record_movement(product, delta, kind, user, order_id, note, batch)
+
+
+async def _add_stock(
+    product: dict, delta: int, kind: str, user: Optional[User], order_id=None, note=None, expiry: Optional[str] = None
+) -> None:
+    """Receipt-style change: starts tracking (from 0) when stock was untracked."""
+    await _apply_delta(product, delta, kind, user, order_id, note, expiry, start_tracking=True)
+
+
+async def _switch_expiry_tracking(product: dict, enable: bool) -> None:
+    """Called when a manager flips products.track_expiry. Switching on turns
+    the pieces already in stock into one undated batch (counted per expiry
+    date later); switching off needs every dated batch to be empty."""
+    if enable:
+        stock = product.get("stock_qty")
+        if stock:
+            batch_id = str(uuid.uuid4())
+            await db.stock_batches.update_one(
+                {"product_id": product["id"], "expiry_date": None},
+                {
+                    "$set": {"qty": stock},
+                    "$setOnInsert": {
+                        "_id": batch_id,
+                        "id": batch_id,
+                        "client_id": product["client_id"],
+                        "created_at": now_iso(),
+                    },
+                },
+                upsert=True,
+            )
+        return
+    if await db.stock_batches.find_one(
+        {"product_id": product["id"], "expiry_date": {"$ne": None}, "qty": {"$ne": 0}}, {"_id": 1}
+    ):
+        raise HTTPException(status_code=409, detail="Write off or count all dated batches to zero before switching off")
+    await db.stock_batches.delete_many({"product_id": product["id"]})
+
+
+def _fefo_sort_key(batch: dict):
+    # Undated stock first: its age is unknown, so use it up before dated stock.
+    expiry = batch.get("expiry_date")
+    return (expiry is not None, expiry or "")
+
+
+async def _fefo_plan(product_id: str, qty: int) -> List[dict]:
+    """Which batches to take `qty` pieces from: earliest expiry first, never
+    an expired batch. A shortfall goes on undated stock (it may go negative,
+    like stock itself)."""
+    today = _today().isoformat()
+    batches = await db.stock_batches.find({"product_id": product_id, "qty": {"$gt": 0}}, {"_id": 0}).to_list(None)
+    usable = sorted((b for b in batches if b.get("expiry_date") is None or b["expiry_date"] >= today), key=_fefo_sort_key)
+    plan: List[dict] = []
+    left = qty
+    for b in usable:
+        if left <= 0:
+            break
+        take = min(left, b["qty"])
+        plan.append({"batch_id": b["id"], "expiry_date": b.get("expiry_date"), "qty": take})
+        left -= take
+    if left > 0:
+        shortfall = next((p for p in plan if p["expiry_date"] is None), None)
+        if shortfall:
+            shortfall["qty"] += left
+        else:
+            plan.append({"batch_id": None, "expiry_date": None, "qty": left})
+    return plan
 
 
 async def _move_stock_for_order(order: dict, direction: int, kind: str, user: User) -> None:
     """Shipment (-picked) / reversal (+picked) for products whose stock is
-    tracked; untracked products are left alone. May go negative on purpose."""
+    tracked; untracked products are left alone. May go negative on purpose.
+    Products with expiry tracking move batch by batch: the warehouse's own
+    choice (item.picked_batches) or the earliest-expiring ones (FEFO); the
+    result is kept on the order line."""
+    changed_items = False
     for item in order.get("items", []):
         qty = item.get("picked_qty") or 0
         if qty <= 0:
@@ -2473,37 +2789,98 @@ async def _move_stock_for_order(order: dict, direction: int, kind: str, user: Us
         product = await db.products.find_one({"id": item["product_id"]}, {"_id": 0})
         if not product or product.get("stock_qty") is None:
             continue
-        await db.products.update_one({"id": product["id"]}, {"$inc": {"stock_qty": direction * qty}})
-        await _record_movement(product, direction * qty, kind, user, order_id=order["id"])
+        if not product.get("track_expiry"):
+            await _apply_delta(product, direction * qty, kind, user, order_id=order["id"])
+            continue
+        picks = item.get("picked_batches") or []
+        if sum(p["qty"] for p in picks) != qty:
+            picks = await _fefo_plan(product["id"], qty) if direction < 0 else [
+                {"batch_id": None, "expiry_date": None, "qty": qty}
+            ]
+        for pick in picks:
+            await _apply_delta(
+                product, direction * pick["qty"], kind, user, order_id=order["id"], expiry=pick.get("expiry_date")
+            )
+        if direction < 0:
+            item["picked_batches"] = picks
+            changed_items = True
+    if changed_items:
+        await db.orders.update_one({"id": order["id"]}, {"$set": {"items": order["items"]}})
 
 
 @api_router.post("/stock/receipts")
 async def stock_receipt(inp: StockReceiptInput, current_user: User = Depends(require_stock_writer)):
     products = []
+    expiries = []
     for line in inp.items:
-        products.append(await get_scoped_or_404("products", line.product_id, current_user))
-    for product, line in zip(products, inp.items):
-        await _add_stock(product, line.qty, "receipt", current_user, note=inp.note)
+        product = await get_scoped_or_404("products", line.product_id, current_user)
+        products.append(product)
+        expiries.append(
+            _normalize_expiry(line.expiry_date, required=True) if product.get("track_expiry") else None
+        )
+    for product, line, expiry in zip(products, inp.items, expiries):
+        await _add_stock(product, line.qty, "receipt", current_user, note=inp.note, expiry=expiry)
     return {"ok": True, "count": len(products)}
 
 
 async def _set_stock_count(product: dict, counted: int, user: Optional[User], note: Optional[str]) -> int:
+    """Plain count. For a product with expiry tracking the difference lands on
+    the undated batch (used by the Excel import, which has no dates)."""
     delta = counted - (product.get("stock_qty") or 0)
+    if product.get("track_expiry"):
+        await _apply_delta(product, delta, "adjustment", user, note=note, start_tracking=True)
+        return delta
     await db.products.update_one({"id": product["id"]}, {"$set": {"stock_qty": counted}})
     await _record_movement(product, delta, "adjustment", user, note=note)
     return delta
 
 
+def _validated_count(product: dict, counted: Optional[int], batches: Optional[List[BatchCount]]):
+    """Checks that a count has the right shape for the product: counted_qty
+    for plain ones, `batches` for products with expiry tracking."""
+    if product.get("track_expiry"):
+        if batches is None or counted is not None:
+            raise HTTPException(status_code=400, detail=f"{product['name']}: count per expiry date (batches)")
+        seen = set()
+        out = []
+        for b in batches:
+            expiry = _normalize_expiry(b.expiry_date)
+            if expiry in seen:
+                raise HTTPException(status_code=400, detail=f"{product['name']}: duplicate expiry date")
+            seen.add(expiry)
+            out.append((expiry, b.counted_qty))
+        return out
+    if counted is None or batches is not None:
+        raise HTTPException(status_code=400, detail=f"{product['name']}: counted_qty is required")
+    return counted
+
+
+async def _apply_count(product: dict, count, user: Optional[User], note: Optional[str]) -> int:
+    if not product.get("track_expiry"):
+        return await _set_stock_count(product, count, user, note)
+    existing = {b.get("expiry_date"): b["qty"] async for b in db.stock_batches.find({"product_id": product["id"]})}
+    wanted = dict(count)
+    total = 0
+    for expiry in sorted(set(existing) | set(wanted), key=lambda e: (e is not None, e or "")):
+        delta = wanted.get(expiry, 0) - existing.get(expiry, 0)
+        if delta:
+            await _apply_delta(product, delta, "adjustment", user, note=note, expiry=expiry, start_tracking=True)
+            total += delta
+    return total
+
+
 @api_router.post("/stock/adjustments")
 async def stock_adjustment(inp: StockAdjustmentInput, current_user: User = Depends(require_stock_writer)):
     product = await get_scoped_or_404("products", inp.product_id, current_user)
-    delta = await _set_stock_count(product, inp.counted_qty, current_user, inp.note)
+    count = _validated_count(product, inp.counted_qty, inp.batches)
+    delta = await _apply_count(product, count, current_user, inp.note)
     return {"ok": True, "delta": delta}
 
 
 class StockCountLine(BaseModel):
     product_id: str
-    counted_qty: int = Field(ge=0, le=1_000_000)
+    counted_qty: Optional[int] = Field(default=None, ge=0, le=1_000_000)
+    batches: Optional[List[BatchCount]] = Field(default=None, max_length=100)
 
 
 class StockBatchAdjustmentInput(BaseModel):
@@ -2517,15 +2894,105 @@ async def stock_adjustment_batch(inp: StockBatchAdjustmentInput, current_user: U
     bad id doesn't leave the count half applied."""
     seen = set()
     products = []
+    counts = []
     for line in inp.items:
         if line.product_id in seen:
             raise HTTPException(status_code=400, detail="Duplicate product in stocktake")
         seen.add(line.product_id)
-        products.append(await get_scoped_or_404("products", line.product_id, current_user))
+        product = await get_scoped_or_404("products", line.product_id, current_user)
+        products.append(product)
+        counts.append(_validated_count(product, line.counted_qty, line.batches))
     deltas = []
-    for product, line in zip(products, inp.items):
-        deltas.append(await _set_stock_count(product, line.counted_qty, current_user, inp.note))
+    for product, count in zip(products, counts):
+        deltas.append(await _apply_count(product, count, current_user, inp.note))
     return {"ok": True, "count": len(deltas), "deltas": deltas}
+
+
+@api_router.get("/products/{product_id}/batches", response_model=List[StockBatch])
+async def product_batches(product_id: str, current_user: User = Depends(require_stock_writer)):
+    """Batches of one product with pieces in stock, earliest expiry first
+    (undated stock first). Warehouse/admin/superadmin only."""
+    await get_scoped_or_404("products", product_id, current_user)
+    docs = await db.stock_batches.find({"product_id": product_id, "qty": {"$ne": 0}}, {"_id": 0}).to_list(None)
+    return [_batch_out(d) for d in sorted(docs, key=_fefo_sort_key)]
+
+
+class WriteOffInput(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=300)
+
+
+@api_router.post("/stock/batches/{batch_id}/writeoff")
+async def writeoff_batch(batch_id: str, inp: WriteOffInput, current_user: User = Depends(require_stock_writer)):
+    """Writes the pieces of a batch off the stock (e.g. expired goods)."""
+    batch = await get_scoped_or_404("stock_batches", batch_id, current_user)
+    if batch["qty"] <= 0:
+        raise HTTPException(status_code=400, detail="Batch has no pieces to write off")
+    product = await db.products.find_one({"id": batch["product_id"]}, {"_id": 0})
+    if not product:
+        raise HTTPException(status_code=404, detail="Not found")
+    note = (inp.note or "").strip() or "Otpis - istekao rok"
+    await _apply_delta(product, -batch["qty"], "adjustment", current_user, note=note, expiry=batch.get("expiry_date"))
+    return {"ok": True, "written_off": batch["qty"]}
+
+
+class ExpiringItem(BaseModel):
+    batch_id: str
+    product_id: str
+    product_name: str
+    barcode: Optional[str] = None
+    expiry_date: str
+    qty: int
+    days_left: int  # negative = already expired
+    level: str  # "expired" or the threshold (in days) this batch has reached
+
+
+class ExpiringResponse(BaseModel):
+    thresholds: List[int]
+    total: int
+    counts: Dict[str, int]  # per level, for the badge
+    items: List[ExpiringItem]
+
+
+@api_router.get("/stock/expiring", response_model=ExpiringResponse)
+async def stock_expiring(current_user: User = Depends(require_roles(Role.ADMIN, Role.WAREHOUSE))):
+    """Batches that are expired or reach one of the client's alert thresholds
+    (default 30/15/5 days). For the client's admin and warehouse only: no
+    superadmin (not tied to a warehouse), no sales reps."""
+    client = await db.clients.find_one({"id": current_user.client_id}, {"_id": 0, "expiry_alert_days": 1}) or {}
+    thresholds = sorted(client.get("expiry_alert_days") or DEFAULT_EXPIRY_ALERT_DAYS)
+    limit = (_today() + timedelta(days=thresholds[-1])).isoformat()
+    batches = await db.stock_batches.find(
+        {"client_id": current_user.client_id, "qty": {"$gt": 0}, "expiry_date": {"$ne": None, "$lte": limit}},
+        {"_id": 0},
+    ).to_list(None)
+    products = {
+        p["id"]: p
+        for p in await db.products.find(
+            {"id": {"$in": list({b["product_id"] for b in batches})}}, {"_id": 0, "id": 1, "name": 1, "barcode": 1}
+        ).to_list(None)
+    }
+    items = []
+    counts: Dict[str, int] = {"expired": 0, **{str(t): 0 for t in thresholds}}
+    for b in sorted(batches, key=lambda b: b["expiry_date"]):
+        product = products.get(b["product_id"])
+        if not product:
+            continue
+        days_left = _batch_out(b).days_left
+        level = "expired" if days_left < 0 else str(next(t for t in thresholds if days_left <= t))
+        counts[level] += 1
+        items.append(
+            ExpiringItem(
+                batch_id=b["id"],
+                product_id=b["product_id"],
+                product_name=product["name"],
+                barcode=product.get("barcode"),
+                expiry_date=b["expiry_date"],
+                qty=b["qty"],
+                days_left=days_left,
+                level=level,
+            )
+        )
+    return ExpiringResponse(thresholds=thresholds, total=len(items), counts=counts, items=items)
 
 
 @api_router.get("/stock/movements", response_model=List[StockMovement])

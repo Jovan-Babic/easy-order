@@ -13,7 +13,24 @@ type Product = {
   stock_qty: number | null;
   reserved_qty: number;
   available_qty: number | null;
+  track_expiry?: boolean;
+  expired_qty?: number;
+  next_expiry?: string | null;
 };
+
+type Batch = { id: string; expiry_date: string | null; qty: number; days_left: number | null; expired: boolean };
+type CountRow = { date: string; qty: string; undated?: boolean }; // undated = the stock without an expiry date
+
+type ExpiringItem = {
+  batch_id: string;
+  product_id: string;
+  product_name: string;
+  expiry_date: string;
+  qty: number;
+  days_left: number;
+  level: string; // "expired" or the threshold in days
+};
+type Expiring = { thresholds: number[]; total: number; counts: Record<string, number>; items: ExpiringItem[] };
 
 type Movement = {
   id: string;
@@ -45,6 +62,9 @@ export default function StockPage() {
   const [unit, setUnit] = useState<"pieces" | "transport">("pieces");
   const [note, setNote] = useState("");
   const [movements, setMovements] = useState<Movement[]>([]);
+  const [expiryDate, setExpiryDate] = useState("");
+  const [countRows, setCountRows] = useState<CountRow[]>([]);
+  const [expiring, setExpiring] = useState<Expiring | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -57,16 +77,34 @@ export default function StockPage() {
     }
   }, []);
 
+  // Not available to the superadmin (403): the banner just stays hidden.
+  const loadExpiring = useCallback(async () => {
+    try {
+      const res = await fetch("/api/stock/expiring");
+      setExpiring(res.ok ? ((await res.json()) as Expiring) : null);
+    } catch {
+      setExpiring(null);
+    }
+  }, []);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadExpiring();
+  }, [load, loadExpiring]);
 
   const open = async (kind: Panel["kind"], product: Product) => {
     setPanel({ kind, product });
     setQty("");
     setNote("");
     setUnit("pieces");
+    setExpiryDate("");
+    setCountRows([]);
     setMessage(null);
+    if (kind === "count" && product.track_expiry) {
+      const res = await fetch(`/api/products/${product.id}/batches`);
+      const batches = res.ok ? ((await res.json()) as Batch[]) : [];
+      setCountRows(batches.map((b) => ({ date: b.expiry_date ?? "", qty: String(b.qty), undated: b.expiry_date === null })));
+    }
     if (kind === "history") {
       const res = await fetch(`/api/stock/movements?product_id=${product.id}&limit=50`);
       setMovements(res.ok ? ((await res.json()) as Movement[]) : []);
@@ -85,15 +123,27 @@ export default function StockPage() {
     setBusy(true);
     setMessage(null);
     try {
+      const tracked = panel.product.track_expiry === true;
       const res =
         panel.kind === "receipt"
           ? await fetch("/api/stock/receipts", {
               method: "POST",
-              body: JSON.stringify({ items: [{ product_id: panel.product.id, qty: pieces }], note: note.trim() || null }),
+              body: JSON.stringify({
+                items: [{ product_id: panel.product.id, qty: pieces, expiry_date: tracked ? expiryDate : null }],
+                note: note.trim() || null,
+              }),
             })
           : await fetch("/api/stock/adjustments", {
               method: "POST",
-              body: JSON.stringify({ product_id: panel.product.id, counted_qty: Math.trunc(Number(qty)), note: note.trim() }),
+              body: JSON.stringify(
+                tracked
+                  ? {
+                      product_id: panel.product.id,
+                      batches: countRows.map((r) => ({ expiry_date: r.date || null, counted_qty: Math.trunc(Number(r.qty)) })),
+                      note: note.trim(),
+                    }
+                  : { product_id: panel.product.id, counted_qty: Math.trunc(Number(qty)), note: note.trim() },
+              ),
             });
       if (!res.ok) {
         setMessage({ ok: false, text: await errorDetail(res, t("actionFailed")) });
@@ -102,7 +152,7 @@ export default function StockPage() {
       setMessage({ ok: true, text: t("stockSaved") });
       setQty("");
       setNote("");
-      await load();
+      await Promise.all([load(), loadExpiring()]);
     } finally {
       setBusy(false);
     }
@@ -113,14 +163,69 @@ export default function StockPage() {
     return !q || p.name.toLowerCase().includes(q) || (p.manufacturer ?? "").toLowerCase().includes(q) || (p.barcode ?? "").toLowerCase().includes(q);
   });
 
+  const tracked = panel?.product.track_expiry === true;
+  const countRowsValid =
+    countRows.length > 0 &&
+    countRows.every((r) => r.qty !== "" && Number(r.qty) >= 0) &&
+    new Set(countRows.map((r) => r.date)).size === countRows.length;
   const canSubmit =
-    panel?.kind === "receipt" ? pieces > 0 : panel?.kind === "count" ? qty !== "" && Number(qty) >= 0 && note.trim() !== "" : false;
+    panel?.kind === "receipt"
+      ? pieces > 0 && (!tracked || expiryDate !== "")
+      : panel?.kind === "count"
+        ? note.trim() !== "" && (tracked ? countRowsValid : qty !== "" && Number(qty) >= 0)
+        : false;
+
+  const writeOff = async (item: ExpiringItem) => {
+    if (!window.confirm(`${item.product_name} (${item.expiry_date}): ${t("stockWriteOffConfirm")}`)) return;
+    const res = await fetch(`/api/stock/batches/${item.batch_id}/writeoff`, { method: "POST", body: "{}" });
+    if (res.ok) await Promise.all([load(), loadExpiring()]);
+  };
+  const levelClass = (level: string) =>
+    level === "expired" || Number(level) <= (expiring?.thresholds[0] ?? 0) ? "bg-error text-white" : "bg-brandSecondary text-brand";
   const input = "rounded-md border border-border px-3 py-2 text-sm";
   const th = "px-4 py-3";
 
   return (
     <div>
       <h1 className="mb-6 text-2xl font-extrabold text-onSurface">{t("stock")}</h1>
+      {expiring && expiring.total > 0 && (
+        <div className="mb-4 rounded-lg border border-border bg-surfaceSecondary p-4 shadow-sm">
+          <h2 className="mb-2 text-sm font-extrabold text-onSurface">{t("stockExpiringTitle")}</h2>
+          <div className="mb-3 flex flex-wrap gap-2 text-xs font-bold">
+            {["expired", ...[...expiring.thresholds].reverse().map(String)]
+              .filter((level) => (expiring.counts[level] ?? 0) > 0)
+              .map((level) => (
+                <span key={level} className={`rounded-full px-3 py-1 ${levelClass(level)}`}>
+                  {level === "expired" ? t("stockLevelExpired") : `${t("stockLevelWithin")} ${level} ${t("stockExpiringDays")}`}:{" "}
+                  {expiring.counts[level]}
+                </span>
+              ))}
+          </div>
+          <table className="w-full text-left text-xs">
+            <tbody>
+              {expiring.items.map((item) => (
+                <tr key={item.batch_id} className="border-t border-border">
+                  <td className="py-2 font-semibold text-onSurface">{item.product_name}</td>
+                  <td className="py-2 text-right">{item.qty}</td>
+                  <td className="py-2 text-right">{item.expiry_date}</td>
+                  <td className="py-2 text-right">
+                    <span className={`rounded-full px-2 py-0.5 font-bold ${levelClass(item.level)}`}>
+                      {item.days_left < 0 ? t("stockLevelExpired") : `${item.days_left} ${t("stockExpiringDays")}`}
+                    </span>
+                  </td>
+                  <td className="py-2 text-right">
+                    {item.days_left < 0 && (
+                      <button type="button" onClick={() => writeOff(item)} className="rounded-md border border-error px-2 py-1 font-semibold text-error">
+                        {t("stockWriteOff")}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       <input
         value={search}
         onChange={(e) => setSearch(e.target.value)}
@@ -136,6 +241,7 @@ export default function StockPage() {
               <th className={`${th} text-right`}>{t("stockOnHand")}</th>
               <th className={`${th} text-right`}>{t("stockReserved")}</th>
               <th className={`${th} text-right`}>{t("stockAvailable")}</th>
+              <th className={`${th} text-right`}>{t("stockNextExpiry")}</th>
               <th className={`${th} text-right`}>{t("actions")}</th>
             </tr>
           </thead>
@@ -157,6 +263,20 @@ export default function StockPage() {
                     </td>
                   </>
                 )}
+                <td className="whitespace-nowrap px-4 py-3 text-right text-xs">
+                  {p.track_expiry ? (
+                    <>
+                      {p.next_expiry ?? "—"}
+                      {(p.expired_qty ?? 0) > 0 && (
+                        <span className="ml-2 rounded-full bg-error px-2 py-0.5 font-bold text-white">
+                          {t("stockExpired")}: {p.expired_qty}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    ""
+                  )}
+                </td>
                 <td className="whitespace-nowrap px-4 py-3 text-right">
                   {(["receipt", "count", "history"] as const).map((kind) => (
                     <button
@@ -223,6 +343,40 @@ export default function StockPage() {
               </table>
             ) : (
               <div className="grid gap-3">
+                {panel.kind === "count" && tracked ? (
+                  <div className="grid gap-2">
+                    <p className="text-xs text-muted">{t("stockBatchCounts")}</p>
+                    {countRows.map((row, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        {row.undated ? (
+                          <span className="flex-1 text-sm text-muted">{t("stockNoExpiry")}</span>
+                        ) : (
+                          <input
+                            type="date"
+                            value={row.date}
+                            onChange={(e) => setCountRows(countRows.map((r, j) => (j === i ? { ...r, date: e.target.value } : r)))}
+                            className={`${input} flex-1`}
+                          />
+                        )}
+                        <input
+                          type="number"
+                          min={0}
+                          value={row.qty}
+                          onChange={(e) => setCountRows(countRows.map((r, j) => (j === i ? { ...r, qty: e.target.value } : r)))}
+                          placeholder={t("stockCounted")}
+                          className={`${input} w-32`}
+                        />
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setCountRows([...countRows, { date: "", qty: "" }])}
+                      className="justify-self-start rounded-md border border-brand px-3 py-1.5 text-sm font-semibold text-brand"
+                    >
+                      {t("stockAddBatch")}
+                    </button>
+                  </div>
+                ) : (
                 <div className="flex gap-2">
                   <input
                     type="number"
@@ -239,6 +393,13 @@ export default function StockPage() {
                     </select>
                   )}
                 </div>
+                )}
+                {panel.kind === "receipt" && tracked && (
+                  <label className="text-sm font-semibold text-onSurface">
+                    {t("stockExpiryDate")}
+                    <input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} className={`${input} mt-1 block w-full`} />
+                  </label>
+                )}
                 {panel.kind === "receipt" && perTransport > 0 && (
                   <p className="text-xs text-muted">
                     {t("stockPiecesIn")} {perTransport} {t("stockUnitPieces")}

@@ -182,7 +182,7 @@ export default function AdminScreen() {
     setPendingImage(null);
     setEditing(null);
     setForm(tab === "products"
-      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "", barcode: "", active: true }
+      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "", barcode: "", active: true, track_expiry: false }
       : { name: "", address: "", email: "", phone: "", countryCode: "+381", phoneNumber: "", pib: "" });
     setCountryCodeOpen(false);
     setPermMsg(false);
@@ -212,6 +212,7 @@ export default function AdminScreen() {
             boxes_per_transport: String(item.boxes_per_transport ?? ""),
             barcode: item.barcode ?? "",
             active: item.active !== false,
+            track_expiry: item.track_expiry === true,
           }
         : {
             name: item.name,
@@ -303,6 +304,7 @@ export default function AdminScreen() {
           boxes_per_transport: Number(form.boxes_per_transport) || 0,
           barcode: String(form.barcode ?? "").trim(),
           active: form.active !== false,
+          track_expiry: form.track_expiry === true,
         };
         if (editing) await api.updateProduct(editing.id, payload);
         else await api.createProduct(payload);
@@ -549,6 +551,17 @@ export default function AdminScreen() {
                       testID="form-active"
                       value={form.active !== false}
                       onValueChange={(v) => setForm((f: any) => ({ ...f, active: v }))}
+                    />
+                  </View>
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: spacing.sm }}>
+                    <View style={{ flex: 1, paddingRight: spacing.md }}>
+                      <Text style={{ fontSize: font.base, fontWeight: "600", color: colors.onSurface }}>{t("trackExpiry")}</Text>
+                      <Text style={{ fontSize: font.sm, color: colors.muted }}>{t("trackExpiryHelp")}</Text>
+                    </View>
+                    <Switch
+                      testID="form-track-expiry"
+                      value={form.track_expiry === true}
+                      onValueChange={(v) => setForm((f: any) => ({ ...f, track_expiry: v }))}
                     />
                   </View>
                 </>
