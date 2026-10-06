@@ -37,6 +37,7 @@ export function StockScanPanel({ mode }: Props) {
   const [scanning, setScanning] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -100,6 +101,29 @@ export function StockScanPanel({ mode }: Props) {
       setUnknownCode(null);
     } catch (e) {
       Alert.alert(t("somethingWentWrong"), e instanceof ApiError ? e.detail : String(e));
+    }
+  };
+
+  const createProduct = async (v: { name: string; manufacturer: string; pieces: string; boxes: string }) => {
+    if (!unknownCode) return;
+    setBusy(true);
+    try {
+      const created = await api.quickAddProduct({
+        name: v.name.trim(),
+        barcode: unknownCode,
+        manufacturer: v.manufacturer.trim() || undefined,
+        pieces_per_package: v.pieces ? Number(v.pieces) : undefined,
+        boxes_per_transport: v.boxes ? Number(v.boxes) : undefined,
+      });
+      setProducts((prev) => [...prev, created]);
+      addOne(created.id);
+      showToast(t("productAdded"));
+      setUnknownCode(null);
+      setCreating(false);
+    } catch (e) {
+      Alert.alert(t("somethingWentWrong"), e instanceof ApiError ? e.detail : String(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -197,6 +221,7 @@ export function StockScanPanel({ mode }: Props) {
             <View style={styles.card}>
               <View style={{ flex: 1, gap: 2 }}>
                 <Text style={styles.name}>{p.name}</Text>
+                {p.active === false && <Text style={[styles.sub, { color: colors.warning }]}>{t("inactive")}</Text>}
                 {!!p.barcode && <Text style={styles.sub}>{p.barcode}</Text>}
                 <Text style={styles.sub}>
                   {t("bookStock")}: {tracked ? book : t("notTracked")}
@@ -253,15 +278,105 @@ export function StockScanPanel({ mode }: Props) {
 
       <BarcodeScanner continuous visible={scanning} onClose={() => setScanning(false)} onScanned={onScanned} />
 
-      <Modal visible={!!unknownCode} animationType="slide" onRequestClose={() => setUnknownCode(null)}>
+      <Modal
+        visible={!!unknownCode}
+        animationType="slide"
+        onRequestClose={() => {
+          setUnknownCode(null);
+          setCreating(false);
+        }}
+      >
         <View style={[styles.modal, { paddingTop: insets.top + spacing.lg }]}>
           <Text style={styles.modalTitle}>{t("productNotFound")}</Text>
           <Text style={styles.sub}>{unknownCode}</Text>
-          <Text style={[styles.hint, { marginTop: spacing.md }]}>{t("pickProductToLink")}</Text>
-          <LinkPicker products={products} onPick={link} />
-          <Button title={t("cancel")} variant="ghost" onPress={() => setUnknownCode(null)} />
+          {creating ? (
+            <NewProductForm code={unknownCode ?? ""} busy={busy} onSubmit={createProduct} onBack={() => setCreating(false)} />
+          ) : (
+            <>
+              <Button
+                title={t("addNewProduct")}
+                icon="add-circle-outline"
+                testID="quick-add-open"
+                onPress={() => setCreating(true)}
+              />
+              <Text style={[styles.hint, { marginTop: spacing.md }]}>{t("pickProductToLink")}</Text>
+              <LinkPicker products={products} onPick={link} />
+              <Button
+                title={t("cancel")}
+                variant="ghost"
+                onPress={() => {
+                  setUnknownCode(null);
+                  setCreating(false);
+                }}
+              />
+            </>
+          )}
         </View>
       </Modal>
+    </View>
+  );
+}
+
+function NewProductForm({
+  code,
+  busy,
+  onSubmit,
+  onBack,
+}: {
+  code: string;
+  busy: boolean;
+  onSubmit: (v: { name: string; manufacturer: string; pieces: string; boxes: string }) => void;
+  onBack: () => void;
+}) {
+  const { t } = useApp();
+  const [name, setName] = useState("");
+  const [manufacturer, setManufacturer] = useState("");
+  const [pieces, setPieces] = useState("");
+  const [boxes, setBoxes] = useState("");
+  const digits = (v: string) => v.replace(/[^0-9]/g, "");
+  return (
+    <View style={{ gap: spacing.sm, marginTop: spacing.md }}>
+      <Text style={styles.hint}>{t("newProductHint")}</Text>
+      <TextInput
+        testID="quick-name"
+        style={styles.input}
+        placeholder={t("name")}
+        placeholderTextColor={colors.muted}
+        value={name}
+        onChangeText={setName}
+      />
+      <TextInput
+        testID="quick-manufacturer"
+        style={styles.input}
+        placeholder={t("manufacturer")}
+        placeholderTextColor={colors.muted}
+        value={manufacturer}
+        onChangeText={setManufacturer}
+      />
+      <TextInput
+        style={styles.input}
+        placeholder={t("piecesPerPackage")}
+        placeholderTextColor={colors.muted}
+        keyboardType="number-pad"
+        value={pieces}
+        onChangeText={(v) => setPieces(digits(v))}
+      />
+      <TextInput
+        style={styles.input}
+        placeholder={t("transportPackage")}
+        placeholderTextColor={colors.muted}
+        keyboardType="number-pad"
+        value={boxes}
+        onChangeText={(v) => setBoxes(digits(v))}
+      />
+      <Button
+        title={t("save")}
+        testID="quick-save"
+        loading={busy}
+        disabled={busy || !name.trim() || !code}
+        onPress={() => onSubmit({ name, manufacturer, pieces, boxes })}
+      />
+      <Button title={t("backToList")} variant="ghost" onPress={onBack} />
     </View>
   );
 }

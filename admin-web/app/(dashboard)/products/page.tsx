@@ -20,6 +20,7 @@ type Product = {
   pieces_per_package?: number;
   boxes_per_transport?: number;
   barcode?: string | null;
+  active?: boolean;
 };
 
 type Client = { id: string; name: string };
@@ -35,6 +36,7 @@ type ProductFormState = {
   pieces_per_package: string;
   boxes_per_transport: string;
   barcode: string;
+  active: boolean;
   client_id: string;
 };
 
@@ -51,6 +53,7 @@ const emptyForm = (): ProductFormState => ({
   pieces_per_package: "",
   boxes_per_transport: "",
   barcode: "",
+  active: true,
   client_id: "",
 });
 
@@ -163,6 +166,7 @@ export default function ProductsPage() {
       pieces_per_package: String(product.pieces_per_package ?? ""),
       boxes_per_transport: String(product.boxes_per_transport ?? ""),
       barcode: product.barcode || "",
+      active: product.active !== false,
       client_id: product.client_id || "",
     });
     setFieldErrors({});
@@ -250,6 +254,7 @@ export default function ProductsPage() {
         pieces_per_package: toInteger(form.pieces_per_package),
         boxes_per_transport: toInteger(form.boxes_per_transport),
         barcode: form.barcode.trim(),
+        active: form.active,
       };
       if (isSuperAdmin) payload.client_id = form.client_id;
       const endpoint = editingId ? `/api/products/${editingId}` : "/api/products";
@@ -490,6 +495,16 @@ export default function ProductsPage() {
                 />
               </div>
 
+              <label className="flex items-center gap-2 text-sm font-semibold text-onSurface">
+                <input
+                  type="checkbox"
+                  checked={form.active}
+                  onChange={(e) => setField("active", e.target.checked)}
+                />
+                {t("productActive")}
+              </label>
+              <p className="-mt-2 text-xs text-muted">{t("productActiveHelp")}</p>
+
               {isSuperAdmin && (
                 <div>
                   <label className="mb-1 block text-sm font-semibold text-onSurface">{t("client")}</label>
@@ -564,7 +579,14 @@ export default function ProductsPage() {
                       ) : null}
                     </div>
                   </td>
-                  <td className="px-4 py-3 font-semibold text-onSurface">{p.name}</td>
+                  <td className="px-4 py-3 font-semibold text-onSurface">
+                    {p.name}
+                    {p.active === false && (
+                      <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs font-semibold text-muted">
+                        {t("productInactive")}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.manufacturer || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.barcode || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{(p.price_no_vat ?? 0).toFixed(2)}</td>

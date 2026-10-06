@@ -120,6 +120,7 @@ export default function OrderCatalog() {
   const filteredProducts = useMemo(() => {
     const q = productSearch.trim().toLowerCase();
     return products.filter((p) => {
+      if (p.active === false) return false;
       const matchManu = manuFilter === "__all__" || (p.manufacturer || "") === manuFilter;
       const matchSearch =
         !q ||
