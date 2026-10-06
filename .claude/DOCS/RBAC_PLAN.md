@@ -207,9 +207,10 @@ Može paralelno sa fazama 2–3; mora pre faze 5.
 `/warehouse` red za obradu, detalj + istorija, slanje (automatski broj ili unos ručnog), štampa fakture (logo + podaci klijenta ako postoje) i otpremnice.
 
 ### Faza 6 — Dorade
-- obaveštenja komercijalisti pri `rejected`/`shipped` (email, kasnije push)
-- izmena porudžbine od strane komercijaliste dok je `new`
-- dodela porudžbine konkretnom magacioneru, izveštaji po statusima
+- ✅ obaveštenje komercijalisti emailom pri `rejected`/`shipped` (`_send_order_status_email`; push kasnije)
+- ✅ izmena porudžbine od strane komercijaliste dok je `new` (`PUT /orders/{id}`, 409 ako je magacin već preuzeo; mobilna: „Izmeni porudžbinu“ u istoriji)
+- ~~dodela porudžbine konkretnom magacioneru~~ (preskočeno: magacioner se upisuje pri „Preuzmi“); ✅ izveštaji po statusima (`GET /reports/orders`, portal `/reports`)
+- stanje robe u magacinu: vidi `PLAN_STANJE_MAGACINA.md`
 - stranica „Podešavanja“ za admina (sam menja logo i podešavanja fakture)
 - uloga **dostavljač** + status `completed` (potvrda isporuke) — samo ako se pokaže potreba
 

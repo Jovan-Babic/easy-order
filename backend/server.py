@@ -347,7 +347,16 @@ class Product(BaseModel):
     additional_discounts: List[int] = Field(default_factory=lambda: [0])
     pieces_per_package: Optional[int] = 0
     boxes_per_transport: Optional[int] = 0
+    # Pieces in the warehouse. None = stock is not tracked for this product.
+    # Only changed through /stock/* and order shipments, never via ProductInput.
+    stock_qty: Optional[int] = None
     created_at: str = Field(default_factory=now_iso)
+
+
+class ProductOut(Product):
+    """List response: stock plus what open orders (new/in_progress) reserve."""
+    reserved_qty: int = 0
+    available_qty: Optional[int] = None  # stock_qty - reserved_qty; None when untracked
 
 
 class ProductInput(BaseModel):
@@ -414,6 +423,7 @@ class Order(BaseModel):
     assigned_to_user_id: Optional[str] = None
     assigned_to_name: Optional[str] = None
     shipped_at: Optional[str] = None
+    updated_at: Optional[str] = None  # last edit of a new order
     # Assigned once, when the order is first shipped; never changes or is freed.
     invoice_seq: Optional[int] = None
     invoice_number: Optional[str] = None
@@ -731,6 +741,48 @@ def _build_test_email_body() -> str:
         "This is a test email from Easy Order.\n\n"
         "If you received this, Brevo SMTP is configured correctly and the backend can send mail."
     )
+
+
+def _build_order_status_email(order: dict, status: str, note: Optional[str], actor_name: str) -> tuple[str, str]:
+    """(subject, body) telling the sales rep their order was shipped/rejected."""
+    shipped = status == OrderStatus.SHIPPED.value
+    customer = order.get("customer_name", "")
+    invoice = order.get("invoice_number")
+    if shipped:
+        subject = f"Easy Order - porudžbina poslata / order shipped: {customer}"
+        sr = f"Porudžbina za kupca {customer} je poslata."
+        en = f"The order for {customer} has been shipped."
+    else:
+        subject = f"Easy Order - porudžbina odbijena / order rejected: {customer}"
+        sr = f"Porudžbina za kupca {customer} je odbijena."
+        en = f"The order for {customer} was rejected."
+    lines = [f"Zdravo {order.get('created_by_name') or ''},".replace("  ", " "), "", sr, en, ""]
+    if shipped and invoice:
+        lines.append(f"Broj fakture / Invoice number: {invoice}")
+    if not shipped and note:
+        lines.append(f"Razlog / Reason: {note}")
+    lines.append(f"Obradio / Handled by: {actor_name}")
+    return subject, "\n".join(lines)
+
+
+async def _send_order_status_email(order: dict, status: str, note: Optional[str], actor: "User") -> None:
+    """Best effort, never raises: a failed email must not undo the status
+    change. Skipped when the actor placed the order themselves, when the
+    creator is unknown (old orders) or has been deleted."""
+    creator_id = order.get("created_by_user_id")
+    if not creator_id or creator_id == actor.id:
+        return
+    if not _smtp_is_configured():
+        logger.warning("SMTP not configured - order status email for order %s not sent", order.get("id"))
+        return
+    try:
+        creator = await db.users.find_one({"id": creator_id}, {"_id": 0, "email": 1})
+        if not creator or not creator.get("email"):
+            return
+        subject, body = _build_order_status_email(order, status, note, actor.name)
+        await asyncio.to_thread(_send_smtp_email_sync, creator["email"], subject, body)
+    except Exception as exc:
+        logger.exception("Failed to send order status email for order %s: %s", order.get("id"), exc)
 
 
 async def _send_reset_email(to_email: str, user_name: str, reset_link: str) -> None:
@@ -1353,10 +1405,30 @@ async def delete_customer(customer_id: str, current_user: User = Depends(require
 
 
 # ---------------- Products ----------------
-@api_router.get("/products", response_model=List[Product])
+async def _reserved_by_product(scope: dict) -> Dict[str, int]:
+    """Pieces committed to orders that are not shipped yet (new + in_progress)."""
+    reserved: Dict[str, int] = {}
+    open_orders = db.orders.find(
+        {**scope, "status": {"$in": [OrderStatus.NEW.value, OrderStatus.IN_PROGRESS.value]}},
+        {"_id": 0, "items.product_id": 1, "items.ordered_qty": 1},
+    )
+    async for order in open_orders:
+        for item in order.get("items", []):
+            reserved[item["product_id"]] = reserved.get(item["product_id"], 0) + (item.get("ordered_qty") or 0)
+    return reserved
+
+
+@api_router.get("/products", response_model=List[ProductOut])
 async def list_products(current_user: User = Depends(get_current_user)):
-    docs = await db.products.find(_scope_query(current_user), {"_id": 0}).sort("created_at", 1).to_list(None)
-    return [Product(**v) for v in docs]
+    scope = _scope_query(current_user)
+    docs = await db.products.find(scope, {"_id": 0}).sort("created_at", 1).to_list(None)
+    reserved = await _reserved_by_product(scope)
+    out = []
+    for v in docs:
+        r = reserved.get(v["id"], 0)
+        stock = v.get("stock_qty")
+        out.append(ProductOut(**v, reserved_qty=r, available_qty=None if stock is None else stock - r))
+    return out
 
 
 @api_router.post("/products", response_model=Product)
@@ -1391,7 +1463,11 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
         "discounts": normalize_discounts(discounts, discount_value),
         "additional_discounts": normalize_additional_discounts(additional),
     }
-    await db.products.replace_one({"id": product_id}, {**updated, "_id": product_id})
+    # $set instead of replace_one: a concurrent stock change ($inc) must not
+    # be overwritten by this stale copy of the product.
+    await db.products.update_one(
+        {"id": product_id}, {"$set": {k: v for k, v in updated.items() if k not in ("_id", "stock_qty")}}
+    )
     if existing.get("image") != updated.get("image"):
         await _delete_product_image(existing.get("image"))
     return Product(**updated)
@@ -1510,12 +1586,11 @@ async def get_order(order_id: str, current_user: User = Depends(get_current_user
     return _order_out(order)
 
 
-@api_router.post("/orders", response_model=OrderOut)
-async def create_order(inp: OrderInput, current_user: User = Depends(require_order_creator)):
-    client_id = await resolve_write_client_id(current_user, inp.client_id)
+async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict, List[OrderItem]]:
+    """Validates an order payload against this client's customer/products and
+    returns (customer, items snapshotted from the stored products)."""
     if not inp.items:
         raise HTTPException(status_code=400, detail="Order must contain at least one item")
-
     # Customer and products are looked up inside this client only, so an
     # order can't reference another tenant's data.
     customer = await db.customers.find_one({"id": inp.customer_id, "client_id": client_id}, {"_id": 0})
@@ -1550,6 +1625,16 @@ async def create_order(inp: OrderInput, current_user: User = Depends(require_ord
             additional_discount=_allowed_additional_discount(product, line.additional_discount),
             ordered_qty=line.ordered_qty,
         ))
+    return customer, items
+
+
+@api_router.post("/orders", response_model=OrderOut)
+async def create_order(inp: OrderInput, current_user: User = Depends(require_order_creator)):
+    client_id = await resolve_write_client_id(current_user, inp.client_id)
+    if not inp.items:
+        raise HTTPException(status_code=400, detail="Order must contain at least one item")
+
+    customer, items = await _resolve_order_lines(client_id, inp)
 
     obj = Order(
         client_id=client_id,
@@ -1569,6 +1654,30 @@ async def create_order(inp: OrderInput, current_user: User = Depends(require_ord
     doc = obj.dict()
     await db.orders.insert_one({**doc, "_id": obj.id})
     return _order_out(doc)
+
+
+@api_router.put("/orders/{order_id}", response_model=OrderOut)
+async def update_order(order_id: str, inp: OrderInput, current_user: User = Depends(require_order_creator)):
+    """Edit an order's customer and lines while it is still `new` - by its
+    creator (operator) or an admin. Prices are re-snapshotted from the
+    current catalog, like on creation."""
+    order = await _get_order_for_processing(order_id, current_user)
+    if _status_value(order) != OrderStatus.NEW.value:
+        raise HTTPException(status_code=409, detail="Only new orders can be edited")
+    customer, items = await _resolve_order_lines(order["client_id"], inp)
+    # Conditional on status: if the warehouse took the order meanwhile, 409.
+    result = await db.orders.update_one(
+        {"id": order_id, "status": OrderStatus.NEW.value},
+        {"$set": {
+            "customer_id": customer["id"],
+            "customer_name": customer["name"],
+            "items": [i.dict() for i in items],
+            "updated_at": now_iso(),
+        }},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Order was changed in the meantime")
+    return _order_out(await db.orders.find_one({"id": order_id}, {"_id": 0}))
 
 
 @api_router.delete("/orders/{order_id}")
@@ -1713,7 +1822,15 @@ async def change_order_status(
         raise HTTPException(status_code=409, detail="Invoice number is already used")
     if result.matched_count == 0:
         raise HTTPException(status_code=409, detail="Order was changed in the meantime")
-    return _order_out(await db.orders.find_one({"id": order_id}, {"_id": 0}))
+    updated_doc = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if target == OrderStatus.SHIPPED.value:
+        await _move_stock_for_order(updated_doc, -1, "shipment", current_user)
+    elif current == OrderStatus.SHIPPED.value:
+        # An admin took a shipped order back: the goods return to stock.
+        await _move_stock_for_order(updated_doc, +1, "reversal", current_user)
+    if target in (OrderStatus.SHIPPED.value, OrderStatus.REJECTED.value):
+        await _send_order_status_email(updated_doc, target, note, current_user)
+    return _order_out(updated_doc)
 
 
 @api_router.patch("/orders/{order_id}/items", response_model=OrderOut)
@@ -1795,6 +1912,214 @@ async def _compute_client_stats(client_id: str) -> ClientStats:
         total_net=round(total_net, 2),
         total_vat=round(total_vat, 2),
         total_grand=round(total_net + total_vat, 2),
+    )
+
+
+# ---------------- Warehouse stock (PLAN_STANJE_MAGACINA.md) ----------------
+require_stock_writer = require_roles(Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)
+
+
+class StockMovement(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    client_id: str
+    product_id: str
+    product_name: str = ""
+    delta: int
+    balance_after: Optional[int] = None
+    type: str  # receipt | adjustment | shipment | reversal
+    order_id: Optional[str] = None
+    note: Optional[str] = None
+    created_by_user_id: Optional[str] = None
+    created_by_name: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class StockLineInput(BaseModel):
+    product_id: str
+    qty: int = Field(gt=0, le=1_000_000)
+
+
+class StockReceiptInput(BaseModel):
+    items: List[StockLineInput] = Field(min_length=1)
+    note: Optional[str] = Field(default=None, max_length=300)
+
+
+class StockAdjustmentInput(BaseModel):
+    product_id: str
+    counted_qty: int = Field(ge=0, le=1_000_000)
+    note: str = Field(min_length=1, max_length=300)
+
+
+async def _record_movement(
+    product: dict, delta: int, kind: str, user: Optional[User], order_id: Optional[str] = None, note: Optional[str] = None
+) -> None:
+    fresh = await db.products.find_one({"id": product["id"]}, {"_id": 0, "stock_qty": 1})
+    movement = StockMovement(
+        client_id=product["client_id"],
+        product_id=product["id"],
+        product_name=product.get("name", ""),
+        delta=delta,
+        balance_after=(fresh or {}).get("stock_qty"),
+        type=kind,
+        order_id=order_id,
+        note=note,
+        created_by_user_id=user.id if user else None,
+        created_by_name=user.name if user else None,
+    )
+    await db.stock_movements.insert_one({**movement.dict(), "_id": movement.id})
+
+
+async def _add_stock(product: dict, delta: int, kind: str, user: Optional[User], order_id=None, note=None) -> None:
+    """Receipt-style change: starts tracking (from 0) when stock was untracked."""
+    first = await db.products.update_one({"id": product["id"], "stock_qty": None}, {"$set": {"stock_qty": delta}})
+    if first.matched_count == 0:
+        await db.products.update_one({"id": product["id"]}, {"$inc": {"stock_qty": delta}})
+    await _record_movement(product, delta, kind, user, order_id, note)
+
+
+async def _move_stock_for_order(order: dict, direction: int, kind: str, user: User) -> None:
+    """Shipment (-picked) / reversal (+picked) for products whose stock is
+    tracked; untracked products are left alone. May go negative on purpose."""
+    for item in order.get("items", []):
+        qty = item.get("picked_qty") or 0
+        if qty <= 0:
+            continue
+        product = await db.products.find_one({"id": item["product_id"]}, {"_id": 0})
+        if not product or product.get("stock_qty") is None:
+            continue
+        await db.products.update_one({"id": product["id"]}, {"$inc": {"stock_qty": direction * qty}})
+        await _record_movement(product, direction * qty, kind, user, order_id=order["id"])
+
+
+@api_router.post("/stock/receipts")
+async def stock_receipt(inp: StockReceiptInput, current_user: User = Depends(require_stock_writer)):
+    products = []
+    for line in inp.items:
+        products.append(await get_scoped_or_404("products", line.product_id, current_user))
+    for product, line in zip(products, inp.items):
+        await _add_stock(product, line.qty, "receipt", current_user, note=inp.note)
+    return {"ok": True, "count": len(products)}
+
+
+@api_router.post("/stock/adjustments")
+async def stock_adjustment(inp: StockAdjustmentInput, current_user: User = Depends(require_stock_writer)):
+    product = await get_scoped_or_404("products", inp.product_id, current_user)
+    delta = inp.counted_qty - (product.get("stock_qty") or 0)
+    await db.products.update_one({"id": product["id"]}, {"$set": {"stock_qty": inp.counted_qty}})
+    await _record_movement(product, delta, "adjustment", current_user, note=inp.note)
+    return {"ok": True, "delta": delta}
+
+
+@api_router.get("/stock/movements", response_model=List[StockMovement])
+async def stock_movements(
+    product_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    current_user: User = Depends(require_stock_writer),
+):
+    query = _scope_query(current_user)
+    if product_id:
+        query["product_id"] = product_id
+    docs = await db.stock_movements.find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(None)
+    return [StockMovement(**d) for d in docs]
+
+
+# ---------------- Reports ----------------
+class StatusCount(BaseModel):
+    count: int = 0
+    grand: float = 0  # incl. VAT; by packed quantity once shipped
+
+
+class PersonReport(BaseModel):
+    user_id: Optional[str] = None
+    name: str
+    total: int = 0
+    shipped: int = 0
+    rejected: int = 0
+    canceled: int = 0
+
+
+class OrdersReport(BaseModel):
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+    order_count: int
+    by_status: Dict[str, StatusCount]
+    by_creator: List[PersonReport]  # sales reps: orders they placed
+    by_handler: List[PersonReport]  # who shipped/rejected orders (warehouse)
+    avg_hours_to_ship: Optional[float] = None
+
+
+def _last_transition(order: dict, to_status: str) -> Optional[dict]:
+    for entry in reversed(order.get("status_history") or []):
+        if entry.get("to_status") == to_status:
+            return entry
+    return None
+
+
+@api_router.get("/reports/orders", response_model=OrdersReport)
+async def orders_report(
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive (by created_at)"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    client_id: Optional[str] = None,
+    current_user: User = Depends(require_manager),
+):
+    """Order counts per status, per sales rep and per warehouse handler for a
+    period. Admin: own client. Superadmin: all clients, or one via client_id."""
+    query = _scope_query(current_user)
+    if current_user.role == Role.SUPERADMIN and client_id:
+        query = {"client_id": client_id}
+    date_range = {}
+    if from_date:
+        date_range["$gte"] = _parse_date(from_date, "from_date").isoformat()
+    if to_date:
+        date_range["$lt"] = (_parse_date(to_date, "to_date") + timedelta(days=1)).isoformat()
+    if date_range:
+        query["created_at"] = date_range
+    orders = await db.orders.find(query, {"_id": 0}).to_list(None)
+
+    by_status: Dict[str, StatusCount] = {s.value: StatusCount() for s in OrderStatus}
+    creators: Dict[str, PersonReport] = {}
+    handlers: Dict[str, PersonReport] = {}
+    ship_hours: List[float] = []
+
+    def person(bucket: Dict[str, PersonReport], user_id: Optional[str], name: Optional[str]) -> PersonReport:
+        key = user_id or name or "?"
+        if key not in bucket:
+            bucket[key] = PersonReport(user_id=user_id, name=name or "-")
+        return bucket[key]
+
+    for order in orders:
+        status = _status_value(order)
+        bucket = by_status.setdefault(status, StatusCount())
+        bucket.count += 1
+        bucket.grand = round(bucket.grand + compute_order_totals(order)["grand"], 2)
+
+        creator = person(creators, order.get("created_by_user_id"), order.get("created_by_name"))
+        creator.total += 1
+        if status in ("shipped", "rejected", "canceled"):
+            setattr(creator, status, getattr(creator, status) + 1)
+
+        for final in ("shipped", "rejected"):
+            if status == final:
+                entry = _last_transition(order, final)
+                if entry:
+                    h = person(handlers, entry.get("changed_by_user_id"), entry.get("changed_by_name"))
+                    h.total += 1
+                    setattr(h, final, getattr(h, final) + 1)
+        if status == "shipped" and order.get("shipped_at"):
+            try:
+                delta = datetime.fromisoformat(order["shipped_at"]) - datetime.fromisoformat(order["created_at"])
+                ship_hours.append(delta.total_seconds() / 3600)
+            except ValueError:
+                pass
+
+    return OrdersReport(
+        from_date=from_date,
+        to_date=to_date,
+        order_count=len(orders),
+        by_status=by_status,
+        by_creator=sorted(creators.values(), key=lambda p: -p.total),
+        by_handler=sorted(handlers.values(), key=lambda p: -p.total),
+        avg_hours_to_ship=round(sum(ship_hours) / len(ship_hours), 1) if ship_hours else None,
     )
 
 

@@ -53,6 +53,10 @@ export type Product = {
   additional_discounts?: number[];
   pieces_per_package?: number;
   boxes_per_transport?: number;
+  // Stock: null/undefined stock_qty = not tracked.
+  stock_qty?: number | null;
+  reserved_qty?: number;
+  available_qty?: number | null;
   created_at?: string;
 };
 
@@ -243,6 +247,8 @@ export const api = {
     const q = qs.toString();
     return req<Order[]>(`/orders${q ? `?${q}` : ""}`);
   },
+  updateOrder: (id: string, o: { customer_id: string; items: OrderLineInput[] }) =>
+    req<Order>(`/orders/${id}`, { method: "PUT", body: JSON.stringify(o) }),
   changeOrderStatus: (id: string, status: OrderStatus, note?: string, invoiceNumber?: string) =>
     req<Order>(`/orders/${id}/status`, {
       method: "POST",
