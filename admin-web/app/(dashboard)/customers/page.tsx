@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ImportModal } from "@/components/ImportModal";
 
 type Customer = {
   id: string;
@@ -28,6 +29,7 @@ export default function CustomersPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
@@ -89,13 +91,30 @@ export default function CustomersPage() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-extrabold text-onSurface">{t("customers")}</h1>
-        <button
-          onClick={() => setShowForm((v) => !v)}
-          className="rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand"
-        >
-          {showForm ? t("cancel") : t("newCustomer")}
-        </button>
+        <div className="flex gap-3">
+          <button
+            onClick={() => setShowImport(true)}
+            className="rounded-md border border-border px-4 py-2 text-sm font-semibold text-onSurface"
+          >
+            {t("importButton")}
+          </button>
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className="rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand"
+          >
+            {showForm ? t("cancel") : t("newCustomer")}
+          </button>
+        </div>
       </div>
+      {showImport && (
+        <ImportModal
+          kind="customers"
+          clients={clients}
+          isSuperAdmin={isSuperAdmin}
+          onClose={() => setShowImport(false)}
+          onImported={load}
+        />
+      )}
 
       {showForm && (
         <form onSubmit={submit} className="mb-8 grid max-w-lg gap-3 rounded-lg bg-surfaceSecondary p-6 shadow-sm">

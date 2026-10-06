@@ -1410,6 +1410,161 @@ async def update_customer(customer_id: str, inp: CustomerInput, current_user: Us
     return Customer(**updated)
 
 
+# ---------------- Customer import from Excel ----------------
+_CUSTOMER_IMPORT_HEADERS = {
+    "name": "name", "naziv": "name", "nazivkupca": "name", "kupac": "name", "ime": "name",
+    "address": "address", "adresa": "address",
+    "email": "email", "eposta": "email", "mail": "email",
+    "phone": "phone", "telefon": "phone", "tel": "phone", "mobilni": "phone", "brojtelefona": "phone",
+    "pib": "pib", "pibbroj": "pib", "taxid": "pib",
+}
+_CUSTOMER_EXAMPLE_ROWS = [
+    ("Maxi Market d.o.o.", "Bulevar oslobođenja 1, Novi Sad", "nabavka@maxi.example", "+381 21 555 111", "101234567"),
+    ("Delikates Prodavnica", "Knez Mihailova 10, Beograd", "info@delikates.example", "+381 11 222 333", "107654321"),
+    ("Mini Market Zora", "Kralja Petra 5, Niš", "zora@example.com", "018 444 555", "102345678"),
+    ("Pekara Klas", "Cara Dušana 22, Kragujevac", None, "034 111 222", "103456789"),
+    ("Restoran Lipa", "Savska 3, Beograd", "lipa@example.com", None, None),
+]
+
+
+def _cell_text(value: Any) -> str:
+    """Excel hands numbers back as floats; phone/PIB cells must stay whole."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value).strip()
+
+
+@api_router.get("/customers/import-template")
+async def customer_import_template(current_user: User = Depends(require_manager)):
+    from openpyxl import Workbook
+    from fastapi.responses import Response
+    import io
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Kupci"
+    ws.append(["Naziv", "Adresa", "Email", "Telefon", "PIB"])
+    for row in _CUSTOMER_EXAMPLE_ROWS:
+        ws.append(list(row))
+    for col in ("D", "E"):  # phone and PIB as text keep leading zeros / plus
+        for cell in ws[col][1:]:
+            cell.number_format = "@"
+    for col, width in zip("ABCDE", (28, 36, 28, 18, 14)):
+        ws.column_dimensions[col].width = width
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="uvoz-kupaca.xlsx"'},
+    )
+
+
+@api_router.post("/customers/import")
+async def import_customers(
+    file: UploadFile = File(...),
+    dry_run: bool = Query(True),
+    client_id: Optional[str] = Query(None),
+    current_user: User = Depends(require_manager),
+):
+    """Excel import of customers. Matched by PIB, else by exact name; empty
+    cells keep the stored value. dry_run (default) only reports."""
+    target_client = await resolve_write_client_id(current_user, client_id)
+    data = await file.read(IMPORT_MAX_BYTES + 1)
+    if len(data) > IMPORT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 4 MB)")
+    try:
+        from openpyxl import load_workbook
+        import io
+
+        ws = load_workbook(io.BytesIO(data), read_only=True, data_only=True).worksheets[0]
+        raw_rows = list(ws.iter_rows(values_only=True))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read the file - upload an .xlsx workbook")
+    if not raw_rows:
+        raise HTTPException(status_code=400, detail="The file is empty")
+    columns: Dict[int, str] = {}
+    for idx, head in enumerate(raw_rows[0]):
+        field = _CUSTOMER_IMPORT_HEADERS.get(_import_header_key(head))
+        if field and field not in columns.values():
+            columns[idx] = field
+    if "name" not in columns.values() and "pib" not in columns.values():
+        raise HTTPException(status_code=400, detail="Missing a 'Naziv' (name) or 'PIB' column")
+    body = [(i + 2, r) for i, r in enumerate(raw_rows[1:]) if any(c not in (None, "") for c in r)]
+    if len(body) > IMPORT_MAX_ROWS:
+        raise HTTPException(status_code=400, detail=f"Too many rows (max {IMPORT_MAX_ROWS})")
+
+    existing = await db.customers.find({"client_id": target_client}, {"_id": 0}).to_list(None)
+    by_pib = {c["pib"]: c for c in existing if c.get("pib")}
+    by_name = {c["name"].strip().lower(): c for c in existing if c.get("name")}
+    seen_pibs: Dict[str, int] = {}
+    seen_ids: Dict[str, int] = {}
+    rows_out = []
+    for row_no, row in body:
+        values = {field: _cell_text(row[idx] if idx < len(row) else None) for idx, field in columns.items()}
+        errors: List[str] = []
+        name = values.get("name", "")
+        pib = re.sub(r"\s+", "", values.get("pib", ""))
+        email = values.get("email", "").lower()
+        if pib and not re.fullmatch(r"\d{1,15}", pib):
+            errors.append("PIB: digits only")
+        if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            errors.append("Email: invalid address")
+
+        customer = by_pib.get(pib) if pib else None
+        if customer is None and name:
+            customer = by_name.get(name.lower())
+        if customer is not None and pib and customer.get("pib") not in (None, "", pib):
+            errors.append("Customer already has a different PIB")
+        if pib and pib in seen_pibs:
+            errors.append(f"PIB repeated (row {seen_pibs[pib]})")
+        if customer is not None and customer["id"] in seen_ids:
+            errors.append(f"Same customer repeated (row {seen_ids[customer['id']]})")
+        if customer is None and not name:
+            errors.append("Name is required for a new customer")
+        if pib:
+            seen_pibs.setdefault(pib, row_no)
+        if customer is not None:
+            seen_ids.setdefault(customer["id"], row_no)
+        entry: Dict[str, Any] = {
+            "row": row_no,
+            "name": name or (customer or {}).get("name", ""),
+            "pib": pib or None,
+            "action": "error" if errors else ("update" if customer else "create"),
+            "errors": errors,
+        }
+        if not errors:
+            vals = {"address": values.get("address", ""), "phone": values.get("phone", "")}
+            vals = {k: v for k, v in vals.items() if v}
+            if email:
+                vals["email"] = email
+            if pib:
+                vals["pib"] = pib
+            if name:
+                vals["name"] = name
+            entry["_customer"] = customer
+            entry["_values"] = vals
+        rows_out.append(entry)
+
+    if not dry_run:
+        for entry in rows_out:
+            if entry["action"] == "error":
+                continue
+            customer = entry["_customer"]
+            if customer is None:
+                obj = Customer(client_id=target_client, **entry["_values"])
+                await db.customers.insert_one({**obj.dict(), "_id": obj.id})
+            elif entry["_values"]:
+                await db.customers.update_one({"id": customer["id"]}, {"$set": entry["_values"]})
+    for entry in rows_out:
+        entry.pop("_customer", None)
+        entry.pop("_values", None)
+    summary = {k: sum(1 for r in rows_out if r["action"] == k) for k in ("create", "update", "error")}
+    return {"dry_run": dry_run, "summary": summary, "rows": rows_out}
+
+
 @api_router.delete("/customers/{customer_id}")
 async def delete_customer(customer_id: str, current_user: User = Depends(require_manager)):
     await get_scoped_or_404("customers", customer_id, current_user)

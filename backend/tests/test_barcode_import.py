@@ -186,3 +186,75 @@ def test_import_needs_manager_and_valid_file(api_client):
         headers={"Content-Type": None},
     )
     assert dry.status_code == 200 and dry.json()["summary"]["error"] == 0, dry.text
+
+
+# ---------------- customers ----------------
+def _upload_customers(session, rows, dry_run, header=("Naziv", "Adresa", "Email", "Telefon", "PIB")):
+    wb = Workbook()
+    ws = wb.active
+    ws.append(list(header))
+    for r in rows:
+        ws.append(list(r))
+    buf = io.BytesIO()
+    wb.save(buf)
+    return session.post(
+        f"{API}/customers/import",
+        params={"dry_run": str(dry_run).lower()},
+        files={"file": ("kupci.xlsx", buf.getvalue(), "application/octet-stream")},
+        headers={"Content-Type": None},
+    )
+
+
+def _pib():
+    return str(uuid.uuid4().int)[:9]
+
+
+def test_customer_import_dry_run_and_apply(api_client):
+    existing = api_client.post(f"{API}/customers", json={"name": f"TEST_CI_{uuid.uuid4().hex[:6]}", "phone": "111"}).json()
+    new_name, new_pib = f"TEST_CI_new_{uuid.uuid4().hex[:6]}", _pib()
+    rows = [
+        (new_name, "Ulica 1", "Kupac@Example.com", 641234567, new_pib),  # numeric phone cell
+        (existing["name"], "Nova adresa", None, None, None),  # matched by name, phone kept
+        ("", "x", None, None, None),  # name missing
+        ("TEST_CI_bad", None, "not-an-email", None, "12ab"),
+    ]
+    try:
+        dry = _upload_customers(api_client, rows, True).json()
+        assert dry["summary"] == {"create": 1, "update": 1, "error": 2}, dry
+        assert not [c for c in api_client.get(f"{API}/customers").json() if c["name"] == new_name]
+
+        assert _upload_customers(api_client, rows, False).status_code == 200
+        customers = {c["name"]: c for c in api_client.get(f"{API}/customers").json()}
+        created = customers[new_name]
+        assert created["email"] == "kupac@example.com" and created["phone"] == "641234567" and created["pib"] == new_pib
+        upd = customers[existing["name"]]
+        assert upd["id"] == existing["id"] and upd["address"] == "Nova adresa" and upd["phone"] == "111"
+
+        # same PIB again matches the customer (rename via PIB), no duplicate
+        again = _upload_customers(api_client, [("TEST_CI_renamed", None, None, None, new_pib)], False).json()
+        assert again["summary"] == {"create": 0, "update": 1, "error": 0}
+        assert len([c for c in api_client.get(f"{API}/customers").json() if c.get("pib") == new_pib]) == 1
+    finally:
+        for c in api_client.get(f"{API}/customers").json():
+            if c["name"].startswith("TEST_CI"):
+                api_client.delete(f"{API}/customers/{c['id']}")
+
+
+def test_customer_import_repeats_and_permissions(api_client):
+    pib = _pib()
+    body = _upload_customers(api_client, [("TEST_CI_a", None, None, None, pib), ("TEST_CI_b", None, None, None, pib)], True).json()
+    assert [r["action"] for r in body["rows"]] == ["create", "error"]
+    wh_id, wh = _warehouse(api_client)
+    try:
+        r = wh.post(f"{API}/customers/import", files={"file": ("a.xlsx", b"x", "application/octet-stream")}, headers={"Content-Type": None})
+        assert r.status_code == 403
+    finally:
+        api_client.delete(f"{API}/users/{wh_id}")
+    assert _upload_customers(api_client, [("x",)], True, header=("Foo",)).status_code == 400
+    tpl = api_client.get(f"{API}/customers/import-template")
+    assert tpl.status_code == 200 and tpl.content[:2] == b"PK"
+    dry = api_client.post(
+        f"{API}/customers/import", params={"dry_run": "true"},
+        files={"file": ("p.xlsx", tpl.content, "application/octet-stream")}, headers={"Content-Type": None},
+    )
+    assert dry.status_code == 200 and dry.json()["summary"]["error"] == 0, dry.text

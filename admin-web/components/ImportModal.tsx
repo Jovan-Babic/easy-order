@@ -3,17 +3,18 @@
 import { useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 
-type Row = { row: number; name: string; barcode: string | null; action: "create" | "update" | "error"; errors: string[] };
+type Row = { row: number; name: string; barcode?: string | null; pib?: string | null; action: "create" | "update" | "error"; errors: string[] };
 type Result = { dry_run: boolean; summary: { create: number; update: number; error: number }; rows: Row[] };
 
 type Props = {
+  kind?: "products" | "customers";
   clients: { id: string; name: string }[];
   isSuperAdmin: boolean;
   onClose: () => void;
   onImported: () => void;
 };
 
-export function ProductImportModal({ clients, isSuperAdmin, onClose, onImported }: Props) {
+export function ImportModal({ kind = "products", clients, isSuperAdmin, onClose, onImported }: Props) {
   const { t } = useLanguage();
   const [file, setFile] = useState<File | null>(null);
   const [clientId, setClientId] = useState(clients[0]?.id || "");
@@ -31,7 +32,7 @@ export function ProductImportModal({ clients, isSuperAdmin, onClose, onImported 
       formData.append("file", file);
       const params = new URLSearchParams({ dry_run: String(dryRun) });
       if (isSuperAdmin && clientId) params.set("client_id", clientId);
-      const res = await fetch(`/api/products/import?${params}`, { method: "POST", body: formData });
+      const res = await fetch(`/api/${kind}/import?${params}`, { method: "POST", body: formData });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(body.detail || t("importFailed"));
@@ -56,7 +57,7 @@ export function ProductImportModal({ clients, isSuperAdmin, onClose, onImported 
     <div className="fixed inset-0 z-30 overflow-y-auto bg-black/40 p-4 sm:p-6">
       <div className="mx-auto mt-6 w-full max-w-3xl rounded-2xl bg-surfaceSecondary p-6 shadow-xl sm:mt-12">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-xl font-extrabold text-onSurface">{t("importProducts")}</h2>
+          <h2 className="text-xl font-extrabold text-onSurface">{kind === "customers" ? t("importCustomers") : t("importProducts")}</h2>
           <button onClick={onClose} className="rounded-md px-3 py-2 text-sm font-semibold text-onSurfaceSecondary hover:bg-surface">
             {t("close")}
           </button>
@@ -64,8 +65,8 @@ export function ProductImportModal({ clients, isSuperAdmin, onClose, onImported 
 
         {!done && (
           <div className="grid gap-3">
-            <p className="text-sm text-onSurfaceSecondary">{t("importHelp")}</p>
-            <a href="/api/products/import-template" className="text-sm font-semibold text-brand hover:underline">
+            <p className="text-sm text-onSurfaceSecondary">{kind === "customers" ? t("importHelpCustomers") : t("importHelp")}</p>
+            <a href={`/api/${kind}/import-template`} className="text-sm font-semibold text-brand hover:underline">
               {t("importTemplate")}
             </a>
             {isSuperAdmin && (
@@ -117,7 +118,7 @@ export function ProductImportModal({ clients, isSuperAdmin, onClose, onImported 
                   <tr>
                     <th className="px-3 py-2">#</th>
                     <th className="px-3 py-2">{t("name")}</th>
-                    <th className="px-3 py-2">{t("barcode")}</th>
+                    <th className="px-3 py-2">{kind === "customers" ? "PIB" : t("barcode")}</th>
                     <th className="px-3 py-2" />
                   </tr>
                 </thead>
@@ -126,7 +127,7 @@ export function ProductImportModal({ clients, isSuperAdmin, onClose, onImported 
                     <tr key={r.row} className="border-t border-border">
                       <td className="px-3 py-2 text-muted">{r.row}</td>
                       <td className="px-3 py-2">{r.name || "-"}</td>
-                      <td className="px-3 py-2 text-onSurfaceSecondary">{r.barcode || "-"}</td>
+                      <td className="px-3 py-2 text-onSurfaceSecondary">{(kind === "customers" ? r.pib : r.barcode) || "-"}</td>
                       <td className={`px-3 py-2 ${r.action === "error" ? "text-error" : "text-onSurfaceSecondary"}`}>
                         {actionLabel(r.action)}
                         {r.errors.length > 0 && <div className="text-xs">{r.errors.join("; ")}</div>}

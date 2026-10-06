@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { ProductImportModal } from "@/components/ProductImportModal";
+import { ImportModal } from "@/components/ImportModal";
 
 type Product = {
   id: string;
@@ -316,7 +316,7 @@ export default function ProductsPage() {
         </div>
       </div>
       {showImport && (
-        <ProductImportModal
+        <ImportModal
           clients={clients}
           isSuperAdmin={isSuperAdmin}
           onClose={() => setShowImport(false)}
