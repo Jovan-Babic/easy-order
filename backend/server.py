@@ -733,6 +733,48 @@ def _build_test_email_body() -> str:
     )
 
 
+def _build_order_status_email(order: dict, status: str, note: Optional[str], actor_name: str) -> tuple[str, str]:
+    """(subject, body) telling the sales rep their order was shipped/rejected."""
+    shipped = status == OrderStatus.SHIPPED.value
+    customer = order.get("customer_name", "")
+    invoice = order.get("invoice_number")
+    if shipped:
+        subject = f"Easy Order - porudžbina poslata / order shipped: {customer}"
+        sr = f"Porudžbina za kupca {customer} je poslata."
+        en = f"The order for {customer} has been shipped."
+    else:
+        subject = f"Easy Order - porudžbina odbijena / order rejected: {customer}"
+        sr = f"Porudžbina za kupca {customer} je odbijena."
+        en = f"The order for {customer} was rejected."
+    lines = [f"Zdravo {order.get('created_by_name') or ''},".replace("  ", " "), "", sr, en, ""]
+    if shipped and invoice:
+        lines.append(f"Broj fakture / Invoice number: {invoice}")
+    if not shipped and note:
+        lines.append(f"Razlog / Reason: {note}")
+    lines.append(f"Obradio / Handled by: {actor_name}")
+    return subject, "\n".join(lines)
+
+
+async def _send_order_status_email(order: dict, status: str, note: Optional[str], actor: "User") -> None:
+    """Best effort, never raises: a failed email must not undo the status
+    change. Skipped when the actor placed the order themselves, when the
+    creator is unknown (old orders) or has been deleted."""
+    creator_id = order.get("created_by_user_id")
+    if not creator_id or creator_id == actor.id:
+        return
+    if not _smtp_is_configured():
+        logger.warning("SMTP not configured - order status email for order %s not sent", order.get("id"))
+        return
+    try:
+        creator = await db.users.find_one({"id": creator_id}, {"_id": 0, "email": 1})
+        if not creator or not creator.get("email"):
+            return
+        subject, body = _build_order_status_email(order, status, note, actor.name)
+        await asyncio.to_thread(_send_smtp_email_sync, creator["email"], subject, body)
+    except Exception as exc:
+        logger.exception("Failed to send order status email for order %s: %s", order.get("id"), exc)
+
+
 async def _send_reset_email(to_email: str, user_name: str, reset_link: str) -> None:
     if not _smtp_is_configured():
         logger.warning("SMTP not configured. Password reset link for %s: %s", to_email, reset_link)
@@ -1713,7 +1755,10 @@ async def change_order_status(
         raise HTTPException(status_code=409, detail="Invoice number is already used")
     if result.matched_count == 0:
         raise HTTPException(status_code=409, detail="Order was changed in the meantime")
-    return _order_out(await db.orders.find_one({"id": order_id}, {"_id": 0}))
+    updated_doc = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if target in (OrderStatus.SHIPPED.value, OrderStatus.REJECTED.value):
+        await _send_order_status_email(updated_doc, target, note, current_user)
+    return _order_out(updated_doc)
 
 
 @api_router.patch("/orders/{order_id}/items", response_model=OrderOut)

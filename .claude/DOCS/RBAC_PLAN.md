@@ -207,7 +207,7 @@ Može paralelno sa fazama 2–3; mora pre faze 5.
 `/warehouse` red za obradu, detalj + istorija, slanje (automatski broj ili unos ručnog), štampa fakture (logo + podaci klijenta ako postoje) i otpremnice.
 
 ### Faza 6 — Dorade
-- obaveštenja komercijalisti pri `rejected`/`shipped` (email, kasnije push)
+- ✅ obaveštenje komercijalisti emailom pri `rejected`/`shipped` (`_send_order_status_email`; push kasnije)
 - izmena porudžbine od strane komercijaliste dok je `new`
 - dodela porudžbine konkretnom magacioneru, izveštaji po statusima
 - stranica „Podešavanja“ za admina (sam menja logo i podešavanja fakture)
