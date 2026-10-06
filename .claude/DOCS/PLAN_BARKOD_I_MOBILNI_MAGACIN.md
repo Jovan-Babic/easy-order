@@ -9,6 +9,7 @@ Magacioner sa telefona: skenira barkod proizvoda, unese količinu i radi **prije
 ## Status
 
 ✅ B1, B2 i B3 urađeni zajedno (odluka: barkod komada, transportno pakovanje je samo kutija; uvoz isključivo Excel `.xlsx`). B4 nije rađen.
+Primer fajla za uvoz: `.claude/DOCS/primer-uvoz-artikala.xlsx` (8 artikala, jedan bez barkoda, cene kao broj i kao tekst sa zarezom).
 Napomena: uvoz traži `openpyxl`; B3 traži `expo-camera` (nativno → novi APK preko „Release Android“).
 
 ## Odluke (bile otvorene, sada potvrđene)
