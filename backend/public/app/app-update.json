@@ -1,7 +1,7 @@
 {
   "enabled": true,
-  "version": "1.2.0",
-  "download_url": "https://github.com/Jovan-Babic/easy-order/releases/download/v1.2.0/easy-order.apk",
-  "build_date": "27.09.2026",
-  "release_notes": "Nova verzija aplikacije"
+  "version": "1.3.0",
+  "download_url": "https://github.com/Jovan-Babic/easy-order/releases/download/v1.3.0/easy-order.apk",
+  "build_date": "06.10.2026",
+  "release_notes": "Modul za magacin sa skenerom"
 }
