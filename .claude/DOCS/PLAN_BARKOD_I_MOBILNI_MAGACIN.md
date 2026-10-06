@@ -6,13 +6,18 @@ Nadovezuje se na `PLAN_STANJE_MAGACINA.md` (S1–S3 gotovo, PR #4). Stanje se do
 
 Magacioner sa telefona: skenira barkod proizvoda, unese količinu i radi **prijem** ili **popis**. Isti skener služi i za brzo pronalaženje proizvoda. Uvoz artikala (CSV/Excel) puni i barkodove.
 
-## Odluke koje treba potvrditi
+## Status
+
+✅ B1, B2 i B3 urađeni zajedno (odluka: barkod komada, transportno pakovanje je samo kutija; uvoz isključivo Excel `.xlsx`). B4 nije rađen.
+Napomena: uvoz traži `openpyxl`; B3 traži `expo-camera` (nativno → novi APK preko „Release Android“).
+
+## Odluke (bile otvorene, sada potvrđene)
 
 1. **Skeniranje, ne slikanje:** `expo-camera` čita barkod uživo (EAN-13/EAN-8/Code128/QR). Količinu unosi čovek; ne prepoznaje se sa fotografije.
 2. **Barkod je jedinstven po klijentu** (parcijalni unique indeks na `client_id` + `barcode`). Jedan proizvod, jedan glavni barkod (kasnije moguće lista za barkod pojedinačnog i transportnog pakovanja).
 3. **Jedinica barkoda:** pretpostavka je komad. Ako treba i barkod transportnog pakovanja, dodaje se `transport_barcode` (faza B4) i skeniranje tada množi sa `boxes_per_transport`.
 4. **Nepoznat barkod pri skeniranju:** nudi se „Poveži sa proizvodom“ (izbor proizvoda, snimi barkod) za admina i magacionera.
-5. **Uvoz:** CSV (UTF-8, `;` ili `,`) u prvoj verziji; `.xlsx` samo ako zatreba (nova zavisnost `openpyxl` na Vercelu).
+5. **Uvoz:** Excel `.xlsx` (odluka korisnika; lakše za korisnike od CSV). Kolone prepoznaje po nazivu (srpski ili engleski), šablon se preuzima iz portala.
 
 ## Faze
 

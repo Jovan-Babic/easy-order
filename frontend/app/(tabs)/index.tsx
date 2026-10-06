@@ -25,6 +25,7 @@ import { api, ApiError, Customer, Order, Product, OrderLineInput } from "@/src/a
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { LangToggle } from "@/src/components/LangToggle";
 import { Button } from "@/src/components/Button";
+import { BarcodeScanner } from "@/src/components/BarcodeScanner";
 import { LOGOUT } from "@/constants/testIds";
 
 export default function OrderCatalog() {
@@ -54,6 +55,7 @@ export default function OrderCatalog() {
   const [confirmingOrder, setConfirmingOrder] = useState(false);
   const [search, setSearch] = useState("");
   const [productSearch, setProductSearch] = useState("");
+  const [scanOpen, setScanOpen] = useState(false);
   const [manuFilter, setManuFilter] = useState<string>("__all__");
 
   const load = useCallback(async () => {
@@ -122,7 +124,8 @@ export default function OrderCatalog() {
       const matchSearch =
         !q ||
         p.name.toLowerCase().includes(q) ||
-        (p.manufacturer || "").toLowerCase().includes(q);
+        (p.manufacturer || "").toLowerCase().includes(q) ||
+        (p.barcode || "").toLowerCase() === q;
       return matchManu && matchSearch;
     });
   }, [products, manuFilter, productSearch]);
@@ -253,12 +256,24 @@ export default function OrderCatalog() {
             onChangeText={setProductSearch}
             style={styles.productSearchInput}
           />
+          <Pressable testID="scan-product-search" onPress={() => setScanOpen(true)} hitSlop={10}>
+            <Ionicons name="barcode-outline" size={22} color={colors.brand} />
+          </Pressable>
           {productSearch.length > 0 && (
             <Pressable testID="clear-product-search" onPress={() => setProductSearch("")} hitSlop={10}>
               <Ionicons name="close-circle" size={18} color={colors.muted} />
             </Pressable>
           )}
         </View>
+        <BarcodeScanner
+          visible={scanOpen}
+          onClose={() => setScanOpen(false)}
+          onScanned={(code) => {
+            setProductSearch(code);
+            setManuFilter("__all__");
+            setScanOpen(false);
+          }}
+        />
         {manufacturers.length > 0 && (
           <ScrollView
             horizontal

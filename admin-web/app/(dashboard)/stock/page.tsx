@@ -8,6 +8,7 @@ type Product = {
   id: string;
   name: string;
   manufacturer?: string;
+  barcode?: string | null;
   boxes_per_transport?: number;
   stock_qty: number | null;
   reserved_qty: number;
@@ -109,7 +110,7 @@ export default function StockPage() {
 
   const filtered = products.filter((p) => {
     const q = search.trim().toLowerCase();
-    return !q || p.name.toLowerCase().includes(q) || (p.manufacturer ?? "").toLowerCase().includes(q);
+    return !q || p.name.toLowerCase().includes(q) || (p.manufacturer ?? "").toLowerCase().includes(q) || (p.barcode ?? "").toLowerCase().includes(q);
   });
 
   const canSubmit =

@@ -19,9 +19,12 @@ import { useApp } from "@/src/context/AppContext";
 import { api, ApiError, ClientInfo, Order, OrderStatus } from "@/src/api";
 import { Button } from "@/src/components/Button";
 import { StatusBadge } from "@/src/components/StatusBadge";
+import { StockScanPanel } from "@/src/components/StockScanPanel";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 
 const QUEUE: OrderStatus[] = ["new", "in_progress"];
+
+type Mode = "pack" | "receipt" | "count";
 
 export default function WarehouseScreen() {
   const { t } = useApp();
@@ -36,6 +39,7 @@ export default function WarehouseScreen() {
   const [rejectNote, setRejectNote] = useState("");
   const [client, setClient] = useState<ClientInfo | null>(null);
   const [invoiceNo, setInvoiceNo] = useState("");
+  const [mode, setMode] = useState<Mode>("pack");
 
   const load = useCallback(async (pull = false) => {
     try {
@@ -94,9 +98,25 @@ export default function WarehouseScreen() {
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
         <Text style={styles.headerTitle}>{t("warehouse")}</Text>
         <Text style={styles.headerSub}>{t("toPack")}</Text>
+        <View style={styles.modeRow}>
+          {(["pack", "receipt", "count"] as Mode[]).map((m) => (
+            <Pressable
+              key={m}
+              testID={`mode-${m}`}
+              style={[styles.modeBtn, mode === m && styles.modeBtnActive]}
+              onPress={() => setMode(m)}
+            >
+              <Text style={[styles.modeText, mode === m && styles.modeTextActive]}>
+                {m === "pack" ? t("packing") : m === "receipt" ? t("stockReceiptTab") : t("stockCountTab")}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
       </View>
 
-      {loading ? (
+      {mode !== "pack" ? (
+        <StockScanPanel key={mode} mode={mode} />
+      ) : loading ? (
         <View style={styles.center}>
           <ActivityIndicator color={colors.brand} size="large" />
         </View>
@@ -283,6 +303,17 @@ const styles = StyleSheet.create({
   },
   headerTitle: { fontSize: font.xxl, fontWeight: "800", color: colors.onSurface },
   headerSub: { fontSize: font.sm, color: colors.muted, marginTop: 2 },
+  modeRow: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
+  modeBtn: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+  },
+  modeBtnActive: { backgroundColor: colors.brand },
+  modeText: { fontSize: font.base, fontWeight: "600", color: colors.onSurfaceSecondary },
+  modeTextActive: { color: colors.onBrand },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   mutedText: { color: colors.muted, marginTop: spacing.md },
   card: {

@@ -53,6 +53,7 @@ export type Product = {
   additional_discounts?: number[];
   pieces_per_package?: number;
   boxes_per_transport?: number;
+  barcode?: string | null;
   // Stock: null/undefined stock_qty = not tracked.
   stock_qty?: number | null;
   reserved_qty?: number;
@@ -255,6 +256,16 @@ export const api = {
       body: JSON.stringify({ status, note, invoice_number: invoiceNumber }),
     }),
   getMyClient: () => req<ClientInfo>("/clients/me"),
+  getProductByBarcode: (code: string) => req<Product>(`/products/by-barcode/${encodeURIComponent(code)}`),
+  linkBarcode: (id: string, barcode: string) =>
+    req<Product>(`/products/${id}/barcode`, { method: "POST", body: JSON.stringify({ barcode }) }),
+  stockReceipt: (items: { product_id: string; qty: number }[], note?: string) =>
+    req<{ ok: boolean; count: number }>("/stock/receipts", { method: "POST", body: JSON.stringify({ items, note }) }),
+  stockCount: (items: { product_id: string; counted_qty: number }[], note: string) =>
+    req<{ ok: boolean; count: number }>("/stock/adjustments/batch", {
+      method: "POST",
+      body: JSON.stringify({ items, note }),
+    }),
   setPickedQty: (id: string, items: { product_id: string; picked_qty: number | null }[]) =>
     req<Order>(`/orders/${id}/items`, { method: "PATCH", body: JSON.stringify({ items }) }),
   getOrder: (id: string) => req<Order>(`/orders/${id}`),
