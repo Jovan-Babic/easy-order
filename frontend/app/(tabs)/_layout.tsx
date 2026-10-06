@@ -15,6 +15,9 @@ export default function TabsLayout() {
   // Warehouse staff don't order or manage anything: they get the history
   // and the "Magacin" packing tab (phase 3 of RBAC_PLAN.md).
   const isWarehouse = user?.role === "warehouse";
+  // Admins (a client may have only an admin account) also get the Magacin tab
+  // to receive/count/pack, but keep the order screen as their start tab.
+  const showWarehouseTab = isWarehouse || user?.role === "admin";
   const hideAdminTab = user?.role === "operator" || isWarehouse;
   const safeBottomPadding = Math.max(insets.bottom, Platform.OS === "ios" ? 18 : 8);
 
@@ -49,7 +52,7 @@ export default function TabsLayout() {
         name="warehouse"
         options={{
           title: t("warehouse"),
-          href: isWarehouse ? undefined : null,
+          href: showWarehouseTab ? undefined : null,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="cube-outline" size={size} color={color} />
           ),

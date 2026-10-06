@@ -67,3 +67,14 @@ B1 → B2 → B3. B1 i B2 su backend + portal (deploy na Vercel). B3 je jedini d
 ## Procena obima
 
 B1 mali, B2 srednji, B3 srednji (najviše posla u UI i nativnom testiranju na uređaju), B4 po potrebi.
+
+## Plan za dalje (backlog)
+
+Urađeno u ovoj iteraciji:
+- [x] Admin vidi tab Magacin u mobilnoj aplikaciji (klijent koji ima samo admin nalog može da radi prijem, popis i pakovanje; početni tab mu ostaje Porudžbina).
+- [x] Pojednostavljen ekran za nepoznat barkod: prvo dva izbora ("Dodaj novi artikal" / "Poveži sa postojećim"), lista artikala se prikazuje tek kad se izabere povezivanje.
+
+Otvoreno (nije zatraženo, samo zabeleženo):
+- [ ] Admin stranica „Podešavanja“ u portalu.
+- [ ] Uloga dostavljača / status `completed`.
+- [ ] Skener: tap-to-focus i baterijska lampa (ako se ispostavi da uređaji slabo hvataju barkod).
