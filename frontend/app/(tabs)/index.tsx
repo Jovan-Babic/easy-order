@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -12,7 +12,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
-import { api, ApiError, Customer, Product, OrderLineInput } from "@/src/api";
+import { api, ApiError, Customer, Order, Product, OrderLineInput } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { LangToggle } from "@/src/components/LangToggle";
 import { Button } from "@/src/components/Button";
@@ -31,6 +31,11 @@ export default function OrderCatalog() {
   const { t, showToast } = useApp();
   const { logout } = useAuth();
   const router = useRouter();
+  const { edit } = useLocalSearchParams<{ edit?: string }>();
+  // Set while editing a still-new order (opened from History): the catalog is
+  // prefilled from it and "confirm" saves with PUT instead of creating.
+  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+  const appliedEdit = useRef<string | null>(null);
   const insets = useSafeAreaInsets();
   const safeBottom = Math.max(insets.bottom, 12);
   const footerBottomPadding = insets.bottom > 0 ? Math.max(4, Math.round(insets.bottom * 0.4)) : 4;
@@ -58,12 +63,22 @@ export default function OrderCatalog() {
       const [p, c] = await Promise.all([api.listProducts(), api.listCustomers()]);
       setProducts(p);
       setCustomers(c);
+      if (edit && appliedEdit.current !== edit) {
+        appliedEdit.current = edit;
+        const order = await api.getOrder(edit);
+        setEditingOrder(order);
+        setSelected(c.find((x) => x.id === order.customer_id) ?? null);
+        setDrafts(Object.fromEntries(order.items.map((i) => [i.product_id, String(i.ordered_qty)])));
+        setAdditionalDiscountSel(
+          Object.fromEntries(order.items.map((i) => [i.product_id, i.additional_discount ?? 0]))
+        );
+      }
     } catch {
       setError(true);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [edit]);
 
   useFocusEffect(
     useCallback(() => {
@@ -112,6 +127,17 @@ export default function OrderCatalog() {
     });
   }, [products, manuFilter, productSearch]);
 
+  const stopEditing = (clearDrafts = true) => {
+    setEditingOrder(null);
+    appliedEdit.current = null;
+    router.setParams({ edit: undefined });
+    if (clearDrafts) {
+      setDrafts({});
+      setAdditionalDiscountSel({});
+      setSelected(null);
+    }
+  };
+
   const submitOrder = async () => {
     if (!selected) return;
     // Only what the rep decides - the backend snapshots name/price/VAT from
@@ -127,8 +153,11 @@ export default function OrderCatalog() {
     if (items.length === 0) return;
     try {
       setSubmitting(true);
-      const order = await api.createOrder({ customer_id: selected.id, items });
+      const order = editingOrder
+        ? await api.updateOrder(editingOrder.id, { customer_id: selected.id, items })
+        : await api.createOrder({ customer_id: selected.id, items });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      if (editingOrder) stopEditing(false);
       setDrafts({});
       setConfirmingOrder(false);
       router.push({ pathname: "/invoice", params: { id: order.id } });
@@ -192,6 +221,14 @@ export default function OrderCatalog() {
             </Pressable>
           </View>
         </View>
+        {editingOrder && (
+          <View style={styles.editBanner}>
+            <Text style={styles.editBannerText}>{t("editingOrder")}</Text>
+            <Pressable testID="cancel-edit" onPress={() => stopEditing()} hitSlop={8}>
+              <Text style={styles.editBannerCancel}>{t("cancelEdit")}</Text>
+            </Pressable>
+          </View>
+        )}
         <Pressable
           testID="customer-picker-button"
           style={styles.customerBtn}
@@ -622,6 +659,18 @@ const styles = StyleSheet.create({
   appName: { fontSize: font.xxl, fontWeight: "800", color: colors.onSurface },
   headerActions: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   logoutBtn: { padding: spacing.xs },
+  editBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: colors.brandSecondary,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  editBannerText: { fontSize: font.base, fontWeight: "700", color: colors.brand },
+  editBannerCancel: { fontSize: font.base, fontWeight: "700", color: colors.error },
   customerBtn: {
     flexDirection: "row",
     alignItems: "center",

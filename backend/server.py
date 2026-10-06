@@ -414,6 +414,7 @@ class Order(BaseModel):
     assigned_to_user_id: Optional[str] = None
     assigned_to_name: Optional[str] = None
     shipped_at: Optional[str] = None
+    updated_at: Optional[str] = None  # last edit of a new order
     # Assigned once, when the order is first shipped; never changes or is freed.
     invoice_seq: Optional[int] = None
     invoice_number: Optional[str] = None
@@ -1552,12 +1553,11 @@ async def get_order(order_id: str, current_user: User = Depends(get_current_user
     return _order_out(order)
 
 
-@api_router.post("/orders", response_model=OrderOut)
-async def create_order(inp: OrderInput, current_user: User = Depends(require_order_creator)):
-    client_id = await resolve_write_client_id(current_user, inp.client_id)
+async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict, List[OrderItem]]:
+    """Validates an order payload against this client's customer/products and
+    returns (customer, items snapshotted from the stored products)."""
     if not inp.items:
         raise HTTPException(status_code=400, detail="Order must contain at least one item")
-
     # Customer and products are looked up inside this client only, so an
     # order can't reference another tenant's data.
     customer = await db.customers.find_one({"id": inp.customer_id, "client_id": client_id}, {"_id": 0})
@@ -1592,6 +1592,16 @@ async def create_order(inp: OrderInput, current_user: User = Depends(require_ord
             additional_discount=_allowed_additional_discount(product, line.additional_discount),
             ordered_qty=line.ordered_qty,
         ))
+    return customer, items
+
+
+@api_router.post("/orders", response_model=OrderOut)
+async def create_order(inp: OrderInput, current_user: User = Depends(require_order_creator)):
+    client_id = await resolve_write_client_id(current_user, inp.client_id)
+    if not inp.items:
+        raise HTTPException(status_code=400, detail="Order must contain at least one item")
+
+    customer, items = await _resolve_order_lines(client_id, inp)
 
     obj = Order(
         client_id=client_id,
@@ -1611,6 +1621,30 @@ async def create_order(inp: OrderInput, current_user: User = Depends(require_ord
     doc = obj.dict()
     await db.orders.insert_one({**doc, "_id": obj.id})
     return _order_out(doc)
+
+
+@api_router.put("/orders/{order_id}", response_model=OrderOut)
+async def update_order(order_id: str, inp: OrderInput, current_user: User = Depends(require_order_creator)):
+    """Edit an order's customer and lines while it is still `new` - by its
+    creator (operator) or an admin. Prices are re-snapshotted from the
+    current catalog, like on creation."""
+    order = await _get_order_for_processing(order_id, current_user)
+    if _status_value(order) != OrderStatus.NEW.value:
+        raise HTTPException(status_code=409, detail="Only new orders can be edited")
+    customer, items = await _resolve_order_lines(order["client_id"], inp)
+    # Conditional on status: if the warehouse took the order meanwhile, 409.
+    result = await db.orders.update_one(
+        {"id": order_id, "status": OrderStatus.NEW.value},
+        {"$set": {
+            "customer_id": customer["id"],
+            "customer_name": customer["name"],
+            "items": [i.dict() for i in items],
+            "updated_at": now_iso(),
+        }},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Order was changed in the meantime")
+    return _order_out(await db.orders.find_one({"id": order_id}, {"_id": 0}))
 
 
 @api_router.delete("/orders/{order_id}")

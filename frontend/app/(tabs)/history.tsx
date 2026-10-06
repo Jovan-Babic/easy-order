@@ -117,9 +117,18 @@ export default function HistoryScreen() {
                 </Text>
               )}
               {item.status === "new" && user?.role === "operator" && (
-                <Pressable testID={`cancel-${item.id}`} onPress={() => cancelOrder(item)} style={styles.cancelBtn}>
-                  <Text style={styles.cancelText}>{t("cancelOrder")}</Text>
-                </Pressable>
+                <View style={styles.rowActions}>
+                  <Pressable
+                    testID={`edit-${item.id}`}
+                    onPress={() => router.navigate({ pathname: "/", params: { edit: item.id } })}
+                    style={styles.cancelBtn}
+                  >
+                    <Text style={styles.editText}>{t("editOrder")}</Text>
+                  </Pressable>
+                  <Pressable testID={`cancel-${item.id}`} onPress={() => cancelOrder(item)} style={styles.cancelBtn}>
+                    <Text style={styles.cancelText}>{t("cancelOrder")}</Text>
+                  </Pressable>
+                </View>
               )}
             </View>
           )}
@@ -151,6 +160,8 @@ const styles = StyleSheet.create({
   },
   cardRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
   reason: { fontSize: font.sm, color: colors.error },
+  rowActions: { flexDirection: "row", gap: spacing.lg },
+  editText: { fontSize: font.sm, fontWeight: "700", color: colors.brand },
   cancelBtn: { alignSelf: "flex-start", paddingVertical: spacing.xs },
   cancelText: { fontSize: font.sm, fontWeight: "700", color: colors.error },
   cardIcon: {

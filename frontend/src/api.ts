@@ -243,6 +243,8 @@ export const api = {
     const q = qs.toString();
     return req<Order[]>(`/orders${q ? `?${q}` : ""}`);
   },
+  updateOrder: (id: string, o: { customer_id: string; items: OrderLineInput[] }) =>
+    req<Order>(`/orders/${id}`, { method: "PUT", body: JSON.stringify(o) }),
   changeOrderStatus: (id: string, status: OrderStatus, note?: string, invoiceNumber?: string) =>
     req<Order>(`/orders/${id}/status`, {
       method: "POST",

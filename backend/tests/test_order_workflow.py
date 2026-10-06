@@ -174,3 +174,42 @@ class TestPacking:
         assert body["items"][0]["line_net"] == 700.0
         # the commercial rep sees the same breakdown
         assert S.op.get(f"{API}/orders/{o['id']}").json()["ordered_totals"]["subtotal"] == 1000.0
+
+
+class TestEditNewOrder:
+    def _edit(self, session, oid, qty, customer_id=None):
+        return session.put(
+            f"{API}/orders/{oid}",
+            json={"customer_id": customer_id or S.customer["id"], "items": [{"product_id": S.product["id"], "ordered_qty": qty}]},
+        )
+
+    def test_creator_edits_own_new_order(self):
+        o = _new_order(S.op, qty=2)
+        r = self._edit(S.op, o["id"], 7)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["items"][0]["ordered_qty"] == 7 and body["totals"]["subtotal"] == 700.0
+        assert body["status"] == "new" and body["updated_at"]
+
+    def test_other_operator_gets_404(self):
+        o = _new_order(S.op)
+        assert self._edit(S.op2, o["id"], 3).status_code == 404
+
+    def test_warehouse_cannot_edit(self):
+        o = _new_order(S.op)
+        assert self._edit(S.wh, o["id"], 3).status_code == 403
+
+    def test_admin_can_edit_and_unknown_customer_is_400(self, api_client):
+        o = _new_order(S.op)
+        assert self._edit(api_client, o["id"], 4).status_code == 200
+        assert self._edit(S.op, o["id"], 4, customer_id="nope").status_code == 400
+
+    def test_cannot_edit_after_warehouse_takes_it(self):
+        o = _new_order(S.op)
+        _status(S.wh, o["id"], "in_progress")
+        assert self._edit(S.op, o["id"], 3).status_code == 409
+
+    def test_empty_or_zero_quantity_is_400(self):
+        o = _new_order(S.op)
+        assert S.op.put(f"{API}/orders/{o['id']}", json={"customer_id": S.customer["id"], "items": []}).status_code == 400
+        assert self._edit(S.op, o["id"], 0).status_code == 400

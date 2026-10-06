@@ -208,7 +208,7 @@ Može paralelno sa fazama 2–3; mora pre faze 5.
 
 ### Faza 6 — Dorade
 - ✅ obaveštenje komercijalisti emailom pri `rejected`/`shipped` (`_send_order_status_email`; push kasnije)
-- izmena porudžbine od strane komercijaliste dok je `new`
+- ✅ izmena porudžbine od strane komercijaliste dok je `new` (`PUT /orders/{id}`, 409 ako je magacin već preuzeo; mobilna: „Izmeni porudžbinu“ u istoriji)
 - dodela porudžbine konkretnom magacioneru, izveštaji po statusima
 - stranica „Podešavanja“ za admina (sam menja logo i podešavanja fakture)
 - uloga **dostavljač** + status `completed` (potvrda isporuke) — samo ako se pokaže potreba
