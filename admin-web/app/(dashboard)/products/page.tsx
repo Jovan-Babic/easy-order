@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ImportModal } from "@/components/ImportModal";
 
 type Product = {
   id: string;
@@ -18,6 +19,7 @@ type Product = {
   additional_discounts?: number[];
   pieces_per_package?: number;
   boxes_per_transport?: number;
+  barcode?: string | null;
 };
 
 type Client = { id: string; name: string };
@@ -32,6 +34,7 @@ type ProductFormState = {
   additional_discounts: number[];
   pieces_per_package: string;
   boxes_per_transport: string;
+  barcode: string;
   client_id: string;
 };
 
@@ -47,6 +50,7 @@ const emptyForm = (): ProductFormState => ({
   additional_discounts: [0],
   pieces_per_package: "",
   boxes_per_transport: "",
+  barcode: "",
   client_id: "",
 });
 
@@ -84,6 +88,7 @@ export default function ProductsPage() {
   const [form, setForm] = useState<ProductFormState>(emptyForm());
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [pendingDelete, setPendingDelete] = useState<Product | null>(null);
+  const [showImport, setShowImport] = useState(false);
   // A newly picked image stays local until "Save"; nothing is uploaded before that.
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -157,6 +162,7 @@ export default function ProductsPage() {
         : [0],
       pieces_per_package: String(product.pieces_per_package ?? ""),
       boxes_per_transport: String(product.boxes_per_transport ?? ""),
+      barcode: product.barcode || "",
       client_id: product.client_id || "",
     });
     setFieldErrors({});
@@ -243,6 +249,7 @@ export default function ProductsPage() {
           .filter((v) => Number.isInteger(v) && v >= 0 && v <= 15),
         pieces_per_package: toInteger(form.pieces_per_package),
         boxes_per_transport: toInteger(form.boxes_per_transport),
+        barcode: form.barcode.trim(),
       };
       if (isSuperAdmin) payload.client_id = form.client_id;
       const endpoint = editingId ? `/api/products/${editingId}` : "/api/products";
@@ -293,13 +300,29 @@ export default function ProductsPage() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-extrabold text-onSurface">{t("products")}</h1>
-        <button
-          onClick={openCreateForm}
-          className="rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand"
-        >
-          {t("newProduct")}
-        </button>
+        <div className="flex gap-3">
+          <button
+            onClick={() => setShowImport(true)}
+            className="rounded-md border border-border px-4 py-2 text-sm font-semibold text-onSurface"
+          >
+            {t("importButton")}
+          </button>
+          <button
+            onClick={openCreateForm}
+            className="rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand"
+          >
+            {t("newProduct")}
+          </button>
+        </div>
       </div>
+      {showImport && (
+        <ImportModal
+          clients={clients}
+          isSuperAdmin={isSuperAdmin}
+          onClose={() => setShowImport(false)}
+          onImported={load}
+        />
+      )}
 
       {!showForm && error && <p className="mb-4 text-sm text-error">{error}</p>}
 
@@ -453,6 +476,12 @@ export default function ProductsPage() {
                   onChange={(value) => setField("pieces_per_package", numeric(value))}
                 />
                 <FormField
+                  label={t("barcode")}
+                  value={form.barcode}
+                  error={fieldErrors.barcode}
+                  onChange={(value) => setField("barcode", value.replace(/[^A-Za-z0-9-]/g, ""))}
+                />
+                <FormField
                   label={t("boxesPerTransport")}
                   value={form.boxes_per_transport}
                   inputMode="numeric"
@@ -514,6 +543,7 @@ export default function ProductsPage() {
                 <th className="px-4 py-3">{t("image")}</th>
                 <th className="px-4 py-3">{t("name")}</th>
                 <th className="px-4 py-3">{t("manufacturer")}</th>
+                <th className="px-4 py-3">{t("barcode")}</th>
                 <th className="px-4 py-3">{t("productPrice")}</th>
                 <th className="px-4 py-3">{t("defaultDiscount")}</th>
                 <th className="px-4 py-3">{t("additionalDiscountOptions")}</th>
@@ -536,6 +566,7 @@ export default function ProductsPage() {
                   </td>
                   <td className="px-4 py-3 font-semibold text-onSurface">{p.name}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.manufacturer || "-"}</td>
+                  <td className="px-4 py-3 text-onSurfaceSecondary">{p.barcode || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{(p.price_no_vat ?? 0).toFixed(2)}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.discount ?? 0}%</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{(p.additional_discounts && p.additional_discounts.length ? p.additional_discounts : [0]).map((d) => `${d}%`).join(", ")}</td>

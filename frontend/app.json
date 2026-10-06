@@ -56,7 +56,15 @@
           "backgroundColor": "#1A4D2E"
         }
       ],
-      "expo-mail-composer"
+      "expo-mail-composer",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Scan product barcodes for stock receipts and counts",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

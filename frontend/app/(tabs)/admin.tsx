@@ -24,6 +24,7 @@ import { useApp } from "@/src/context/AppContext";
 import { api, ApiError, Customer, Product } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
+import { BarcodeScanner } from "@/src/components/BarcodeScanner";
 
 type Tab = "products" | "customers";
 
@@ -144,6 +145,7 @@ export default function AdminScreen() {
   const [loading, setLoading] = useState(true);
 
   const [formOpen, setFormOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [form, setForm] = useState<any>({});
   const [countryCodeOpen, setCountryCodeOpen] = useState(false);
@@ -179,7 +181,7 @@ export default function AdminScreen() {
     setPendingImage(null);
     setEditing(null);
     setForm(tab === "products"
-      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "" }
+      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "", barcode: "" }
       : { name: "", address: "", email: "", phone: "", countryCode: "+381", phoneNumber: "", pib: "" });
     setCountryCodeOpen(false);
     setPermMsg(false);
@@ -207,6 +209,7 @@ export default function AdminScreen() {
               : [0],
             pieces_per_package: String(item.pieces_per_package ?? ""),
             boxes_per_transport: String(item.boxes_per_transport ?? ""),
+            barcode: item.barcode ?? "",
           }
         : {
             name: item.name,
@@ -296,6 +299,7 @@ export default function AdminScreen() {
             : [0]),
           pieces_per_package: Number(form.pieces_per_package) || 0,
           boxes_per_transport: Number(form.boxes_per_transport) || 0,
+          barcode: String(form.barcode ?? "").trim(),
         };
         if (editing) await api.updateProduct(editing.id, payload);
         else await api.createProduct(payload);
@@ -513,6 +517,22 @@ export default function AdminScreen() {
                     </View>
                   </View>
                   <FormField label={t("piecesPerPackage")} value={form.pieces_per_package} onChangeText={(v) => setForm((f: any) => ({ ...f, pieces_per_package: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-pieces" />
+                  <View style={{ flexDirection: "row", alignItems: "flex-end", gap: spacing.sm }}>
+                    <View style={{ flex: 1 }}>
+                      <FormField label={t("barcode")} value={form.barcode ?? ""} onChangeText={(v) => setForm((f: any) => ({ ...f, barcode: v.replace(/[^A-Za-z0-9-]/g, "") }))} testID="form-barcode" />
+                    </View>
+                    <Pressable testID="form-barcode-scan" onPress={() => setScanOpen(true)} style={{ padding: spacing.md }} hitSlop={8}>
+                      <Ionicons name="barcode-outline" size={28} color={colors.brand} />
+                    </Pressable>
+                  </View>
+                  <BarcodeScanner
+                    visible={scanOpen}
+                    onClose={() => setScanOpen(false)}
+                    onScanned={(code) => {
+                      setForm((f: any) => ({ ...f, barcode: code }));
+                      setScanOpen(false);
+                    }}
+                  />
                   <FormField label={t("transportPackage")} value={form.boxes_per_transport} onChangeText={(v) => setForm((f: any) => ({ ...f, boxes_per_transport: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-boxes" />
                 </>
               ) : (

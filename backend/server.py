@@ -140,6 +140,14 @@ async def lifespan(app: FastAPI):
         )
     except Exception as exc:
         logger.error("Could not create unique index on orders.invoice_number: %s", exc)
+    try:
+        await db.products.create_index(
+            [("client_id", 1), ("barcode", 1)],
+            unique=True,
+            partialFilterExpression={"barcode": {"$type": "string"}},
+        )
+    except Exception as exc:
+        logger.error("Could not create unique index on products.barcode: %s", exc)
     await _migrate_user_emails_to_lowercase()
     try:
         await db.users.create_index("email", unique=True)
@@ -347,6 +355,8 @@ class Product(BaseModel):
     additional_discounts: List[int] = Field(default_factory=lambda: [0])
     pieces_per_package: Optional[int] = 0
     boxes_per_transport: Optional[int] = 0
+    # Barcode of one piece (EAN etc.), unique per client. None = not set.
+    barcode: Optional[str] = None
     # Pieces in the warehouse. None = stock is not tracked for this product.
     # Only changed through /stock/* and order shipments, never via ProductInput.
     stock_qty: Optional[int] = None
@@ -372,6 +382,8 @@ class ProductInput(BaseModel):
     additional_discounts: Optional[List[int]] = None
     pieces_per_package: Optional[int] = 0
     boxes_per_transport: Optional[int] = 0
+    # None = keep the stored barcode, "" = clear it.
+    barcode: Optional[str] = None
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
 
 
@@ -941,6 +953,7 @@ def require_roles(*roles: Role):
 # Admin-level writes (catalog, customers, deleting orders, user management).
 # Operators only read the catalog and create orders; warehouse only reads.
 require_manager = require_roles(Role.SUPERADMIN, Role.ADMIN)
+require_stock_writer = require_roles(Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)
 # Roles that may place orders (warehouse processes them, never creates).
 require_order_creator = require_roles(Role.SUPERADMIN, Role.ADMIN, Role.OPERATOR)
 
@@ -1397,6 +1410,161 @@ async def update_customer(customer_id: str, inp: CustomerInput, current_user: Us
     return Customer(**updated)
 
 
+# ---------------- Customer import from Excel ----------------
+_CUSTOMER_IMPORT_HEADERS = {
+    "name": "name", "naziv": "name", "nazivkupca": "name", "kupac": "name", "ime": "name",
+    "address": "address", "adresa": "address",
+    "email": "email", "eposta": "email", "mail": "email",
+    "phone": "phone", "telefon": "phone", "tel": "phone", "mobilni": "phone", "brojtelefona": "phone",
+    "pib": "pib", "pibbroj": "pib", "taxid": "pib",
+}
+_CUSTOMER_EXAMPLE_ROWS = [
+    ("Maxi Market d.o.o.", "Bulevar oslobođenja 1, Novi Sad", "nabavka@maxi.example", "+381 21 555 111", "101234567"),
+    ("Delikates Prodavnica", "Knez Mihailova 10, Beograd", "info@delikates.example", "+381 11 222 333", "107654321"),
+    ("Mini Market Zora", "Kralja Petra 5, Niš", "zora@example.com", "018 444 555", "102345678"),
+    ("Pekara Klas", "Cara Dušana 22, Kragujevac", None, "034 111 222", "103456789"),
+    ("Restoran Lipa", "Savska 3, Beograd", "lipa@example.com", None, None),
+]
+
+
+def _cell_text(value: Any) -> str:
+    """Excel hands numbers back as floats; phone/PIB cells must stay whole."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value).strip()
+
+
+@api_router.get("/customers/import-template")
+async def customer_import_template(current_user: User = Depends(require_manager)):
+    from openpyxl import Workbook
+    from fastapi.responses import Response
+    import io
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Kupci"
+    ws.append(["Naziv", "Adresa", "Email", "Telefon", "PIB"])
+    for row in _CUSTOMER_EXAMPLE_ROWS:
+        ws.append(list(row))
+    for col in ("D", "E"):  # phone and PIB as text keep leading zeros / plus
+        for cell in ws[col][1:]:
+            cell.number_format = "@"
+    for col, width in zip("ABCDE", (28, 36, 28, 18, 14)):
+        ws.column_dimensions[col].width = width
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="uvoz-kupaca.xlsx"'},
+    )
+
+
+@api_router.post("/customers/import")
+async def import_customers(
+    file: UploadFile = File(...),
+    dry_run: bool = Query(True),
+    client_id: Optional[str] = Query(None),
+    current_user: User = Depends(require_manager),
+):
+    """Excel import of customers. Matched by PIB, else by exact name; empty
+    cells keep the stored value. dry_run (default) only reports."""
+    target_client = await resolve_write_client_id(current_user, client_id)
+    data = await file.read(IMPORT_MAX_BYTES + 1)
+    if len(data) > IMPORT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 4 MB)")
+    try:
+        from openpyxl import load_workbook
+        import io
+
+        ws = load_workbook(io.BytesIO(data), read_only=True, data_only=True).worksheets[0]
+        raw_rows = list(ws.iter_rows(values_only=True))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read the file - upload an .xlsx workbook")
+    if not raw_rows:
+        raise HTTPException(status_code=400, detail="The file is empty")
+    columns: Dict[int, str] = {}
+    for idx, head in enumerate(raw_rows[0]):
+        field = _CUSTOMER_IMPORT_HEADERS.get(_import_header_key(head))
+        if field and field not in columns.values():
+            columns[idx] = field
+    if "name" not in columns.values() and "pib" not in columns.values():
+        raise HTTPException(status_code=400, detail="Missing a 'Naziv' (name) or 'PIB' column")
+    body = [(i + 2, r) for i, r in enumerate(raw_rows[1:]) if any(c not in (None, "") for c in r)]
+    if len(body) > IMPORT_MAX_ROWS:
+        raise HTTPException(status_code=400, detail=f"Too many rows (max {IMPORT_MAX_ROWS})")
+
+    existing = await db.customers.find({"client_id": target_client}, {"_id": 0}).to_list(None)
+    by_pib = {c["pib"]: c for c in existing if c.get("pib")}
+    by_name = {c["name"].strip().lower(): c for c in existing if c.get("name")}
+    seen_pibs: Dict[str, int] = {}
+    seen_ids: Dict[str, int] = {}
+    rows_out = []
+    for row_no, row in body:
+        values = {field: _cell_text(row[idx] if idx < len(row) else None) for idx, field in columns.items()}
+        errors: List[str] = []
+        name = values.get("name", "")
+        pib = re.sub(r"\s+", "", values.get("pib", ""))
+        email = values.get("email", "").lower()
+        if pib and not re.fullmatch(r"\d{1,15}", pib):
+            errors.append("PIB: digits only")
+        if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            errors.append("Email: invalid address")
+
+        customer = by_pib.get(pib) if pib else None
+        if customer is None and name:
+            customer = by_name.get(name.lower())
+        if customer is not None and pib and customer.get("pib") not in (None, "", pib):
+            errors.append("Customer already has a different PIB")
+        if pib and pib in seen_pibs:
+            errors.append(f"PIB repeated (row {seen_pibs[pib]})")
+        if customer is not None and customer["id"] in seen_ids:
+            errors.append(f"Same customer repeated (row {seen_ids[customer['id']]})")
+        if customer is None and not name:
+            errors.append("Name is required for a new customer")
+        if pib:
+            seen_pibs.setdefault(pib, row_no)
+        if customer is not None:
+            seen_ids.setdefault(customer["id"], row_no)
+        entry: Dict[str, Any] = {
+            "row": row_no,
+            "name": name or (customer or {}).get("name", ""),
+            "pib": pib or None,
+            "action": "error" if errors else ("update" if customer else "create"),
+            "errors": errors,
+        }
+        if not errors:
+            vals = {"address": values.get("address", ""), "phone": values.get("phone", "")}
+            vals = {k: v for k, v in vals.items() if v}
+            if email:
+                vals["email"] = email
+            if pib:
+                vals["pib"] = pib
+            if name:
+                vals["name"] = name
+            entry["_customer"] = customer
+            entry["_values"] = vals
+        rows_out.append(entry)
+
+    if not dry_run:
+        for entry in rows_out:
+            if entry["action"] == "error":
+                continue
+            customer = entry["_customer"]
+            if customer is None:
+                obj = Customer(client_id=target_client, **entry["_values"])
+                await db.customers.insert_one({**obj.dict(), "_id": obj.id})
+            elif entry["_values"]:
+                await db.customers.update_one({"id": customer["id"]}, {"$set": entry["_values"]})
+    for entry in rows_out:
+        entry.pop("_customer", None)
+        entry.pop("_values", None)
+    summary = {k: sum(1 for r in rows_out if r["action"] == k) for k in ("create", "update", "error")}
+    return {"dry_run": dry_run, "summary": summary, "rows": rows_out}
+
+
 @api_router.delete("/customers/{customer_id}")
 async def delete_customer(customer_id: str, current_user: User = Depends(require_manager)):
     await get_scoped_or_404("customers", customer_id, current_user)
@@ -1438,6 +1606,7 @@ async def create_product(inp: ProductInput, current_user: User = Depends(require
     payload["discount"] = max(0.0, min(100.0, float(payload.get("discount") or 0)))
     payload["discounts"] = normalize_discounts(inp.discounts, payload["discount"])
     payload["additional_discounts"] = normalize_additional_discounts(inp.additional_discounts)
+    payload["barcode"] = await _checked_barcode(client_id, inp.barcode)
     obj = Product(**payload, client_id=client_id)
     await db.products.insert_one({**obj.dict(), "_id": obj.id})
     return obj
@@ -1463,6 +1632,10 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
         "discounts": normalize_discounts(discounts, discount_value),
         "additional_discounts": normalize_additional_discounts(additional),
     }
+    if inp.barcode is None:
+        updated["barcode"] = existing.get("barcode")
+    else:
+        updated["barcode"] = await _checked_barcode(existing["client_id"], inp.barcode, exclude_id=product_id)
     # $set instead of replace_one: a concurrent stock change ($inc) must not
     # be overwritten by this stale copy of the product.
     await db.products.update_one(
@@ -1479,6 +1652,275 @@ async def delete_product(product_id: str, current_user: User = Depends(require_m
     await db.products.delete_one({"id": product_id})
     await _delete_product_image(existing.get("image"))
     return {"ok": True}
+
+
+# ---------------- Barcodes ----------------
+def normalize_barcode(value: Any) -> Optional[str]:
+    """Trimmed barcode, None when empty. Raises ValueError for odd characters."""
+    if value is None:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)  # Excel stores numeric cells as floats
+    code = re.sub(r"\s+", "", str(value))
+    if not code:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9\-]{1,32}", code):
+        raise ValueError("Barcode may only contain letters, digits and '-' (max 32 characters)")
+    return code
+
+
+async def _checked_barcode(client_id: str, value: Optional[str], exclude_id: Optional[str] = None) -> Optional[str]:
+    try:
+        code = normalize_barcode(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if code:
+        clash = await db.products.find_one({"client_id": client_id, "barcode": code}, {"id": 1, "name": 1})
+        if clash and clash["id"] != exclude_id:
+            raise HTTPException(status_code=409, detail=f"Barcode already used by product: {clash.get('name', '')}")
+    return code
+
+
+class BarcodeInput(BaseModel):
+    barcode: str = Field(min_length=1, max_length=40)
+
+
+@api_router.get("/products/by-barcode/{code}", response_model=ProductOut)
+async def product_by_barcode(code: str, current_user: User = Depends(get_current_user)):
+    try:
+        normalized = normalize_barcode(code)
+    except ValueError:
+        normalized = None
+    scope = _scope_query(current_user)
+    doc = await db.products.find_one({**scope, "barcode": normalized}, {"_id": 0}) if normalized else None
+    if not doc:
+        raise HTTPException(status_code=404, detail="Product not found")
+    r = (await _reserved_by_product(scope)).get(doc["id"], 0)
+    stock = doc.get("stock_qty")
+    return ProductOut(**doc, reserved_qty=r, available_qty=None if stock is None else stock - r)
+
+
+@api_router.post("/products/{product_id}/barcode", response_model=Product)
+async def set_product_barcode(
+    product_id: str, inp: BarcodeInput, current_user: User = Depends(require_stock_writer)
+):
+    """Links a scanned code to a product (warehouse staff can't edit products)."""
+    existing = await get_scoped_or_404("products", product_id, current_user)
+    code = await _checked_barcode(existing["client_id"], inp.barcode, exclude_id=product_id)
+    await db.products.update_one({"id": product_id}, {"$set": {"barcode": code}})
+    return Product(**{**existing, "barcode": code})
+
+
+# ---------------- Product import from Excel ----------------
+IMPORT_MAX_BYTES = 4 * 1024 * 1024
+IMPORT_MAX_ROWS = 2000
+
+# Normalized header (lowercase, no diacritics/spaces/punctuation) -> field.
+_IMPORT_HEADERS = {
+    "name": "name", "naziv": "name", "nazivproizvoda": "name", "proizvod": "name", "artikal": "name",
+    "barcode": "barcode", "barkod": "barcode", "ean": "barcode",
+    "manufacturer": "manufacturer", "proizvodjac": "manufacturer",
+    "pricenovat": "price_no_vat", "cena": "price_no_vat", "cenabezpdv": "price_no_vat", "cenabezpdva": "price_no_vat",
+    "vatrate": "vat_rate", "pdv": "vat_rate", "stopapdv": "vat_rate", "stopapdva": "vat_rate",
+    "piecesperpackage": "pieces_per_package", "komadaupakovanju": "pieces_per_package",
+    "komadapopakovanju": "pieces_per_package", "pakovanje": "pieces_per_package",
+    "boxespertransport": "boxes_per_transport", "transportnopakovanje": "boxes_per_transport",
+    "transportno": "boxes_per_transport", "komadaunatransportnom": "boxes_per_transport",
+    "stockqty": "stock_qty", "stanje": "stock_qty", "kolicina": "stock_qty", "nastanju": "stock_qty",
+}
+_IMPORT_TEMPLATE_HEADERS = [
+    ("name", "Naziv"), ("barcode", "Barkod"), ("manufacturer", "Proizvođač"), ("price_no_vat", "Cena bez PDV"),
+    ("vat_rate", "PDV %"), ("pieces_per_package", "Komada u pakovanju"),
+    ("boxes_per_transport", "Transportno pakovanje (komada)"), ("stock_qty", "Stanje (komada)"),
+]
+
+
+# Downloadable example: includes a product without a barcode (matched by name)
+# and a text price with a comma, both of which the import accepts.
+_IMPORT_EXAMPLE_ROWS = [
+    ("Jaffa keks 150g", "8601000000018", "Jaffa", 46.5, 20, 12, 48, 240),
+    ("Plazma keks 300g", "8601000000025", "Bambi", 189.9, 20, 10, 40, 120),
+    ("Smoki 50g", None, "Bambi", 39, 20, 24, 96, 0),
+    ("Mleko 2.8% 1l", "8601000000049", "Imlek", "124,5", 10, 12, 72, 360),
+    ("Jogurt 2.8% 1l", "8601000000056", "Imlek", 118, 10, 12, 72, 300),
+    ("Ulje suncokretovo 1l", "8601000000063", "Dijamant", 259, 20, 12, 60, 180),
+    ("Brašno T-500 1kg", "8601000000070", "Mlin", "79,9", 10, 10, 100, 500),
+    ("Kafa Grand 200g", "8601000000087", "Strauss", 299, 20, 12, 48, None),
+]
+
+
+def _import_header_key(value: Any) -> str:
+    text = str(value or "").lower()
+    for src, dst in (("đ", "dj"), ("č", "c"), ("ć", "c"), ("š", "s"), ("ž", "z")):
+        text = text.replace(src, dst)
+    return re.sub(r"[^a-z0-9]", "", text)
+
+
+def _import_number(value: Any, label: str, integer: bool = False, maximum: Optional[float] = None):
+    """Empty cell -> None (field untouched). Raises ValueError on bad input."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str):
+        value = value.strip().replace(",", ".")
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label}: not a number")
+    if num < 0 or (maximum is not None and num > maximum):
+        raise ValueError(f"{label}: out of range")
+    if integer:
+        if not num.is_integer():
+            raise ValueError(f"{label}: must be a whole number")
+        return int(num)
+    return num
+
+
+@api_router.get("/products/import-template")
+async def product_import_template(current_user: User = Depends(require_manager)):
+    from openpyxl import Workbook
+    from fastapi.responses import Response
+    import io
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Artikli"
+    ws.append([label for _, label in _IMPORT_TEMPLATE_HEADERS])
+    # name, barcode, manufacturer, price, vat, pieces/pack, pieces/transport, stock
+    for row in _IMPORT_EXAMPLE_ROWS:
+        ws.append(list(row))
+    for cell in ws["B"][1:]:  # barcodes as text keep leading zeros
+        cell.number_format = "@"
+    for col, width in zip("ABCDEFGH", (32, 18, 22, 14, 8, 20, 30, 16)):
+        ws.column_dimensions[col].width = width
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="uvoz-artikala.xlsx"'},
+    )
+
+
+@api_router.post("/products/import")
+async def import_products(
+    file: UploadFile = File(...),
+    dry_run: bool = Query(True),
+    client_id: Optional[str] = Query(None),
+    current_user: User = Depends(require_manager),
+):
+    """Excel import. Rows are matched to existing products by barcode, else by
+    exact name; empty cells leave stored values alone. dry_run (default) only
+    reports what would happen; a bad row never blocks the good ones."""
+    target_client = await resolve_write_client_id(current_user, client_id)
+    data = await file.read(IMPORT_MAX_BYTES + 1)
+    if len(data) > IMPORT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 4 MB)")
+    try:
+        from openpyxl import load_workbook
+        import io
+
+        ws = load_workbook(io.BytesIO(data), read_only=True, data_only=True).worksheets[0]
+        raw_rows = list(ws.iter_rows(values_only=True))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read the file - upload an .xlsx workbook")
+    if not raw_rows:
+        raise HTTPException(status_code=400, detail="The file is empty")
+    columns = {}
+    for idx, head in enumerate(raw_rows[0]):
+        field = _IMPORT_HEADERS.get(_import_header_key(head))
+        if field and field not in columns.values():
+            columns[idx] = field
+    if "name" not in columns.values() and "barcode" not in columns.values():
+        raise HTTPException(status_code=400, detail="Missing a 'Naziv' (name) or 'Barkod' (barcode) column")
+    body = [(i + 2, r) for i, r in enumerate(raw_rows[1:]) if any(c not in (None, "") for c in r)]
+    if len(body) > IMPORT_MAX_ROWS:
+        raise HTTPException(status_code=400, detail=f"Too many rows (max {IMPORT_MAX_ROWS})")
+
+    existing = await db.products.find({"client_id": target_client}, {"_id": 0}).to_list(None)
+    by_barcode = {p["barcode"]: p for p in existing if p.get("barcode")}
+    by_name = {p["name"].strip().lower(): p for p in existing if p.get("name")}
+    seen_barcodes: Dict[str, int] = {}
+    seen_ids: Dict[str, int] = {}
+    rows_out = []
+    for row_no, row in body:
+        values = {field: (row[idx] if idx < len(row) else None) for idx, field in columns.items()}
+        errors: List[str] = []
+        parsed: Dict[str, Any] = {}
+        name = str(values.get("name") or "").strip()
+        try:
+            code = normalize_barcode(values.get("barcode"))
+        except ValueError as exc:
+            code = None
+            errors.append(str(exc))
+        for field, kwargs in (
+            ("price_no_vat", {}), ("vat_rate", {"maximum": 100}), ("pieces_per_package", {"integer": True}),
+            ("boxes_per_transport", {"integer": True}), ("stock_qty", {"integer": True, "maximum": 1_000_000}),
+        ):
+            if field in columns.values():
+                try:
+                    num = _import_number(values.get(field), field, **kwargs)
+                except ValueError as exc:
+                    errors.append(str(exc))
+                    continue
+                if num is not None:
+                    parsed[field] = num
+        manufacturer = str(values.get("manufacturer") or "").strip()
+        if manufacturer:
+            parsed["manufacturer"] = manufacturer
+
+        product = by_barcode.get(code) if code else None
+        if product is None and name:
+            product = by_name.get(name.lower())
+        if product is not None and code and product.get("barcode") not in (None, code):
+            errors.append("Product already has a different barcode")
+        if code and code in seen_barcodes:
+            errors.append(f"Barcode repeated (row {seen_barcodes[code]})")
+        if product is not None and product["id"] in seen_ids:
+            errors.append(f"Same product repeated (row {seen_ids[product['id']]})")
+        if product is None and not name:
+            errors.append("Name is required for a new product")
+        if product is not None and code and not product.get("barcode"):
+            clash = by_barcode.get(code)
+            if clash and clash["id"] != product["id"]:
+                errors.append("Barcode belongs to another product")
+        if code:
+            seen_barcodes.setdefault(code, row_no)
+        if product is not None:
+            seen_ids.setdefault(product["id"], row_no)
+        entry = {
+            "row": row_no,
+            "name": name or (product or {}).get("name", ""),
+            "barcode": code,
+            "action": "error" if errors else ("update" if product else "create"),
+            "errors": errors,
+        }
+        if not errors:
+            entry["_product"] = product
+            entry["_values"] = {**parsed, **({"name": name} if name else {}), **({"barcode": code} if code else {})}
+        rows_out.append(entry)
+
+    if not dry_run:
+        for entry in rows_out:
+            if entry["action"] == "error":
+                continue
+            vals = dict(entry["_values"])
+            stock = vals.pop("stock_qty", None)
+            product = entry["_product"]
+            if product is None:
+                obj = Product(client_id=target_client, **{k: v for k, v in vals.items()})
+                await db.products.insert_one({**obj.dict(), "_id": obj.id})
+                product = obj.dict()
+            elif vals:
+                await db.products.update_one({"id": product["id"]}, {"$set": vals})
+            if stock is not None:
+                fresh = await db.products.find_one({"id": product["id"]}, {"_id": 0})
+                if fresh.get("stock_qty") != stock:
+                    await _set_stock_count(fresh, stock, current_user, "Uvoz iz Excela")
+    for entry in rows_out:
+        entry.pop("_product", None)
+        entry.pop("_values", None)
+    summary = {k: sum(1 for r in rows_out if r["action"] == k) for k in ("create", "update", "error")}
+    return {"dry_run": dry_run, "summary": summary, "rows": rows_out}
 
 
 # ---------------- Orders ----------------
@@ -1916,7 +2358,6 @@ async def _compute_client_stats(client_id: str) -> ClientStats:
 
 
 # ---------------- Warehouse stock (PLAN_STANJE_MAGACINA.md) ----------------
-require_stock_writer = require_roles(Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)
 
 
 class StockMovement(BaseModel):
@@ -2001,13 +2442,45 @@ async def stock_receipt(inp: StockReceiptInput, current_user: User = Depends(req
     return {"ok": True, "count": len(products)}
 
 
+async def _set_stock_count(product: dict, counted: int, user: Optional[User], note: Optional[str]) -> int:
+    delta = counted - (product.get("stock_qty") or 0)
+    await db.products.update_one({"id": product["id"]}, {"$set": {"stock_qty": counted}})
+    await _record_movement(product, delta, "adjustment", user, note=note)
+    return delta
+
+
 @api_router.post("/stock/adjustments")
 async def stock_adjustment(inp: StockAdjustmentInput, current_user: User = Depends(require_stock_writer)):
     product = await get_scoped_or_404("products", inp.product_id, current_user)
-    delta = inp.counted_qty - (product.get("stock_qty") or 0)
-    await db.products.update_one({"id": product["id"]}, {"$set": {"stock_qty": inp.counted_qty}})
-    await _record_movement(product, delta, "adjustment", current_user, note=inp.note)
+    delta = await _set_stock_count(product, inp.counted_qty, current_user, inp.note)
     return {"ok": True, "delta": delta}
+
+
+class StockCountLine(BaseModel):
+    product_id: str
+    counted_qty: int = Field(ge=0, le=1_000_000)
+
+
+class StockBatchAdjustmentInput(BaseModel):
+    items: List[StockCountLine] = Field(min_length=1, max_length=500)
+    note: str = Field(min_length=1, max_length=300)
+
+
+@api_router.post("/stock/adjustments/batch")
+async def stock_adjustment_batch(inp: StockBatchAdjustmentInput, current_user: User = Depends(require_stock_writer)):
+    """A whole stocktake in one request; every product is checked first so a
+    bad id doesn't leave the count half applied."""
+    seen = set()
+    products = []
+    for line in inp.items:
+        if line.product_id in seen:
+            raise HTTPException(status_code=400, detail="Duplicate product in stocktake")
+        seen.add(line.product_id)
+        products.append(await get_scoped_or_404("products", line.product_id, current_user))
+    deltas = []
+    for product, line in zip(products, inp.items):
+        deltas.append(await _set_stock_count(product, line.counted_qty, current_user, inp.note))
+    return {"ok": True, "count": len(deltas), "deltas": deltas}
 
 
 @api_router.get("/stock/movements", response_model=List[StockMovement])
