@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -17,7 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
 import { api, ApiError, Product } from "@/src/api";
-import { BarcodeScanner } from "@/src/components/BarcodeScanner";
+import { BarcodeScanner, ScanFeedback } from "@/src/components/BarcodeScanner";
 import { Button } from "@/src/components/Button";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 
@@ -54,29 +54,40 @@ export function StockScanPanel({ mode }: Props) {
     }, [load])
   );
 
+  // Latest quantities, so several scans in a row add up before React re-renders.
+  const qtyRef = useRef<Record<string, string>>({});
+  qtyRef.current = qtys;
+
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
 
   // Scan or pick = one more piece on that line (a fresh line starts at 1).
   const addOne = (id: string) => {
-    setQtys((prev) => ({ ...prev, [id]: String((Number(prev[id]) || 0) + 1) }));
+    const next = (Number(qtyRef.current[id]) || 0) + 1;
+    qtyRef.current = { ...qtyRef.current, [id]: String(next) };
+    setQtys(qtyRef.current);
     setOrder((prev) => (prev.includes(id) ? prev : [id, ...prev]));
+    return next;
   };
 
-  const onScanned = async (code: string) => {
-    const local = products.find((p) => p.barcode === code);
-    if (local) return addOne(local.id);
-    try {
-      const found = await api.getProductByBarcode(code);
-      setProducts((prev) => (prev.some((p) => p.id === found.id) ? prev : [...prev, found]));
-      addOne(found.id);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 404) {
-        setScanning(false);
-        setUnknownCode(code);
-      } else {
+  const onScanned = async (code: string): Promise<ScanFeedback> => {
+    let product = products.find((p) => p.barcode === code);
+    if (!product) {
+      try {
+        product = await api.getProductByBarcode(code);
+        const found = product;
+        setProducts((prev) => (prev.some((p) => p.id === found.id) ? prev : [...prev, found]));
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) {
+          setScanning(false);
+          setUnknownCode(code);
+          return { ok: false, label: `${t("productNotFound")}: ${code}` };
+        }
         showToast(t("networkError"));
+        return { ok: false, label: t("networkError") };
       }
     }
+    const qty = addOne(product.id);
+    return { ok: true, label: `${product.name} · ${qty}` };
   };
 
   const link = async (product: Product) => {
@@ -240,7 +251,7 @@ export function StockScanPanel({ mode }: Props) {
         }
       />
 
-      <BarcodeScanner visible={scanning} onClose={() => setScanning(false)} onScanned={onScanned} />
+      <BarcodeScanner continuous visible={scanning} onClose={() => setScanning(false)} onScanned={onScanned} />
 
       <Modal visible={!!unknownCode} animationType="slide" onRequestClose={() => setUnknownCode(null)}>
         <View style={[styles.modal, { paddingTop: insets.top + spacing.lg }]}>
