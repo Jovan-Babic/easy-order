@@ -28,6 +28,7 @@ const LEAVE_GAP_MS = 800;
 // filters half-read and neighbouring codes.
 const CONFIRM_WINDOW_MS = 700;
 const FRAME_MARGIN = 12;
+const FLASH_MS = 700;
 
 export function BarcodeScanner({ visible, onClose, onScanned, continuous = false }: Props) {
   const { t } = useApp();
@@ -38,6 +39,9 @@ export function BarcodeScanner({ visible, onClose, onScanned, continuous = false
   const [total, setTotal] = useState(0);
   const [feedback, setFeedback] = useState<ScanFeedback | null>(null);
   const [area, setArea] = useState({ w: 0, h: 0 });
+  // Frame colour right after a scan: green = counted, orange = not recognised.
+  const [flash, setFlash] = useState<"ok" | "bad" | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const counted = useRef<Record<string, number>>({});
   const candidate = useRef<{ code: string; hits: number; at: number } | null>(null);
   const busy = useRef(false);
@@ -45,6 +49,7 @@ export function BarcodeScanner({ visible, onClose, onScanned, continuous = false
   useEffect(() => {
     if (visible) {
       setActive(true);
+      setFlash(null);
       setTotal(0);
       setFeedback(null);
       setManual("");
@@ -53,15 +58,28 @@ export function BarcodeScanner({ visible, onClose, onScanned, continuous = false
     }
   }, [visible]);
 
+  const showFlash = (kind: "ok" | "bad") => {
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    setFlash(kind);
+    flashTimer.current = setTimeout(() => setFlash(null), FLASH_MS);
+  };
+
+  useEffect(
+    () => () => {
+      if (flashTimer.current) clearTimeout(flashTimer.current);
+    },
+    []
+  );
+
   const accept = async (code: string) => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     const result = await onScanned(code);
-    if (result) {
-      setFeedback(result);
-      if (result.ok) setTotal((n) => n + 1);
-    } else {
-      setTotal((n) => n + 1);
-    }
+    const ok = result ? result.ok : true;
+    Haptics.notificationAsync(
+      ok ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning
+    ).catch(() => {});
+    showFlash(ok ? "ok" : "bad");
+    if (result) setFeedback(result);
+    if (ok) setTotal((n) => n + 1);
   };
 
   // Frame the user aims at: centered, 80% wide.
@@ -154,11 +172,26 @@ export function BarcodeScanner({ visible, onClose, onScanned, continuous = false
               onBarcodeScanned={active ? onRead : undefined}
             />
             <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-              <View style={[styles.frame, { left: frameLeft, top: frameTop, width: frame.w, height: frame.h }]}>
-                <View style={[styles.corner, styles.tl]} />
-                <View style={[styles.corner, styles.tr]} />
-                <View style={[styles.corner, styles.bl]} />
-                <View style={[styles.corner, styles.br]} />
+              <View
+                testID="scan-frame"
+                style={[
+                  styles.frame,
+                  { left: frameLeft, top: frameTop, width: frame.w, height: frame.h },
+                  flash === "ok" && styles.frameOk,
+                  flash === "bad" && styles.frameBad,
+                ]}
+              >
+                {(["tl", "tr", "bl", "br"] as const).map((pos) => (
+                  <View
+                    key={pos}
+                    style={[
+                      styles.corner,
+                      styles[pos],
+                      flash === "ok" && { borderColor: colors.success },
+                      flash === "bad" && { borderColor: colors.warning },
+                    ]}
+                  />
+                ))}
                 {!active && <Text style={styles.paused}>{t("scanPaused")}</Text>}
               </View>
               <Text style={[styles.hint, { top: frameTop + frame.h + spacing.md }]}>{t("scanFrameHint")}</Text>
@@ -238,7 +271,16 @@ const styles = StyleSheet.create({
   },
   title: { color: colors.onBrand, fontSize: font.xl, fontWeight: "700" },
   camera: { flex: 1 },
-  frame: { position: "absolute", alignItems: "center", justifyContent: "center" },
+  frame: {
+    position: "absolute",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.md,
+    borderWidth: 3,
+    borderColor: "transparent",
+  },
+  frameOk: { borderColor: colors.success, backgroundColor: "rgba(5,150,105,0.25)" },
+  frameBad: { borderColor: colors.warning, backgroundColor: "rgba(217,119,6,0.25)" },
   corner: { position: "absolute", width: CORNER, height: CORNER, borderColor: colors.onBrand },
   tl: { top: 0, left: 0, borderTopWidth: 4, borderLeftWidth: 4, borderTopLeftRadius: radius.md },
   tr: { top: 0, right: 0, borderTopWidth: 4, borderRightWidth: 4, borderTopRightRadius: radius.md },
