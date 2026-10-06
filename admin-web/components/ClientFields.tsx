@@ -67,6 +67,17 @@ export function ClientFields({
         </>
       )}
 
+      <label className="block text-sm font-semibold text-onSurface">
+        {t("expiryAlertDays")}
+        <input
+          placeholder="30, 15, 5"
+          value={form.expiry_alert_days}
+          onChange={(e) => set({ expiry_alert_days: e.target.value })}
+          className={`${input} mt-1 block w-full`}
+        />
+      </label>
+      <p className="-mt-2 text-xs text-muted">{t("expiryAlertDaysHint")}</p>
+
       <div className="flex items-center gap-3">
         {logoPreview ? (
           // eslint-disable-next-line @next/next/no-img-element

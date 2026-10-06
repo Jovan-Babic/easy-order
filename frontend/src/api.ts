@@ -60,7 +60,38 @@ export type Product = {
   stock_qty?: number | null;
   reserved_qty?: number;
   available_qty?: number | null;
+  // Expiry tracking (warehouse/admin only; sales reps never get these).
+  track_expiry?: boolean;
+  expired_qty?: number;
+  next_expiry?: string | null;
   created_at?: string;
+};
+
+export type StockBatch = {
+  id: string;
+  product_id: string;
+  expiry_date: string | null; // null = stock without an expiry date
+  qty: number;
+  days_left: number | null;
+  expired: boolean;
+};
+
+export type ExpiringItem = {
+  batch_id: string;
+  product_id: string;
+  product_name: string;
+  barcode?: string | null;
+  expiry_date: string;
+  qty: number;
+  days_left: number; // negative = already expired
+  level: string; // "expired" or the reached threshold in days
+};
+
+export type ExpiringResponse = {
+  thresholds: number[];
+  total: number;
+  counts: Record<string, number>;
+  items: ExpiringItem[];
 };
 
 export type OrderItem = {
@@ -268,9 +299,16 @@ export const api = {
     pieces_per_package?: number;
     boxes_per_transport?: number;
   }) => req<Product>("/products/quick", { method: "POST", body: JSON.stringify(p) }),
-  stockReceipt: (items: { product_id: string; qty: number }[], note?: string) =>
+  productBatches: (id: string) => req<StockBatch[]>(`/products/${id}/batches`),
+  stockExpiring: () => req<ExpiringResponse>("/stock/expiring"),
+  writeOffBatch: (batchId: string) =>
+    req<{ ok: boolean }>(`/stock/batches/${batchId}/writeoff`, { method: "POST", body: JSON.stringify({}) }),
+  stockReceipt: (items: { product_id: string; qty: number; expiry_date?: string }[], note?: string) =>
     req<{ ok: boolean; count: number }>("/stock/receipts", { method: "POST", body: JSON.stringify({ items, note }) }),
-  stockCount: (items: { product_id: string; counted_qty: number }[], note: string) =>
+  stockCount: (
+    items: { product_id: string; counted_qty?: number; batches?: { expiry_date: string | null; counted_qty: number }[] }[],
+    note: string
+  ) =>
     req<{ ok: boolean; count: number }>("/stock/adjustments/batch", {
       method: "POST",
       body: JSON.stringify({ items, note }),

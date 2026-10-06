@@ -23,6 +23,7 @@ export function ClientEditForm({ client }: { client: ClientInfo }) {
     invoice_prefix: client.invoice_prefix ?? "",
     invoice_numbering: client.invoice_numbering ?? "auto",
     invoice_next_seq: "", // only sent when the superadmin types one
+    expiry_alert_days: (client.expiry_alert_days ?? [30, 15, 5]).slice().sort((a, b) => b - a).join(", "),
   });
   const [pendingLogo, setPendingLogo] = useState<File | null>(null);
   const [preview, setPreview] = useState(client.logo ?? "");

@@ -16,15 +16,17 @@ import dayjs from "dayjs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
-import { api, ApiError, ClientInfo, Order, OrderStatus } from "@/src/api";
+import { api, ApiError, ClientInfo, ExpiringResponse, Order, OrderStatus, Product } from "@/src/api";
 import { Button } from "@/src/components/Button";
 import { StatusBadge } from "@/src/components/StatusBadge";
+import { ExpiringList } from "@/src/components/ExpiringList";
 import { StockScanPanel } from "@/src/components/StockScanPanel";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
+import { isoToDisplay } from "@/src/utils/expiry";
 
 const QUEUE: OrderStatus[] = ["new", "in_progress"];
 
-type Mode = "pack" | "receipt" | "count";
+type Mode = "pack" | "receipt" | "count" | "expiry";
 
 export default function WarehouseScreen() {
   const { t } = useApp();
@@ -40,17 +42,24 @@ export default function WarehouseScreen() {
   const [client, setClient] = useState<ClientInfo | null>(null);
   const [invoiceNo, setInvoiceNo] = useState("");
   const [mode, setMode] = useState<Mode>("pack");
+  const [expiring, setExpiring] = useState<ExpiringResponse | null>(null);
+  // Products with expiry tracking, to hint which expiry date to pack first.
+  const [expiryProducts, setExpiryProducts] = useState<Record<string, Product>>({});
 
   const load = useCallback(async (pull = false) => {
     try {
       if (pull) setRefreshing(true);
       else setLoading(true);
-      const [list, me] = await Promise.all([
+      const [list, me, alerts, products] = await Promise.all([
         api.listOrders({ status: QUEUE }),
         api.getMyClient().catch(() => null),
+        api.stockExpiring().catch(() => null),
+        api.listProducts().catch(() => [] as Product[]),
       ]);
       setOrders(list);
       setClient(me);
+      setExpiring(alerts);
+      setExpiryProducts(Object.fromEntries(products.filter((p) => p.track_expiry).map((p) => [p.id, p])));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -99,7 +108,7 @@ export default function WarehouseScreen() {
         <Text style={styles.headerTitle}>{t("warehouse")}</Text>
         <Text style={styles.headerSub}>{t("toPack")}</Text>
         <View style={styles.modeRow}>
-          {(["pack", "receipt", "count"] as Mode[]).map((m) => (
+          {(["pack", "receipt", "count", "expiry"] as Mode[]).map((m) => (
             <Pressable
               key={m}
               testID={`mode-${m}`}
@@ -107,14 +116,22 @@ export default function WarehouseScreen() {
               onPress={() => setMode(m)}
             >
               <Text style={[styles.modeText, mode === m && styles.modeTextActive]}>
-                {m === "pack" ? t("packing") : m === "receipt" ? t("stockReceiptTab") : t("stockCountTab")}
+                {m === "pack"
+                  ? t("packing")
+                  : m === "receipt"
+                    ? t("stockReceiptTab")
+                    : m === "count"
+                      ? t("stockCountTab")
+                      : `${t("expiryTab")}${expiring?.total ? ` (${expiring.total})` : ""}`}
               </Text>
             </Pressable>
           ))}
         </View>
       </View>
 
-      {mode !== "pack" ? (
+      {mode === "expiry" ? (
+        <ExpiringList data={expiring} refreshing={refreshing} onRefresh={() => load(true)} />
+      ) : mode !== "pack" ? (
         <StockScanPanel key={mode} mode={mode} />
       ) : loading ? (
         <View style={styles.center}>
@@ -182,6 +199,16 @@ export default function WarehouseScreen() {
                               {it.ordered_qty} {t("pieces")}
                             </Text>
                           </Pressable>
+                          {expiryProducts[it.product_id] && (
+                            <Text style={styles.expiryHint}>
+                              {expiryProducts[it.product_id].next_expiry
+                                ? `${t("pickEarliest")}: ${isoToDisplay(expiryProducts[it.product_id].next_expiry)}`
+                                : ""}
+                              {(expiryProducts[it.product_id].expired_qty ?? 0) > 0
+                                ? `  ·  ${t("expiredInStock")}: ${expiryProducts[it.product_id].expired_qty}`
+                                : ""}
+                            </Text>
+                          )}
                           {on && (
                             <View style={styles.stepper}>
                               <Pressable
@@ -363,6 +390,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     color: colors.onSurface,
   },
+  expiryHint: { fontSize: font.sm, color: colors.warning, fontWeight: "600" },
   lineName: { flex: 1, fontSize: font.base, color: colors.onSurface },
   lineQty: { fontSize: font.base, fontWeight: "700", color: colors.onSurface },
   lineDone: { color: colors.muted, textDecorationLine: "line-through" },

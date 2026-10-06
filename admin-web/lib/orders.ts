@@ -64,6 +64,7 @@ export type ClientInfo = {
   bank_account?: string;
   logo?: string;
   invoice_prefix?: string;
+  expiry_alert_days?: number[];
   invoice_numbering: "auto" | "manual";
   invoice_next_seq?: number | null;
 };

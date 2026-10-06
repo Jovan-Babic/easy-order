@@ -21,6 +21,7 @@ type Product = {
   boxes_per_transport?: number;
   barcode?: string | null;
   active?: boolean;
+  track_expiry?: boolean;
 };
 
 type Client = { id: string; name: string };
@@ -37,6 +38,7 @@ type ProductFormState = {
   boxes_per_transport: string;
   barcode: string;
   active: boolean;
+  track_expiry: boolean;
   client_id: string;
 };
 
@@ -54,6 +56,7 @@ const emptyForm = (): ProductFormState => ({
   boxes_per_transport: "",
   barcode: "",
   active: true,
+  track_expiry: false,
   client_id: "",
 });
 
@@ -167,6 +170,7 @@ export default function ProductsPage() {
       boxes_per_transport: String(product.boxes_per_transport ?? ""),
       barcode: product.barcode || "",
       active: product.active !== false,
+      track_expiry: product.track_expiry === true,
       client_id: product.client_id || "",
     });
     setFieldErrors({});
@@ -255,6 +259,7 @@ export default function ProductsPage() {
         boxes_per_transport: toInteger(form.boxes_per_transport),
         barcode: form.barcode.trim(),
         active: form.active,
+        track_expiry: form.track_expiry,
       };
       if (isSuperAdmin) payload.client_id = form.client_id;
       const endpoint = editingId ? `/api/products/${editingId}` : "/api/products";
@@ -504,6 +509,16 @@ export default function ProductsPage() {
                 {t("productActive")}
               </label>
               <p className="-mt-2 text-xs text-muted">{t("productActiveHelp")}</p>
+
+              <label className="flex items-center gap-2 text-sm font-semibold text-onSurface">
+                <input
+                  type="checkbox"
+                  checked={form.track_expiry}
+                  onChange={(e) => setField("track_expiry", e.target.checked)}
+                />
+                {t("productTrackExpiry")}
+              </label>
+              <p className="-mt-2 text-xs text-muted">{t("productTrackExpiryHelp")}</p>
 
               {isSuperAdmin && (
                 <div>
