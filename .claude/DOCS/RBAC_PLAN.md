@@ -193,17 +193,17 @@ Sekcija 12. Nezavisno od magacina. Implementirano: upload tek na „Sačuvaj“ 
 Backend tačke 1–5 i 9, portal pristup po ruti + izbor uloge u `/users`, mobilna tabovi po ulozi, testovi dozvola.
 *Rezultat:* admin može da napravi magacionera, magacin se uloguje i ne vidi ništa što ne treba; komercijalista vidi samo svoje porudžbine.
 
-### Faza 2 — Statusi i istorija
+### Faza 2 — Statusi i istorija — ✅ urađeno
 Backend tačke 6 i 8, `status_history`, indeksi, filteri liste; bedževi statusa na mobilnoj i portalu, otkazivanje za komercijalistu, testovi prelaza.
 
-### Faza 3 — Pakovanje na telefonu
+### Faza 3 — Pakovanje na telefonu — ✅ urađeno
 `picked_qty`, `PATCH /orders/{id}/items`, ekran „Magacin“ u mobilnoj aplikaciji, odluka iz sekcije 6 (delimična isporuka) i usklađen `calc.py`/`calc.ts`.
 
-### Faza 4 — Podešavanja fakture po klijentu
+### Faza 4 — Podešavanja fakture po klijentu — ✅ urađeno
 `Client` polja iz sekcije 5a (oznaka, način numeracije, sledeći broj, logo, podaci za fakturu), upload logoa u `easy-order/clients`, forma klijenta na `/clients` (superadmin), `GET /clients/me` (čitanje za fakturu), kolekcija `counters`, unique indeks na broj fakture, testovi (automatski niz bez duplikata, ručni duplikat → 409).
 Može paralelno sa fazama 2–3; mora pre faze 5.
 
-### Faza 5 — Portal modul Magacin
+### Faza 5 — Portal modul Magacin — ✅ urađeno
 `/warehouse` red za obradu, detalj + istorija, slanje (automatski broj ili unos ručnog), štampa fakture (logo + podaci klijenta ako postoje) i otpremnice.
 
 ### Faza 6 — Dorade

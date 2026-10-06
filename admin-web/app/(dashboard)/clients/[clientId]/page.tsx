@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { backendFetch } from "@/lib/backend";
 import { StatCard } from "@/components/StatCard";
+import { ClientEditForm } from "@/components/ClientEditForm";
 
 export default async function ClientDetailPage({
   params,
@@ -31,6 +32,8 @@ export default async function ClientDetailPage({
           <StatCard label="Revenue (incl. VAT)" value={stats.total_grand.toFixed(2)} />
         </div>
       )}
+
+      <ClientEditForm client={client} />
     </div>
   );
 }

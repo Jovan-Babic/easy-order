@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 import asyncio
 import hashlib
 import json
@@ -93,6 +95,7 @@ FORGOT_PASSWORD_MAX_PER_HOUR = int(os.environ.get("FORGOT_PASSWORD_MAX_PER_HOUR"
 IMAGE_MAX_BYTES = int(os.environ.get("IMAGE_MAX_BYTES", str(4 * 1024 * 1024)))
 IMAGE_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
 PRODUCT_IMAGE_FOLDER = "easy-order/products"
+CLIENT_LOGO_FOLDER = "easy-order/clients"
 
 mongo_client: AsyncIOMotorClient = None
 db = None  # AsyncIOMotorDatabase
@@ -127,6 +130,16 @@ async def lifespan(app: FastAPI):
     await db.customers.create_index("client_id")
     await db.products.create_index("client_id")
     await db.orders.create_index("client_id")
+    await db.orders.create_index([("client_id", 1), ("status", 1), ("created_at", -1)])
+    await db.orders.create_index([("client_id", 1), ("created_by_user_id", 1), ("created_at", -1)])
+    try:
+        await db.orders.create_index(
+            [("client_id", 1), ("invoice_number", 1)],
+            unique=True,
+            partialFilterExpression={"invoice_number": {"$type": "string"}},
+        )
+    except Exception as exc:
+        logger.error("Could not create unique index on orders.invoice_number: %s", exc)
     await _migrate_user_emails_to_lowercase()
     try:
         await db.users.create_index("email", unique=True)
@@ -167,6 +180,14 @@ class Client(BaseModel):
     email: Optional[str] = ""
     phone: Optional[str] = ""
     pib: Optional[str] = ""
+    # Invoice settings (RBAC_PLAN.md 5a). Edited by the superadmin only.
+    registration_number: Optional[str] = ""
+    bank_account: Optional[str] = ""
+    logo: Optional[str] = ""
+    invoice_prefix: Optional[str] = ""
+    invoice_numbering: str = "auto"  # "auto" | "manual"
+    # Read-only: the number the next shipped order will get (auto numbering).
+    invoice_next_seq: Optional[int] = None
     active: bool = True
     created_at: str = Field(default_factory=now_iso)
 
@@ -177,6 +198,13 @@ class ClientInput(BaseModel):
     email: Optional[str] = ""
     phone: Optional[str] = ""
     pib: Optional[str] = ""
+    registration_number: Optional[str] = ""
+    bank_account: Optional[str] = ""
+    logo: Optional[str] = ""
+    invoice_prefix: Optional[str] = ""
+    invoice_numbering: str = "auto"
+    # Only ever raises the counter (to continue a series from an old system).
+    invoice_next_seq: Optional[int] = Field(default=None, ge=1)
 
 
 class ClientCreateInput(ClientInput):
@@ -350,12 +378,26 @@ class OrderItem(BaseModel):
     discount: Optional[float] = 0
     additional_discount: Optional[float] = 0
     ordered_qty: int = 0
+    # Set by the warehouse while packing; None = not checked yet.
+    picked_qty: Optional[int] = None
 
 
 class OrderStatus(str, Enum):
-    # Only NEW for now; the warehouse workflow (RBAC_PLAN.md) will add
-    # in_progress/completed/rejected.
     NEW = "new"
+    IN_PROGRESS = "in_progress"
+    SHIPPED = "shipped"
+    REJECTED = "rejected"
+    CANCELED = "canceled"
+
+
+class StatusChange(BaseModel):
+    from_status: Optional[str] = None
+    to_status: str
+    changed_by_user_id: Optional[str] = None
+    changed_by_name: Optional[str] = None
+    changed_by_role: Optional[str] = None
+    changed_at: str = Field(default_factory=now_iso)
+    note: Optional[str] = None
 
 
 class Order(BaseModel):
@@ -367,6 +409,14 @@ class Order(BaseModel):
     item_count: Optional[int] = None
     client_name: Optional[str] = None
     status: OrderStatus = OrderStatus.NEW
+    status_history: List[StatusChange] = []
+    # Warehouse user who took the order (set on new -> in_progress).
+    assigned_to_user_id: Optional[str] = None
+    assigned_to_name: Optional[str] = None
+    shipped_at: Optional[str] = None
+    # Assigned once, when the order is first shipped; never changes or is freed.
+    invoice_seq: Optional[int] = None
+    invoice_number: Optional[str] = None
     # Who placed it. None on orders created before this field existed.
     created_by_user_id: Optional[str] = None
     created_by_name: Optional[str] = None
@@ -385,9 +435,12 @@ class OrderTotals(BaseModel):
 
 class OrderOut(Order):
     """Response shape: stored order + totals computed by calc.py, so clients
-    can display amounts without re-implementing the discount/VAT formula."""
+    can display amounts without re-implementing the discount/VAT formula.
+    `totals` follow picked_qty once shipped; `ordered_totals` always follow
+    the ordered quantities."""
     items: List[OrderItemOut] = []
     totals: OrderTotals
+    ordered_totals: OrderTotals
 
 
 class OrderItemInput(BaseModel):
@@ -740,7 +793,7 @@ def cloudinary_available() -> bool:
 
 
 _CLOUDINARY_PRODUCT_URL = re.compile(
-    rf"res\.cloudinary\.com/[^/]+/image/upload/(?:.+/)?(?:v\d+/)?({re.escape(PRODUCT_IMAGE_FOLDER)}/[^/.]+)\.\w+$"
+    rf"res\.cloudinary\.com/[^/]+/image/upload/(?:.+/)?(?:v\d+/)?((?:{re.escape(PRODUCT_IMAGE_FOLDER)}|{re.escape(CLIENT_LOGO_FOLDER)})/[^/.]+)\.\w+$"
 )
 
 
@@ -1014,8 +1067,11 @@ async def logout(current_user: User = Depends(get_authenticated_user)):
 @api_router.post("/upload-image")
 async def upload_product_image(
     file: UploadFile = File(...),
+    kind: str = Query("product", pattern="^(product|client_logo)$"),
     current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN)),
 ):
+    if kind == "client_logo" and current_user.role != Role.SUPERADMIN:
+        raise HTTPException(status_code=403, detail="Forbidden")
     if (file.content_type or "").lower() not in IMAGE_ALLOWED_TYPES:
         raise HTTPException(status_code=415, detail="Only JPEG, PNG, WEBP or HEIC images are allowed")
     data = await file.read(IMAGE_MAX_BYTES + 1)
@@ -1037,7 +1093,7 @@ async def upload_product_image(
         result = await asyncio.to_thread(
             cloudinary.uploader.upload,
             data,
-            folder=PRODUCT_IMAGE_FOLDER,
+            folder=CLIENT_LOGO_FOLDER if kind == "client_logo" else PRODUCT_IMAGE_FOLDER,
             resource_type="image",
             format="webp",
             transformation=[{"width": 1000, "height": 1000, "crop": "limit"}, {"quality": "auto:good"}],
@@ -1061,32 +1117,79 @@ async def delete_uploaded_image(
     Only our own folder is touched, and never an image a product still uses."""
     if not _product_image_public_id(url):
         raise HTTPException(status_code=400, detail="Not an image uploaded by this app")
-    if await db.products.find_one({"image": url}, {"_id": 1}):
-        raise HTTPException(status_code=409, detail="Image is in use by a product")
+    if await db.products.find_one({"image": url}, {"_id": 1}) or await db.clients.find_one({"logo": url}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Image is in use by a product or client")
     await _delete_product_image(url)
     return {"ok": True}
 
 
 # ---------------- Clients (tenant companies) ----------------
+_INVOICE_PREFIX_RE = re.compile(r"^[A-Z0-9]{1,10}$")
+
+
+def _invoice_counter_id(client_id: str) -> str:
+    return f"invoice:{client_id}"
+
+
+async def _client_out(doc: dict) -> Client:
+    counter = await db.counters.find_one({"_id": _invoice_counter_id(doc["id"])})
+    return Client(**{**doc, "invoice_next_seq": (counter or {}).get("seq", 0) + 1})
+
+
+def _validated_invoice_settings(inp: ClientInput) -> dict:
+    prefix = (inp.invoice_prefix or "").strip().upper()
+    if prefix and not _INVOICE_PREFIX_RE.match(prefix):
+        raise HTTPException(status_code=400, detail="Invoice prefix must be 1-10 letters/digits")
+    if inp.invoice_numbering not in ("auto", "manual"):
+        raise HTTPException(status_code=400, detail="invoice_numbering must be 'auto' or 'manual'")
+    return {"invoice_prefix": prefix}
+
+
+async def _raise_invoice_counter(client_id: str, next_seq: Optional[int]) -> None:
+    """Continue a series from an old system: the next number becomes
+    `next_seq`. Only ever raises the counter - lowering could reuse a number."""
+    if next_seq is None:
+        return
+    cid = _invoice_counter_id(client_id)
+    current = ((await db.counters.find_one({"_id": cid})) or {}).get("seq", 0)
+    if next_seq - 1 < current:
+        raise HTTPException(status_code=400, detail=f"Next invoice number must be at least {current + 1}")
+    await db.counters.update_one({"_id": cid}, {"$set": {"seq": next_seq - 1}}, upsert=True)
+
+
 @api_router.get("/clients", response_model=List[Client])
 async def list_clients(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
     docs = await db.clients.find({}, {"_id": 0}).sort("name", 1).to_list(None)
-    return [Client(**v) for v in docs]
+    return [await _client_out(v) for v in docs]
 
 
 @api_router.post("/clients", response_model=ClientCreateResponse)
 async def create_client(inp: ClientCreateInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
     if await find_user_by_email(inp.admin_email):
         raise HTTPException(status_code=400, detail="Email already in use")
+    settings = _validated_invoice_settings(inp)
 
-    client_obj = Client(**inp.dict(exclude={"admin_name", "admin_email"}))
-    await db.clients.insert_one({**client_obj.dict(), "_id": client_obj.id})
+    client_obj = Client(**{**inp.dict(exclude={"admin_name", "admin_email", "invoice_next_seq"}), **settings})
+    await db.clients.insert_one({**client_obj.dict(exclude={"invoice_next_seq"}), "_id": client_obj.id})
+    await _raise_invoice_counter(client_obj.id, inp.invoice_next_seq)
 
     admin_obj = User(
         email=normalize_email(inp.admin_email), name=inp.admin_name, role=Role.ADMIN, client_id=client_obj.id
     )
     invite = await _invite_user(admin_obj)
-    return ClientCreateResponse(client=client_obj, admin_user=admin_obj, **invite.dict())
+    return ClientCreateResponse(client=await _client_out(client_obj.dict()), admin_user=admin_obj, **invite.dict())
+
+
+@api_router.get("/clients/me", response_model=Client)
+async def get_my_client(current_user: User = Depends(get_current_user)):
+    """The caller's own tenant (invoice header data) - read-only for admin,
+    warehouse and operator."""
+    if not current_user.client_id:
+        raise HTTPException(status_code=404, detail="No client")
+    doc = await db.clients.find_one({"id": current_user.client_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return await _client_out(doc)
 
 
 @api_router.get("/clients/{client_id}", response_model=Client)
@@ -1094,7 +1197,7 @@ async def get_client(client_id: str, current_user: User = Depends(require_roles(
     doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Client not found")
-    return Client(**doc)
+    return await _client_out(doc)
 
 
 @api_router.put("/clients/{client_id}", response_model=Client)
@@ -1102,9 +1205,13 @@ async def update_client(client_id: str, inp: ClientInput, current_user: User = D
     existing = await db.clients.find_one({"id": client_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Client not found")
-    updated = {**existing, **inp.dict()}
+    settings = _validated_invoice_settings(inp)
+    await _raise_invoice_counter(client_id, inp.invoice_next_seq)
+    updated = {**existing, **inp.dict(exclude={"invoice_next_seq"}), **settings}
     await db.clients.replace_one({"id": client_id}, {**updated, "_id": client_id})
-    return Client(**updated)
+    if existing.get("logo") != updated.get("logo"):
+        await _delete_product_image(existing.get("logo"))
+    return await _client_out(updated)
 
 
 @api_router.delete("/clients/{client_id}")
@@ -1324,14 +1431,19 @@ def _allowed_additional_discount(product: dict, requested: Optional[float]) -> f
     return float(requested)
 
 
+def _rounded_totals(totals: dict) -> OrderTotals:
+    return OrderTotals(
+        subtotal=round(totals["subtotal"], 2), vat=round(totals["vat"], 2), grand=round(totals["grand"], 2)
+    )
+
+
 def _order_out(doc: dict) -> OrderOut:
-    items = [{**item, "line_net": round(line_net(item), 2)} for item in doc.get("items", [])]
-    totals = compute_order_totals(doc)
+    shipped = doc.get("status") == OrderStatus.SHIPPED.value
+    items = [{**item, "line_net": round(line_net(item, shipped), 2)} for item in doc.get("items", [])]
     return OrderOut(
         **{**doc, "items": items},
-        totals=OrderTotals(
-            subtotal=round(totals["subtotal"], 2), vat=round(totals["vat"], 2), grand=round(totals["grand"], 2)
-        ),
+        totals=_rounded_totals(compute_order_totals(doc)),
+        ordered_totals=_rounded_totals(compute_order_totals(doc, by_ordered=True)),
     )
 
 
@@ -1446,6 +1558,13 @@ async def create_order(inp: OrderInput, current_user: User = Depends(require_ord
         items=items,
         created_by_user_id=current_user.id,
         created_by_name=current_user.name,
+        status_history=[StatusChange(
+            from_status=None,
+            to_status=OrderStatus.NEW.value,
+            changed_by_user_id=current_user.id,
+            changed_by_name=current_user.name,
+            changed_by_role=current_user.role.value,
+        )],
     )
     doc = obj.dict()
     await db.orders.insert_one({**doc, "_id": obj.id})
@@ -1454,9 +1573,187 @@ async def create_order(inp: OrderInput, current_user: User = Depends(require_ord
 
 @api_router.delete("/orders/{order_id}")
 async def delete_order(order_id: str, current_user: User = Depends(require_manager)):
-    await get_scoped_or_404("orders", order_id, current_user)
+    order = await get_scoped_or_404("orders", order_id, current_user)
+    if _status_value(order) != OrderStatus.NEW.value:
+        raise HTTPException(status_code=409, detail="Only new orders can be deleted - cancel the order instead")
     await db.orders.delete_one({"id": order_id})
     return {"ok": True}
+
+
+# ---------------- Order status workflow (RBAC_PLAN.md section 4) ----------------
+class StatusChangeInput(BaseModel):
+    status: OrderStatus
+    note: Optional[str] = None
+    # Only for -> shipped on a client with manual invoice numbering.
+    invoice_number: Optional[str] = Field(default=None, max_length=40)
+
+
+class PickedItemInput(BaseModel):
+    product_id: str
+    picked_qty: Optional[int] = None  # None = un-check the line
+
+
+class PickedItemsInput(BaseModel):
+    items: List[PickedItemInput]
+
+
+def _status_value(order: dict) -> str:
+    s = order.get("status") or OrderStatus.NEW.value
+    return s.value if isinstance(s, Enum) else s
+
+
+# (from, to) -> roles allowed; admin/superadmin may override anything (with a note).
+_WAREHOUSE_FLOW = {
+    ("new", "in_progress"): {Role.WAREHOUSE},
+    ("in_progress", "new"): {Role.WAREHOUSE},
+    ("in_progress", "shipped"): {Role.WAREHOUSE},
+    ("new", "rejected"): {Role.WAREHOUSE},
+    ("in_progress", "rejected"): {Role.WAREHOUSE},
+    ("new", "canceled"): {Role.OPERATOR},
+}
+_MANAGER_ROLES = {Role.SUPERADMIN, Role.ADMIN}
+_NOTE_REQUIRED_TARGETS = {"rejected"}
+
+
+def _history_entry(user: User, from_status: Optional[str], to_status: str, note: Optional[str]) -> dict:
+    return StatusChange(
+        from_status=from_status,
+        to_status=to_status,
+        changed_by_user_id=user.id,
+        changed_by_name=user.name,
+        changed_by_role=user.role.value,
+        note=note,
+    ).dict()
+
+
+async def _get_order_for_processing(order_id: str, user: User) -> dict:
+    """Order lookup that applies the operator's own-orders rule like get_order."""
+    order = await get_scoped_or_404("orders", order_id, user)
+    if user.role == Role.OPERATOR and order.get("created_by_user_id") != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    return order
+
+
+async def _assign_invoice_number(order: dict, manual_number: Optional[str]) -> Dict[str, Any]:
+    """Invoice number for the first shipment (RBAC_PLAN.md section 5): from
+    the per-client counter ("auto") or typed by the warehouse ("manual")."""
+    client = await db.clients.find_one({"id": order["client_id"]}, {"_id": 0}) or {}
+    if client.get("invoice_numbering", "auto") == "manual":
+        number = (manual_number or "").strip()
+        if not number:
+            raise HTTPException(status_code=400, detail="Invoice number is required")
+        if await db.orders.find_one({"client_id": order["client_id"], "invoice_number": number}, {"_id": 1}):
+            raise HTTPException(status_code=409, detail="Invoice number is already used")
+        return {"invoice_number": number}
+    prefix = client.get("invoice_prefix") or ""
+    if not prefix:
+        raise HTTPException(status_code=400, detail="Set the invoice prefix for this client first")
+    counter = await db.counters.find_one_and_update(
+        {"_id": _invoice_counter_id(order["client_id"])},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return {"invoice_seq": counter["seq"], "invoice_number": f"{prefix}/{counter['seq']:04d}"}
+
+
+@api_router.post("/orders/{order_id}/status", response_model=OrderOut)
+async def change_order_status(
+    order_id: str, inp: StatusChangeInput, current_user: User = Depends(get_current_user)
+):
+    order = await _get_order_for_processing(order_id, current_user)
+    current = _status_value(order)
+    target = inp.status.value
+    note = (inp.note or "").strip() or None
+
+    override = current_user.role in _MANAGER_ROLES
+    if current == target:
+        raise HTTPException(status_code=400, detail="Order already has that status")
+    if override:
+        # Anything -> anything, but only with a reason, except the normal flow.
+        if (current, target) not in _WAREHOUSE_FLOW and not note:
+            raise HTTPException(status_code=400, detail="A note is required to override the status flow")
+    else:
+        allowed = _WAREHOUSE_FLOW.get((current, target))
+        if allowed is None:
+            raise HTTPException(status_code=400, detail=f"Transition {current} -> {target} is not allowed")
+        if current_user.role not in allowed:
+            raise HTTPException(status_code=403, detail="Forbidden")
+    if target in _NOTE_REQUIRED_TARGETS and not note:
+        raise HTTPException(status_code=400, detail="A note is required")
+
+    if target == OrderStatus.SHIPPED.value:
+        items = order.get("items", [])
+        if any(i.get("picked_qty") is None for i in items):
+            raise HTTPException(status_code=400, detail="Check every item (picked_qty) before shipping")
+        if not any((i.get("picked_qty") or 0) > 0 for i in items):
+            raise HTTPException(status_code=400, detail="Nothing was picked - reject the order instead")
+
+    update: Dict[str, Any] = {"status": target}
+    if target == OrderStatus.SHIPPED.value and not order.get("invoice_number"):
+        # An order keeps the number from its first shipment, even if an admin
+        # later moves it back and ships it again.
+        update.update(await _assign_invoice_number(order, inp.invoice_number))
+    if target == OrderStatus.IN_PROGRESS.value:
+        update["assigned_to_user_id"] = current_user.id
+        update["assigned_to_name"] = current_user.name
+    elif target == OrderStatus.NEW.value:
+        update["assigned_to_user_id"] = None
+        update["assigned_to_name"] = None
+    if target == OrderStatus.SHIPPED.value:
+        update["shipped_at"] = now_iso()
+
+    # Conditional update: if someone else changed the status meanwhile, 409.
+    try:
+        result = await db.orders.update_one(
+            {"id": order_id, "status": current},
+            {"$set": update, "$push": {"status_history": _history_entry(current_user, current, target, note)}},
+        )
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Invoice number is already used")
+    if result.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Order was changed in the meantime")
+    return _order_out(await db.orders.find_one({"id": order_id}, {"_id": 0}))
+
+
+@api_router.patch("/orders/{order_id}/items", response_model=OrderOut)
+async def update_picked_items(
+    order_id: str,
+    inp: PickedItemsInput,
+    current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)),
+):
+    order = await get_scoped_or_404("orders", order_id, current_user)
+    current = _status_value(order)
+    if current not in (OrderStatus.NEW.value, OrderStatus.IN_PROGRESS.value):
+        raise HTTPException(status_code=409, detail="Only new or in-progress orders can be packed")
+
+    items = order.get("items", [])
+    by_id = {i["product_id"]: i for i in items}
+    for line in inp.items:
+        item = by_id.get(line.product_id)
+        if item is None:
+            raise HTTPException(status_code=400, detail=f"Product not in order: {line.product_id}")
+        if line.picked_qty is not None and (line.picked_qty < 0 or line.picked_qty > item.get("ordered_qty", 0)):
+            raise HTTPException(
+                status_code=400, detail=f"picked_qty for {item['name']} must be between 0 and {item.get('ordered_qty', 0)}"
+            )
+        item["picked_qty"] = line.picked_qty
+
+    update: Dict[str, Any] = {"items": items}
+    push = None
+    if current == OrderStatus.NEW.value:
+        update.update(
+            status=OrderStatus.IN_PROGRESS.value,
+            assigned_to_user_id=current_user.id,
+            assigned_to_name=current_user.name,
+        )
+        push = {"status_history": _history_entry(current_user, current, OrderStatus.IN_PROGRESS.value, None)}
+    result = await db.orders.update_one(
+        {"id": order_id, "status": current}, {"$set": update, **({"$push": push} if push else {})}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Order was changed in the meantime")
+    return _order_out(await db.orders.find_one({"id": order_id}, {"_id": 0}))
 
 
 @api_router.get("/")

@@ -68,7 +68,26 @@ export type OrderItem = {
   discount?: number;
   additional_discount?: number;
   ordered_qty: number;
+  picked_qty?: number | null; // set by the warehouse while packing
   line_net?: number; // server-computed, only on responses
+};
+
+export type ClientInfo = {
+  id: string;
+  name: string;
+  invoice_numbering: "auto" | "manual";
+  invoice_prefix?: string;
+};
+
+export type OrderStatus = "new" | "in_progress" | "shipped" | "rejected" | "canceled";
+
+export type StatusChange = {
+  from_status?: string | null;
+  to_status: string;
+  changed_by_name?: string | null;
+  changed_by_role?: string | null;
+  changed_at: string;
+  note?: string | null;
 };
 
 export type Order = {
@@ -77,11 +96,17 @@ export type Order = {
   customer_id: string;
   customer_name: string;
   items: OrderItem[];
-  status?: string;
+  status?: OrderStatus;
+  status_history?: StatusChange[];
+  assigned_to_name?: string | null;
+  shipped_at?: string | null;
+  invoice_number?: string | null;
   created_by_user_id?: string | null;
   created_by_name?: string | null;
   // Server-computed (backend/calc.py), only on responses.
   totals?: { subtotal: number; vat: number; grand: number };
+  // Totals by ordered quantity (differs from `totals` once shipped partially).
+  ordered_totals?: { subtotal: number; vat: number; grand: number };
   created_at: string;
 };
 
@@ -211,8 +236,21 @@ export const api = {
     req<{ ok: boolean }>(`/upload-image?url=${encodeURIComponent(url)}`, { method: 'DELETE' }),
 
   // orders
-  listOrders: (customerId?: string) =>
-    req<Order[]>(`/orders${customerId ? `?customer_id=${customerId}` : ""}`),
+  listOrders: (opts?: { customerId?: string; status?: OrderStatus[] }) => {
+    const qs = new URLSearchParams();
+    if (opts?.customerId) qs.set("customer_id", opts.customerId);
+    (opts?.status ?? []).forEach((s) => qs.append("status", s));
+    const q = qs.toString();
+    return req<Order[]>(`/orders${q ? `?${q}` : ""}`);
+  },
+  changeOrderStatus: (id: string, status: OrderStatus, note?: string, invoiceNumber?: string) =>
+    req<Order>(`/orders/${id}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status, note, invoice_number: invoiceNumber }),
+    }),
+  getMyClient: () => req<ClientInfo>("/clients/me"),
+  setPickedQty: (id: string, items: { product_id: string; picked_qty: number | null }[]) =>
+    req<Order>(`/orders/${id}/items`, { method: "PATCH", body: JSON.stringify({ items }) }),
   getOrder: (id: string) => req<Order>(`/orders/${id}`),
   createOrder: (o: { customer_id: string; items: OrderLineInput[] }) =>
     req<Order>("/orders", { method: "POST", body: JSON.stringify(o) }),

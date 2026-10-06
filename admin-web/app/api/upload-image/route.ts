@@ -3,7 +3,8 @@ import { backendFetch, proxyJson } from "@/lib/backend";
 
 export async function POST(req: NextRequest) {
   const formData = await req.formData();
-  return proxyJson(await backendFetch("/upload-image", {
+  const kind = req.nextUrl.searchParams.get("kind") === "client_logo" ? "client_logo" : "product";
+  return proxyJson(await backendFetch(`/upload-image?kind=${kind}`, {
     method: "POST",
     body: formData,
   }));
