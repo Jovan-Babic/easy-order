@@ -336,6 +336,11 @@ export default function OrderCatalog() {
               const supplierDiscount = p.discount ?? 0;
               const selectedAdditionalDiscount = additionalDiscountSel[p.id] ?? 0;
               const totalDiscount = effectiveDiscount(supplierDiscount, selectedAdditionalDiscount);
+              const tracked = p.stock_qty != null;
+              // While editing, this order's own quantity is inside "reserved".
+              const ownQty = editingOrder?.items.find((i) => i.product_id === p.id)?.ordered_qty ?? 0;
+              const available = tracked ? (p.available_qty ?? 0) + ownQty : 0;
+              const overStock = tracked && Number(drafts[p.id]) > available;
               return (
                 <View style={styles.card} testID={`product-card-${p.id}`}>
                   <View style={styles.cardTop}>
@@ -363,6 +368,11 @@ export default function OrderCatalog() {
                         <Meta label={t("piecesPerPackage")} value={String(p.pieces_per_package ?? 0)} />
                         <Meta label={t("transportPackage")} value={String(p.boxes_per_transport ?? 0)} />
                       </View>
+                      {tracked && (
+                        <Text style={[styles.stockLine, available <= 0 && { color: colors.warning }]} testID={`stock-${p.id}`}>
+                          {t("stockOnHand")}: {p.stock_qty} · {t("stockAvailable")}: {available}
+                        </Text>
+                      )}
                     </View>
                   </View>
 
@@ -399,6 +409,7 @@ export default function OrderCatalog() {
                     />
                   </View>
 
+                  {overStock && <Text style={styles.footerWarn}>{t("stockOverWarning")}</Text>}
                   <View style={styles.totalDiscountRow}>
                     <Text style={styles.totalDiscountLabel}>{t("totalDiscount")}</Text>
                     <Text style={styles.totalDiscountValue} testID={`effective-discount-${p.id}`}>
@@ -946,6 +957,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   footerHint: { textAlign: "center", color: colors.brand, fontWeight: "700", marginBottom: spacing.xs },
+  stockLine: { fontSize: font.sm, color: colors.muted, marginTop: spacing.xs },
   footerWarn: { textAlign: "center", color: colors.warning, fontSize: font.sm, marginTop: spacing.sm },
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
   sheet: {

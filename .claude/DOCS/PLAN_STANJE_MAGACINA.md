@@ -32,9 +32,9 @@ Cilj: magacin unosi robu (prijem) i vodi stanje po proizvodu, svako slanje porud
 2. **S2:** skidanje pri slanju i vraćanje pri poništavanju + testovi.
 3. **S3:** prikaz stanja i upozorenje u katalogu na mobilnoj; kolona stanja u portalu.
 
-## Otvorena pitanja (potrebna odluka)
+## Odluke (✅ sve faze S1–S3 urađene)
 
-1. **Jedinica:** komadi ili pakovanja? Preporuka: komadi (kao `ordered_qty` i `picked_qty`).
-2. **Kad se skida:** pri slanju (preporuka, jedan trenutak, lako poništavanje) ili čim magacioner čekira stavku?
-3. **Minus:** ako stanje ne pokriva spakovano, dozvoliti slanje sa upozorenjem (preporuka, jer stanje u praksi kasni za stvarnošću) ili blokirati?
-4. **Vidljivost komercijalisti:** tačan broj ili samo „ima / nema / malo“?
+1. **Jedinica:** komadi. U portalu prijem može i u transportnim pakovanjima; pretpostavka je da `boxes_per_transport` = komada u transportnom pakovanju (portal prikazuje množilac „1 transportno pakovanje = N komada“).
+2. **Skidanje:** pri slanju (`shipped`), po `picked_qty`; poništavanje slanja vraća (`reversal`).
+3. **Minus:** dozvoljeno, samo upozorenje.
+4. **Vidljivost:** komercijalista vidi tačne brojeve (na stanju / slobodno) u katalogu; pri izmeni porudžbine slobodno uključuje količinu te porudžbine.

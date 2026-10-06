@@ -24,7 +24,7 @@ export type Role = "superadmin" | "admin" | "operator" | "warehouse";
 // Warehouse staff get a slice of the portal: orders (+ the warehouse module
 // from phase 5) and the app download page. Everything else is admin-only.
 // This is a UX gate - FastAPI enforces the same per role.
-const WAREHOUSE_PATHS = ["/orders", "/warehouse", "/app", "/change-password", "/api/orders", "/api/customers", "/api/products", "/api/my-client"];
+const WAREHOUSE_PATHS = ["/orders", "/warehouse", "/app", "/change-password", "/api/orders", "/api/customers", "/api/products", "/api/my-client", "/stock", "/api/stock"];
 
 export function homePath(role: Role): string {
   return role === "warehouse" ? "/warehouse" : "/dashboard";

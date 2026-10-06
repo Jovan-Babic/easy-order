@@ -53,6 +53,10 @@ export type Product = {
   additional_discounts?: number[];
   pieces_per_package?: number;
   boxes_per_transport?: number;
+  // Stock: null/undefined stock_qty = not tracked.
+  stock_qty?: number | null;
+  reserved_qty?: number;
+  available_qty?: number | null;
   created_at?: string;
 };
 
