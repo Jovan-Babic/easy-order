@@ -1,7 +1,7 @@
 import dayjs from "dayjs";
 import { Order } from "@/src/api";
 import { translations, Lang } from "@/src/i18n";
-import { computeTotals, effectiveDiscountPct, lineNet, money } from "@/src/calc";
+import { computeTotals, effectiveDiscountPct, effectiveQty, invoiceLines, isShipped, lineNet, money } from "@/src/calc";
 
 export type InvoiceContact = {
   pib?: string;
@@ -23,16 +23,17 @@ export function buildInvoiceText(order: Order, lang: Lang, contact?: InvoiceCont
   lines.push(`${t.date}: ${dayjs(order.created_at).format("DD.MM.YYYY HH:mm")}`);
   lines.push("");
 
-  order.items.forEach((it, idx) => {
+  const shipped = isShipped(order);
+  invoiceLines(order).forEach((it, idx) => {
     lines.push(`${idx + 1}. ${it.name}`);
     if (it.manufacturer) lines.push(`   ${t.manufacturer}: ${it.manufacturer}`);
     lines.push(`   ${t.priceNoVat}: ${money(it.price_no_vat ?? 0)}`);
-    lines.push(`   ${t.orderedPieces}: ${it.ordered_qty}`);
+    lines.push(`   ${t.orderedPieces}: ${effectiveQty(it, shipped)}`);
     lines.push(`   ${t.supplierDiscount}: ${it.discount ?? 0}%`);
     lines.push(`   ${t.additionalDiscount}: ${it.additional_discount ?? 0}%`);
     lines.push(`   ${t.totalDiscount}: ${money(effectiveDiscountPct(it))}%`);
     lines.push(`   ${t.vatRate}: ${it.vat_rate ?? 0}%`);
-    lines.push(`   ${t.lineTotal}: ${money(lineNet(it))}`);
+    lines.push(`   ${t.lineTotal}: ${money(lineNet(it, shipped))}`);
     lines.push("");
   });
 
@@ -47,7 +48,8 @@ export function buildInvoiceText(order: Order, lang: Lang, contact?: InvoiceCont
 export function buildInvoiceHtml(order: Order, lang: Lang, contact?: InvoiceContact): string {
   const t = translations[lang];
   const totals = computeTotals(order);
-  const rows = order.items
+  const shipped = isShipped(order);
+  const rows = invoiceLines(order)
     .map(
       (it, i) => `
       <tr>
@@ -57,10 +59,10 @@ export function buildInvoiceHtml(order: Order, lang: Lang, contact?: InvoiceCont
           ${it.manufacturer ? `<br/><span class="muted">${escapeHtml(it.manufacturer)}</span>` : ""}
         </td>
         <td class="num">${money(it.price_no_vat ?? 0)}</td>
-        <td class="num">${it.ordered_qty}</td>
+        <td class="num">${effectiveQty(it, shipped)}</td>
         <td class="num">${it.discount ?? 0}% + ${it.additional_discount ?? 0}%</td>
         <td class="num">${it.vat_rate ?? 0}%</td>
-        <td class="num">${money(lineNet(it))}</td>
+        <td class="num">${money(lineNet(it, shipped))}</td>
       </tr>`
     )
     .join("");

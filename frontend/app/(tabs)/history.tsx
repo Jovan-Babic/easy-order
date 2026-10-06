@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
   StyleSheet,
@@ -13,11 +14,15 @@ import dayjs from "dayjs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
-import { api, Order } from "@/src/api";
+import { useAuth } from "@/src/context/AuthContext";
+import { money } from "@/src/calc";
+import { api, ApiError, Order } from "@/src/api";
+import { StatusBadge } from "@/src/components/StatusBadge";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 
 export default function HistoryScreen() {
   const { t } = useApp();
+  const { user } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const safeBottom = Math.max(insets.bottom, 12);
@@ -33,6 +38,25 @@ export default function HistoryScreen() {
       setLoading(false);
     }
   }, []);
+
+  const cancelOrder = (order: Order) => {
+    Alert.alert(t("cancelOrder"), t("cancelOrderConfirm"), [
+      { text: t("cancel"), style: "cancel" },
+      {
+        text: t("confirm"),
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const updated = await api.changeOrderStatus(order.id, "canceled");
+            setOrders((prev) => prev.map((o) => (o.id === order.id ? updated : o)));
+          } catch (e) {
+            Alert.alert(t("somethingWentWrong"), e instanceof ApiError ? e.detail : String(e));
+            load();
+          }
+        },
+      },
+    ]);
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -61,22 +85,43 @@ export default function HistoryScreen() {
           keyExtractor={(o) => o.id}
           contentContainerStyle={{ padding: spacing.lg, paddingBottom: safeBottom + 20 }}
           renderItem={({ item }) => (
-            <Pressable
-              testID={`order-${item.id}`}
-              style={styles.card}
-              onPress={() => router.push({ pathname: "/invoice", params: { id: item.id } })}
-            >
-              <View style={styles.cardIcon}>
-                <Ionicons name="document-text" size={22} color={colors.brand} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.custName}>{item.customer_name}</Text>
-                <Text style={styles.sub}>
-                  {dayjs(item.created_at).format("DD.MM.YYYY HH:mm")} · {item.items.length} {t("items")}
+            <View style={styles.card}>
+              <Pressable
+                testID={`order-${item.id}`}
+                style={styles.cardRow}
+                onPress={() => router.push({ pathname: "/invoice", params: { id: item.id } })}
+              >
+                <View style={styles.cardIcon}>
+                  <Ionicons name="document-text" size={22} color={colors.brand} />
+                </View>
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text style={styles.custName}>{item.customer_name}</Text>
+                  <Text style={styles.sub}>
+                    {dayjs(item.created_at).format("DD.MM.YYYY HH:mm")} · {item.items.length} {t("items")}
+                  </Text>
+                  <StatusBadge status={item.status} />
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.muted} />
+              </Pressable>
+              {item.status === "shipped" &&
+                item.ordered_totals &&
+                item.totals &&
+                item.ordered_totals.grand !== item.totals.grand && (
+                  <Text style={styles.sub}>
+                    {t("orderedLabel")} {money(item.ordered_totals.grand)} / {t("sentLabel")} {money(item.totals.grand)}
+                  </Text>
+                )}
+              {item.status === "rejected" && !!item.status_history?.length && (
+                <Text style={styles.reason}>
+                  {t("rejectReason")}: {item.status_history[item.status_history.length - 1].note}
                 </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={colors.muted} />
-            </Pressable>
+              )}
+              {item.status === "new" && user?.role === "operator" && (
+                <Pressable testID={`cancel-${item.id}`} onPress={() => cancelOrder(item)} style={styles.cancelBtn}>
+                  <Text style={styles.cancelText}>{t("cancelOrder")}</Text>
+                </Pressable>
+              )}
+            </View>
           )}
         />
       )}
@@ -97,15 +142,17 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   mutedText: { color: colors.muted, marginTop: spacing.md },
   card: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
+    gap: spacing.sm,
     backgroundColor: colors.surfaceSecondary,
     borderRadius: radius.lg,
     padding: spacing.md,
     marginBottom: spacing.md,
     ...shadow.card,
   },
+  cardRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  reason: { fontSize: font.sm, color: colors.error },
+  cancelBtn: { alignSelf: "flex-start", paddingVertical: spacing.xs },
+  cancelText: { fontSize: font.sm, fontWeight: "700", color: colors.error },
   cardIcon: {
     width: 44,
     height: 44,

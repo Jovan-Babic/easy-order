@@ -127,6 +127,8 @@ async def lifespan(app: FastAPI):
     await db.customers.create_index("client_id")
     await db.products.create_index("client_id")
     await db.orders.create_index("client_id")
+    await db.orders.create_index([("client_id", 1), ("status", 1), ("created_at", -1)])
+    await db.orders.create_index([("client_id", 1), ("created_by_user_id", 1), ("created_at", -1)])
     await _migrate_user_emails_to_lowercase()
     try:
         await db.users.create_index("email", unique=True)
@@ -350,12 +352,26 @@ class OrderItem(BaseModel):
     discount: Optional[float] = 0
     additional_discount: Optional[float] = 0
     ordered_qty: int = 0
+    # Set by the warehouse while packing; None = not checked yet.
+    picked_qty: Optional[int] = None
 
 
 class OrderStatus(str, Enum):
-    # Only NEW for now; the warehouse workflow (RBAC_PLAN.md) will add
-    # in_progress/completed/rejected.
     NEW = "new"
+    IN_PROGRESS = "in_progress"
+    SHIPPED = "shipped"
+    REJECTED = "rejected"
+    CANCELED = "canceled"
+
+
+class StatusChange(BaseModel):
+    from_status: Optional[str] = None
+    to_status: str
+    changed_by_user_id: Optional[str] = None
+    changed_by_name: Optional[str] = None
+    changed_by_role: Optional[str] = None
+    changed_at: str = Field(default_factory=now_iso)
+    note: Optional[str] = None
 
 
 class Order(BaseModel):
@@ -367,6 +383,11 @@ class Order(BaseModel):
     item_count: Optional[int] = None
     client_name: Optional[str] = None
     status: OrderStatus = OrderStatus.NEW
+    status_history: List[StatusChange] = []
+    # Warehouse user who took the order (set on new -> in_progress).
+    assigned_to_user_id: Optional[str] = None
+    assigned_to_name: Optional[str] = None
+    shipped_at: Optional[str] = None
     # Who placed it. None on orders created before this field existed.
     created_by_user_id: Optional[str] = None
     created_by_name: Optional[str] = None
@@ -385,9 +406,12 @@ class OrderTotals(BaseModel):
 
 class OrderOut(Order):
     """Response shape: stored order + totals computed by calc.py, so clients
-    can display amounts without re-implementing the discount/VAT formula."""
+    can display amounts without re-implementing the discount/VAT formula.
+    `totals` follow picked_qty once shipped; `ordered_totals` always follow
+    the ordered quantities."""
     items: List[OrderItemOut] = []
     totals: OrderTotals
+    ordered_totals: OrderTotals
 
 
 class OrderItemInput(BaseModel):
@@ -1324,14 +1348,19 @@ def _allowed_additional_discount(product: dict, requested: Optional[float]) -> f
     return float(requested)
 
 
+def _rounded_totals(totals: dict) -> OrderTotals:
+    return OrderTotals(
+        subtotal=round(totals["subtotal"], 2), vat=round(totals["vat"], 2), grand=round(totals["grand"], 2)
+    )
+
+
 def _order_out(doc: dict) -> OrderOut:
-    items = [{**item, "line_net": round(line_net(item), 2)} for item in doc.get("items", [])]
-    totals = compute_order_totals(doc)
+    shipped = doc.get("status") == OrderStatus.SHIPPED.value
+    items = [{**item, "line_net": round(line_net(item, shipped), 2)} for item in doc.get("items", [])]
     return OrderOut(
         **{**doc, "items": items},
-        totals=OrderTotals(
-            subtotal=round(totals["subtotal"], 2), vat=round(totals["vat"], 2), grand=round(totals["grand"], 2)
-        ),
+        totals=_rounded_totals(compute_order_totals(doc)),
+        ordered_totals=_rounded_totals(compute_order_totals(doc, by_ordered=True)),
     )
 
 
@@ -1446,6 +1475,13 @@ async def create_order(inp: OrderInput, current_user: User = Depends(require_ord
         items=items,
         created_by_user_id=current_user.id,
         created_by_name=current_user.name,
+        status_history=[StatusChange(
+            from_status=None,
+            to_status=OrderStatus.NEW.value,
+            changed_by_user_id=current_user.id,
+            changed_by_name=current_user.name,
+            changed_by_role=current_user.role.value,
+        )],
     )
     doc = obj.dict()
     await db.orders.insert_one({**doc, "_id": obj.id})
@@ -1454,9 +1490,155 @@ async def create_order(inp: OrderInput, current_user: User = Depends(require_ord
 
 @api_router.delete("/orders/{order_id}")
 async def delete_order(order_id: str, current_user: User = Depends(require_manager)):
-    await get_scoped_or_404("orders", order_id, current_user)
+    order = await get_scoped_or_404("orders", order_id, current_user)
+    if _status_value(order) != OrderStatus.NEW.value:
+        raise HTTPException(status_code=409, detail="Only new orders can be deleted - cancel the order instead")
     await db.orders.delete_one({"id": order_id})
     return {"ok": True}
+
+
+# ---------------- Order status workflow (RBAC_PLAN.md section 4) ----------------
+class StatusChangeInput(BaseModel):
+    status: OrderStatus
+    note: Optional[str] = None
+
+
+class PickedItemInput(BaseModel):
+    product_id: str
+    picked_qty: Optional[int] = None  # None = un-check the line
+
+
+class PickedItemsInput(BaseModel):
+    items: List[PickedItemInput]
+
+
+def _status_value(order: dict) -> str:
+    s = order.get("status") or OrderStatus.NEW.value
+    return s.value if isinstance(s, Enum) else s
+
+
+# (from, to) -> roles allowed; admin/superadmin may override anything (with a note).
+_WAREHOUSE_FLOW = {
+    ("new", "in_progress"): {Role.WAREHOUSE},
+    ("in_progress", "new"): {Role.WAREHOUSE},
+    ("in_progress", "shipped"): {Role.WAREHOUSE},
+    ("new", "rejected"): {Role.WAREHOUSE},
+    ("in_progress", "rejected"): {Role.WAREHOUSE},
+    ("new", "canceled"): {Role.OPERATOR},
+}
+_MANAGER_ROLES = {Role.SUPERADMIN, Role.ADMIN}
+_NOTE_REQUIRED_TARGETS = {"rejected"}
+
+
+def _history_entry(user: User, from_status: Optional[str], to_status: str, note: Optional[str]) -> dict:
+    return StatusChange(
+        from_status=from_status,
+        to_status=to_status,
+        changed_by_user_id=user.id,
+        changed_by_name=user.name,
+        changed_by_role=user.role.value,
+        note=note,
+    ).dict()
+
+
+async def _get_order_for_processing(order_id: str, user: User) -> dict:
+    """Order lookup that applies the operator's own-orders rule like get_order."""
+    order = await get_scoped_or_404("orders", order_id, user)
+    if user.role == Role.OPERATOR and order.get("created_by_user_id") != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    return order
+
+
+@api_router.post("/orders/{order_id}/status", response_model=OrderOut)
+async def change_order_status(
+    order_id: str, inp: StatusChangeInput, current_user: User = Depends(get_current_user)
+):
+    order = await _get_order_for_processing(order_id, current_user)
+    current = _status_value(order)
+    target = inp.status.value
+    note = (inp.note or "").strip() or None
+
+    override = current_user.role in _MANAGER_ROLES
+    if current == target:
+        raise HTTPException(status_code=400, detail="Order already has that status")
+    if override:
+        # Anything -> anything, but only with a reason, except the normal flow.
+        if (current, target) not in _WAREHOUSE_FLOW and not note:
+            raise HTTPException(status_code=400, detail="A note is required to override the status flow")
+    else:
+        allowed = _WAREHOUSE_FLOW.get((current, target))
+        if allowed is None:
+            raise HTTPException(status_code=400, detail=f"Transition {current} -> {target} is not allowed")
+        if current_user.role not in allowed:
+            raise HTTPException(status_code=403, detail="Forbidden")
+    if target in _NOTE_REQUIRED_TARGETS and not note:
+        raise HTTPException(status_code=400, detail="A note is required")
+
+    if target == OrderStatus.SHIPPED.value:
+        items = order.get("items", [])
+        if any(i.get("picked_qty") is None for i in items):
+            raise HTTPException(status_code=400, detail="Check every item (picked_qty) before shipping")
+        if not any((i.get("picked_qty") or 0) > 0 for i in items):
+            raise HTTPException(status_code=400, detail="Nothing was picked - reject the order instead")
+
+    update: Dict[str, Any] = {"status": target}
+    if target == OrderStatus.IN_PROGRESS.value:
+        update["assigned_to_user_id"] = current_user.id
+        update["assigned_to_name"] = current_user.name
+    elif target == OrderStatus.NEW.value:
+        update["assigned_to_user_id"] = None
+        update["assigned_to_name"] = None
+    if target == OrderStatus.SHIPPED.value:
+        update["shipped_at"] = now_iso()
+
+    # Conditional update: if someone else changed the status meanwhile, 409.
+    result = await db.orders.update_one(
+        {"id": order_id, "status": current},
+        {"$set": update, "$push": {"status_history": _history_entry(current_user, current, target, note)}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Order was changed in the meantime")
+    return _order_out(await db.orders.find_one({"id": order_id}, {"_id": 0}))
+
+
+@api_router.patch("/orders/{order_id}/items", response_model=OrderOut)
+async def update_picked_items(
+    order_id: str,
+    inp: PickedItemsInput,
+    current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)),
+):
+    order = await get_scoped_or_404("orders", order_id, current_user)
+    current = _status_value(order)
+    if current not in (OrderStatus.NEW.value, OrderStatus.IN_PROGRESS.value):
+        raise HTTPException(status_code=409, detail="Only new or in-progress orders can be packed")
+
+    items = order.get("items", [])
+    by_id = {i["product_id"]: i for i in items}
+    for line in inp.items:
+        item = by_id.get(line.product_id)
+        if item is None:
+            raise HTTPException(status_code=400, detail=f"Product not in order: {line.product_id}")
+        if line.picked_qty is not None and (line.picked_qty < 0 or line.picked_qty > item.get("ordered_qty", 0)):
+            raise HTTPException(
+                status_code=400, detail=f"picked_qty for {item['name']} must be between 0 and {item.get('ordered_qty', 0)}"
+            )
+        item["picked_qty"] = line.picked_qty
+
+    update: Dict[str, Any] = {"items": items}
+    push = None
+    if current == OrderStatus.NEW.value:
+        update.update(
+            status=OrderStatus.IN_PROGRESS.value,
+            assigned_to_user_id=current_user.id,
+            assigned_to_name=current_user.name,
+        )
+        push = {"status_history": _history_entry(current_user, current, OrderStatus.IN_PROGRESS.value, None)}
+    result = await db.orders.update_one(
+        {"id": order_id, "status": current}, {"$set": update, **({"$push": push} if push else {})}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Order was changed in the meantime")
+    return _order_out(await db.orders.find_one({"id": order_id}, {"_id": 0}))
 
 
 @api_router.get("/")
