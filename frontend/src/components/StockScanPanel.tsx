@@ -37,7 +37,8 @@ export function StockScanPanel({ mode }: Props) {
   const [scanning, setScanning] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [creating, setCreating] = useState(false);
+  // What the unknown-barcode sheet shows: the two choices, the new-product form or the link list.
+  const [unknownMode, setUnknownMode] = useState<"choice" | "new" | "link">("choice");
 
   const load = useCallback(async () => {
     try {
@@ -119,7 +120,7 @@ export function StockScanPanel({ mode }: Props) {
       addOne(created.id);
       showToast(t("productAdded"));
       setUnknownCode(null);
-      setCreating(false);
+      setUnknownMode("choice");
     } catch (e) {
       Alert.alert(t("somethingWentWrong"), e instanceof ApiError ? e.detail : String(e));
     } finally {
@@ -283,33 +284,49 @@ export function StockScanPanel({ mode }: Props) {
         animationType="slide"
         onRequestClose={() => {
           setUnknownCode(null);
-          setCreating(false);
+          setUnknownMode("choice");
         }}
       >
         <View style={[styles.modal, { paddingTop: insets.top + spacing.lg }]}>
           <Text style={styles.modalTitle}>{t("productNotFound")}</Text>
           <Text style={styles.sub}>{unknownCode}</Text>
-          {creating ? (
-            <NewProductForm code={unknownCode ?? ""} busy={busy} onSubmit={createProduct} onBack={() => setCreating(false)} />
-          ) : (
+          {unknownMode === "new" ? (
+            <NewProductForm
+              code={unknownCode ?? ""}
+              busy={busy}
+              onSubmit={createProduct}
+              onBack={() => setUnknownMode("choice")}
+            />
+          ) : unknownMode === "link" ? (
             <>
+              <Text style={[styles.hint, { marginTop: spacing.md }]}>{t("pickProductToLink")}</Text>
+              <LinkPicker products={products} onPick={link} />
+              <Button title={t("backToList")} variant="ghost" onPress={() => setUnknownMode("choice")} />
+            </>
+          ) : (
+            <View style={{ gap: spacing.sm, marginTop: spacing.lg }}>
               <Button
                 title={t("addNewProduct")}
                 icon="add-circle-outline"
                 testID="quick-add-open"
-                onPress={() => setCreating(true)}
+                onPress={() => setUnknownMode("new")}
               />
-              <Text style={[styles.hint, { marginTop: spacing.md }]}>{t("pickProductToLink")}</Text>
-              <LinkPicker products={products} onPick={link} />
+              <Button
+                title={t("linkToExisting")}
+                icon="link-outline"
+                variant="secondary"
+                testID="link-open"
+                onPress={() => setUnknownMode("link")}
+              />
               <Button
                 title={t("cancel")}
                 variant="ghost"
                 onPress={() => {
                   setUnknownCode(null);
-                  setCreating(false);
+                  setUnknownMode("choice");
                 }}
               />
-            </>
+            </View>
           )}
         </View>
       </Modal>
