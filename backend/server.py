@@ -357,6 +357,9 @@ class Product(BaseModel):
     boxes_per_transport: Optional[int] = 0
     # Barcode of one piece (EAN etc.), unique per client. None = not set.
     barcode: Optional[str] = None
+    # False = delisted/draft: hidden from sales reps and can't be ordered, but
+    # stock, history and past orders stay. Documents without the field are active.
+    active: bool = True
     # Pieces in the warehouse. None = stock is not tracked for this product.
     # Only changed through /stock/* and order shipments, never via ProductInput.
     stock_qty: Optional[int] = None
@@ -384,6 +387,8 @@ class ProductInput(BaseModel):
     boxes_per_transport: Optional[int] = 0
     # None = keep the stored barcode, "" = clear it.
     barcode: Optional[str] = None
+    # None = keep. Activating a product that has no price yet is refused.
+    active: Optional[bool] = None
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
 
 
@@ -1589,7 +1594,10 @@ async def _reserved_by_product(scope: dict) -> Dict[str, int]:
 @api_router.get("/products", response_model=List[ProductOut])
 async def list_products(current_user: User = Depends(get_current_user)):
     scope = _scope_query(current_user)
-    docs = await db.products.find(scope, {"_id": 0}).sort("created_at", 1).to_list(None)
+    # Sales reps only see what can be ordered; managers and the warehouse also
+    # see delisted/draft products (to edit, activate or receive stock).
+    visible = {**scope, "active": {"$ne": False}} if current_user.role == Role.OPERATOR else scope
+    docs = await db.products.find(visible, {"_id": 0}).sort("created_at", 1).to_list(None)
     reserved = await _reserved_by_product(scope)
     out = []
     for v in docs:
@@ -1607,6 +1615,7 @@ async def create_product(inp: ProductInput, current_user: User = Depends(require
     payload["discounts"] = normalize_discounts(inp.discounts, payload["discount"])
     payload["additional_discounts"] = normalize_additional_discounts(inp.additional_discounts)
     payload["barcode"] = await _checked_barcode(client_id, inp.barcode)
+    payload["active"] = True if inp.active is None else inp.active
     obj = Product(**payload, client_id=client_id)
     await db.products.insert_one({**obj.dict(), "_id": obj.id})
     return obj
@@ -1632,6 +1641,10 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
         "discounts": normalize_discounts(discounts, discount_value),
         "additional_discounts": normalize_additional_discounts(additional),
     }
+    was_active = existing.get("active", True)
+    updated["active"] = was_active if inp.active is None else inp.active
+    if updated["active"] and not was_active and not (updated.get("price_no_vat") or 0) > 0:
+        raise HTTPException(status_code=400, detail="Set a price before activating the product")
     if inp.barcode is None:
         updated["barcode"] = existing.get("barcode")
     else:
@@ -1709,6 +1722,36 @@ async def set_product_barcode(
     code = await _checked_barcode(existing["client_id"], inp.barcode, exclude_id=product_id)
     await db.products.update_one({"id": product_id}, {"$set": {"barcode": code}})
     return Product(**{**existing, "barcode": code})
+
+
+class QuickProductInput(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    manufacturer: Optional[str] = Field(default="", max_length=200)
+    barcode: Optional[str] = None
+    pieces_per_package: Optional[int] = Field(default=0, ge=0, le=100000)
+    boxes_per_transport: Optional[int] = Field(default=0, ge=0, le=100000)
+    client_id: Optional[str] = None  # only honored for SUPERADMIN writes
+
+
+@api_router.post("/products/quick", response_model=Product)
+async def quick_add_product(inp: QuickProductInput, current_user: User = Depends(require_stock_writer)):
+    """Warehouse adds a product that has just arrived but isn't in the system.
+    It is created inactive with no price: an admin sets price/VAT and activates
+    it before sales reps can see or order it."""
+    client_id = await resolve_write_client_id(current_user, inp.client_id)
+    barcode = await _checked_barcode(client_id, inp.barcode)
+    obj = Product(
+        client_id=client_id,
+        name=inp.name.strip(),
+        manufacturer=(inp.manufacturer or "").strip(),
+        pieces_per_package=inp.pieces_per_package or 0,
+        boxes_per_transport=inp.boxes_per_transport or 0,
+        barcode=barcode,
+        price_no_vat=0,
+        active=False,
+    )
+    await db.products.insert_one({**obj.dict(), "_id": obj.id})
+    return obj
 
 
 # ---------------- Product import from Excel ----------------
@@ -2052,6 +2095,8 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
             raise HTTPException(status_code=400, detail=f"Product not found: {line.product_id}")
         if line.ordered_qty <= 0:
             raise HTTPException(status_code=400, detail=f"Quantity must be positive for {product['name']}")
+        if product.get("active", True) is False:
+            raise HTTPException(status_code=400, detail=f"Product is not available: {product['name']}")
         # Snapshot from the stored product - never from the payload - so a
         # client can't set its own price/VAT/discount.
         items.append(OrderItem(

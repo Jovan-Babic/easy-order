@@ -9,6 +9,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -181,7 +182,7 @@ export default function AdminScreen() {
     setPendingImage(null);
     setEditing(null);
     setForm(tab === "products"
-      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "", barcode: "" }
+      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "", barcode: "", active: true }
       : { name: "", address: "", email: "", phone: "", countryCode: "+381", phoneNumber: "", pib: "" });
     setCountryCodeOpen(false);
     setPermMsg(false);
@@ -210,6 +211,7 @@ export default function AdminScreen() {
             pieces_per_package: String(item.pieces_per_package ?? ""),
             boxes_per_transport: String(item.boxes_per_transport ?? ""),
             barcode: item.barcode ?? "",
+            active: item.active !== false,
           }
         : {
             name: item.name,
@@ -300,6 +302,7 @@ export default function AdminScreen() {
           pieces_per_package: Number(form.pieces_per_package) || 0,
           boxes_per_transport: Number(form.boxes_per_transport) || 0,
           barcode: String(form.barcode ?? "").trim(),
+          active: form.active !== false,
         };
         if (editing) await api.updateProduct(editing.id, payload);
         else await api.createProduct(payload);
@@ -397,7 +400,10 @@ export default function AdminScreen() {
                 </View>
               )}
               <View style={{ flex: 1 }}>
-                <Text style={styles.itemName}>{item.name}</Text>
+                <Text style={styles.itemName}>
+                  {item.name}
+                  {tab === "products" && (item as Product).active === false ? `  · ${t("inactive")}` : ""}
+                </Text>
                 {tab === "products" ? (
                   <Text style={styles.itemSub} numberOfLines={1}>
                     {(item as Product).manufacturer ? `${(item as Product).manufacturer} · ` : ""}
@@ -534,6 +540,17 @@ export default function AdminScreen() {
                     }}
                   />
                   <FormField label={t("transportPackage")} value={form.boxes_per_transport} onChangeText={(v) => setForm((f: any) => ({ ...f, boxes_per_transport: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-boxes" />
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: spacing.sm }}>
+                    <View style={{ flex: 1, paddingRight: spacing.md }}>
+                      <Text style={{ fontSize: font.base, fontWeight: "600", color: colors.onSurface }}>{t("productActive")}</Text>
+                      <Text style={{ fontSize: font.sm, color: colors.muted }}>{t("productActiveHelp")}</Text>
+                    </View>
+                    <Switch
+                      testID="form-active"
+                      value={form.active !== false}
+                      onValueChange={(v) => setForm((f: any) => ({ ...f, active: v }))}
+                    />
+                  </View>
                 </>
               ) : (
                 <>

@@ -54,6 +54,8 @@ export type Product = {
   pieces_per_package?: number;
   boxes_per_transport?: number;
   barcode?: string | null;
+  // false = delisted / awaiting price; hidden from sales reps. Missing = active.
+  active?: boolean;
   // Stock: null/undefined stock_qty = not tracked.
   stock_qty?: number | null;
   reserved_qty?: number;
@@ -259,6 +261,13 @@ export const api = {
   getProductByBarcode: (code: string) => req<Product>(`/products/by-barcode/${encodeURIComponent(code)}`),
   linkBarcode: (id: string, barcode: string) =>
     req<Product>(`/products/${id}/barcode`, { method: "POST", body: JSON.stringify({ barcode }) }),
+  quickAddProduct: (p: {
+    name: string;
+    barcode: string;
+    manufacturer?: string;
+    pieces_per_package?: number;
+    boxes_per_transport?: number;
+  }) => req<Product>("/products/quick", { method: "POST", body: JSON.stringify(p) }),
   stockReceipt: (items: { product_id: string; qty: number }[], note?: string) =>
     req<{ ok: boolean; count: number }>("/stock/receipts", { method: "POST", body: JSON.stringify({ items, note }) }),
   stockCount: (items: { product_id: string; counted_qty: number }[], note: string) =>
