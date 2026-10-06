@@ -57,7 +57,7 @@ npx tsc --noEmit
 
 ### Backend (`backend/server.py`)
 - **Tenancy:** `customers`, `products`, `orders`, `users` carry `client_id`. `_scope_query()` / `get_scoped_or_404()` scope reads, `resolve_write_client_id()` scopes writes (superadmin must pass `client_id`). Cross-tenant access returns 404, not 403.
-- **Roles:** `superadmin` (global, no client), `admin` (one client), `operator`. Dependencies: `get_current_user` (default for business routes), `require_roles(...)`, `require_manager` (= superadmin/admin; catalog/customer writes, deleting orders, image upload). Admins manage only operators (and edit themselves).
+- **Roles:** `superadmin` (global, no client), `admin` (one client), `operator` (sales rep, creates orders), `warehouse` (processes orders; read-only for now). Dependencies: `get_current_user` (default for business routes), `require_roles(...)`, `require_manager` (= superadmin/admin; catalog/customer writes, deleting orders, image upload, user management), `require_order_creator` (superadmin/admin/operator). Admins manage only `ADMIN_MANAGEABLE_ROLES` (operator, warehouse) and edit themselves; assigning another role is 403. Operators see only their own orders (`_order_scope_query`; others 404). `GET /orders` filters: `status` (repeatable), `created_by_user_id`, `from_date`/`to_date`, `limit`/`skip`.
 - **Auth:** HS256 JWT with a `tv` (token_version) claim — bumped on password change/reset and role change, which invalidates older tokens. `get_authenticated_user` skips the first-login check and is used only by `/auth/me`, `/auth/logout`, `/auth/change-password`; everything else rejects users with `must_change_password` (403 "Password change required").
 - **Accounts are created by invite:** `POST /clients` and `POST /users` generate a temporary password, email it (download link + portal link) and set `must_change_password`. If email fails, the response includes `temporary_password`. No endpoint accepts a creator-chosen password.
 - **Passwords:** `ensure_strong_password` (8+ chars, a letter and a digit) — keep the client-side copies in sync (mobile/admin-web change- and reset-password screens).
@@ -80,7 +80,7 @@ When adding a product field: add it to `Product`, `ProductInput`, `OrderItem` an
 - `src/utils/storage/` — native (`index.ts`) and web (`index.web.ts`) implementations of `StorageBase`; a new method must be declared on `StorageBase` and implemented in both.
 
 ### Admin portal (`admin-web/`)
-- `proxy.ts` (Next 16's name for middleware) verifies the session cookie (JWT, same secret as the backend) and redirects; operators are refused. In production without `JWT_SECRET` every session is rejected.
+- `proxy.ts` (Next 16's name for middleware) verifies the session cookie (JWT, same secret as the backend) and redirects; operators are refused and warehouse users are limited to the paths in `lib/session.ts` (`isPathAllowed`/`homePath`). In production without `JWT_SECRET` every session is rejected.
 - `app/api/**/route.ts` proxy to FastAPI through `lib/backend.ts` (`backendFetch` adds the Bearer token from the httpOnly cookie). `api/auth/login` and `api/auth/change-password` set the cookie.
 - `app/(dashboard)/layout.tsx` loads `/auth/me` and redirects to `/change-password?required=1` while `must_change_password` is set.
 - The App downloads page reads the backend's `/api/app/update` server-side (single source of truth with the mobile update prompt).

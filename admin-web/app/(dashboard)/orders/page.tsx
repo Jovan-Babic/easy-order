@@ -49,6 +49,7 @@ export default function OrdersPage() {
   const { t } = useLanguage();
   const session = useSession();
   const isSuperAdmin = session.role === "superadmin";
+  const canDelete = session.role === "superadmin" || session.role === "admin";
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Record<string, Customer>>({});
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
@@ -116,13 +117,15 @@ export default function OrdersPage() {
                   >
                     {t("details")}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setPendingDelete(o)}
-                    className="ml-2 rounded-md border border-error px-3 py-1.5 text-sm font-semibold text-error hover:bg-red-50"
-                  >
-                    {t("delete")}
-                  </button>
+                  {canDelete && (
+                    <button
+                      type="button"
+                      onClick={() => setPendingDelete(o)}
+                      className="ml-2 rounded-md border border-error px-3 py-1.5 text-sm font-semibold text-error hover:bg-red-50"
+                    >
+                      {t("delete")}
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}

@@ -1,6 +1,6 @@
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
-export type Role = "superadmin" | "admin" | "operator";
+export type Role = "superadmin" | "admin" | "operator" | "warehouse";
 
 export type User = {
   id: string;

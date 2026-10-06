@@ -6,7 +6,7 @@ export type SessionUser = {
   id: string;
   name: string;
   email: string;
-  role: "superadmin" | "admin";
+  role: "superadmin" | "admin" | "warehouse";
   client_id: string | null;
 };
 

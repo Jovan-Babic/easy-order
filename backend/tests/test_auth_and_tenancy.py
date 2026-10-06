@@ -211,16 +211,23 @@ class TestRoleEscalation:
         email = f"test-operator-{suffix}@easyorder.dev"
         r = api_client.post(
             f"{API}/users",
-            json={"email": email, "name": "TEST Operator", "password": "TestPass123!", "role": "admin"},
+            json={"email": email, "name": "TEST Operator", "password": "TestPass123!", "role": "operator"},
         )
         assert r.status_code == 200, r.text
         body = r.json()
-        # Admin-created users are always forced to OPERATOR regardless of requested role.
         assert body["role"] == "operator"
         TestRoleEscalation.operator_email = email
         TestRoleEscalation.operator_id = body["id"]
         # Sets the password to TestPass123!, which the tests below log in with.
         activate_invited_user(email, body["temporary_password"])
+
+    def test_admin_cannot_create_admin_or_superadmin(self, api_client):
+        for role in ("admin", "superadmin"):
+            r = api_client.post(
+                f"{API}/users",
+                json={"email": f"test-esc-{role}-{uuid.uuid4().hex[:6]}@easyorder.dev", "name": "X", "role": role},
+            )
+            assert r.status_code == 403, (role, r.text)
 
     def test_operator_cannot_list_users(self):
         operator = _login(TestRoleEscalation.operator_email, "TestPass123!")

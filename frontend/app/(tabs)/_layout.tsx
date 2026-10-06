@@ -12,11 +12,15 @@ export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   // Operators only browse/order - product/customer management is an
   // Admin/SuperAdmin concern (SuperAdmin uses the web portal, not mobile).
-  const hideAdminTab = user?.role === "operator";
+  // Warehouse staff don't order or manage anything: they get the history
+  // tab now and the "Magacin" packing tab in phase 3 of RBAC_PLAN.md.
+  const isWarehouse = user?.role === "warehouse";
+  const hideAdminTab = user?.role === "operator" || isWarehouse;
   const safeBottomPadding = Math.max(insets.bottom, Platform.OS === "ios" ? 18 : 8);
 
   return (
     <Tabs
+      initialRouteName={isWarehouse ? "history" : "index"}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.brand,
@@ -35,6 +39,7 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: t("order"),
+          href: isWarehouse ? null : undefined,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="cart-outline" size={size} color={color} />
           ),
