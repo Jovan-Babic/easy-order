@@ -29,7 +29,11 @@ def _new_order(session, qty=10):
 
 
 @pytest.fixture(scope="module", autouse=True)
-def world(api_client):
+def world(api_client, superadmin_client):
+    # Shipping assigns an invoice number, so the demo client needs a prefix.
+    cid = api_client.get(f"{API}/auth/me").json()["client_id"]
+    cur = superadmin_client.get(f"{API}/clients/{cid}").json()
+    superadmin_client.put(f"{API}/clients/{cid}", json={**cur, "invoice_prefix": "TST", "invoice_numbering": "auto"})
     S.op_id, S.op = _invite(api_client, "operator", "wf-op")
     S.op2_id, S.op2 = _invite(api_client, "operator", "wf-op2")
     S.wh_id, S.wh = _invite(api_client, "warehouse", "wf-wh")

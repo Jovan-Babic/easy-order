@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 import asyncio
 import hashlib
 import json
@@ -93,6 +95,7 @@ FORGOT_PASSWORD_MAX_PER_HOUR = int(os.environ.get("FORGOT_PASSWORD_MAX_PER_HOUR"
 IMAGE_MAX_BYTES = int(os.environ.get("IMAGE_MAX_BYTES", str(4 * 1024 * 1024)))
 IMAGE_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
 PRODUCT_IMAGE_FOLDER = "easy-order/products"
+CLIENT_LOGO_FOLDER = "easy-order/clients"
 
 mongo_client: AsyncIOMotorClient = None
 db = None  # AsyncIOMotorDatabase
@@ -129,6 +132,14 @@ async def lifespan(app: FastAPI):
     await db.orders.create_index("client_id")
     await db.orders.create_index([("client_id", 1), ("status", 1), ("created_at", -1)])
     await db.orders.create_index([("client_id", 1), ("created_by_user_id", 1), ("created_at", -1)])
+    try:
+        await db.orders.create_index(
+            [("client_id", 1), ("invoice_number", 1)],
+            unique=True,
+            partialFilterExpression={"invoice_number": {"$type": "string"}},
+        )
+    except Exception as exc:
+        logger.error("Could not create unique index on orders.invoice_number: %s", exc)
     await _migrate_user_emails_to_lowercase()
     try:
         await db.users.create_index("email", unique=True)
@@ -169,6 +180,14 @@ class Client(BaseModel):
     email: Optional[str] = ""
     phone: Optional[str] = ""
     pib: Optional[str] = ""
+    # Invoice settings (RBAC_PLAN.md 5a). Edited by the superadmin only.
+    registration_number: Optional[str] = ""
+    bank_account: Optional[str] = ""
+    logo: Optional[str] = ""
+    invoice_prefix: Optional[str] = ""
+    invoice_numbering: str = "auto"  # "auto" | "manual"
+    # Read-only: the number the next shipped order will get (auto numbering).
+    invoice_next_seq: Optional[int] = None
     active: bool = True
     created_at: str = Field(default_factory=now_iso)
 
@@ -179,6 +198,13 @@ class ClientInput(BaseModel):
     email: Optional[str] = ""
     phone: Optional[str] = ""
     pib: Optional[str] = ""
+    registration_number: Optional[str] = ""
+    bank_account: Optional[str] = ""
+    logo: Optional[str] = ""
+    invoice_prefix: Optional[str] = ""
+    invoice_numbering: str = "auto"
+    # Only ever raises the counter (to continue a series from an old system).
+    invoice_next_seq: Optional[int] = Field(default=None, ge=1)
 
 
 class ClientCreateInput(ClientInput):
@@ -388,6 +414,9 @@ class Order(BaseModel):
     assigned_to_user_id: Optional[str] = None
     assigned_to_name: Optional[str] = None
     shipped_at: Optional[str] = None
+    # Assigned once, when the order is first shipped; never changes or is freed.
+    invoice_seq: Optional[int] = None
+    invoice_number: Optional[str] = None
     # Who placed it. None on orders created before this field existed.
     created_by_user_id: Optional[str] = None
     created_by_name: Optional[str] = None
@@ -764,7 +793,7 @@ def cloudinary_available() -> bool:
 
 
 _CLOUDINARY_PRODUCT_URL = re.compile(
-    rf"res\.cloudinary\.com/[^/]+/image/upload/(?:.+/)?(?:v\d+/)?({re.escape(PRODUCT_IMAGE_FOLDER)}/[^/.]+)\.\w+$"
+    rf"res\.cloudinary\.com/[^/]+/image/upload/(?:.+/)?(?:v\d+/)?((?:{re.escape(PRODUCT_IMAGE_FOLDER)}|{re.escape(CLIENT_LOGO_FOLDER)})/[^/.]+)\.\w+$"
 )
 
 
@@ -1038,8 +1067,11 @@ async def logout(current_user: User = Depends(get_authenticated_user)):
 @api_router.post("/upload-image")
 async def upload_product_image(
     file: UploadFile = File(...),
+    kind: str = Query("product", pattern="^(product|client_logo)$"),
     current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN)),
 ):
+    if kind == "client_logo" and current_user.role != Role.SUPERADMIN:
+        raise HTTPException(status_code=403, detail="Forbidden")
     if (file.content_type or "").lower() not in IMAGE_ALLOWED_TYPES:
         raise HTTPException(status_code=415, detail="Only JPEG, PNG, WEBP or HEIC images are allowed")
     data = await file.read(IMAGE_MAX_BYTES + 1)
@@ -1061,7 +1093,7 @@ async def upload_product_image(
         result = await asyncio.to_thread(
             cloudinary.uploader.upload,
             data,
-            folder=PRODUCT_IMAGE_FOLDER,
+            folder=CLIENT_LOGO_FOLDER if kind == "client_logo" else PRODUCT_IMAGE_FOLDER,
             resource_type="image",
             format="webp",
             transformation=[{"width": 1000, "height": 1000, "crop": "limit"}, {"quality": "auto:good"}],
@@ -1085,32 +1117,79 @@ async def delete_uploaded_image(
     Only our own folder is touched, and never an image a product still uses."""
     if not _product_image_public_id(url):
         raise HTTPException(status_code=400, detail="Not an image uploaded by this app")
-    if await db.products.find_one({"image": url}, {"_id": 1}):
-        raise HTTPException(status_code=409, detail="Image is in use by a product")
+    if await db.products.find_one({"image": url}, {"_id": 1}) or await db.clients.find_one({"logo": url}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Image is in use by a product or client")
     await _delete_product_image(url)
     return {"ok": True}
 
 
 # ---------------- Clients (tenant companies) ----------------
+_INVOICE_PREFIX_RE = re.compile(r"^[A-Z0-9]{1,10}$")
+
+
+def _invoice_counter_id(client_id: str) -> str:
+    return f"invoice:{client_id}"
+
+
+async def _client_out(doc: dict) -> Client:
+    counter = await db.counters.find_one({"_id": _invoice_counter_id(doc["id"])})
+    return Client(**{**doc, "invoice_next_seq": (counter or {}).get("seq", 0) + 1})
+
+
+def _validated_invoice_settings(inp: ClientInput) -> dict:
+    prefix = (inp.invoice_prefix or "").strip().upper()
+    if prefix and not _INVOICE_PREFIX_RE.match(prefix):
+        raise HTTPException(status_code=400, detail="Invoice prefix must be 1-10 letters/digits")
+    if inp.invoice_numbering not in ("auto", "manual"):
+        raise HTTPException(status_code=400, detail="invoice_numbering must be 'auto' or 'manual'")
+    return {"invoice_prefix": prefix}
+
+
+async def _raise_invoice_counter(client_id: str, next_seq: Optional[int]) -> None:
+    """Continue a series from an old system: the next number becomes
+    `next_seq`. Only ever raises the counter - lowering could reuse a number."""
+    if next_seq is None:
+        return
+    cid = _invoice_counter_id(client_id)
+    current = ((await db.counters.find_one({"_id": cid})) or {}).get("seq", 0)
+    if next_seq - 1 < current:
+        raise HTTPException(status_code=400, detail=f"Next invoice number must be at least {current + 1}")
+    await db.counters.update_one({"_id": cid}, {"$set": {"seq": next_seq - 1}}, upsert=True)
+
+
 @api_router.get("/clients", response_model=List[Client])
 async def list_clients(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
     docs = await db.clients.find({}, {"_id": 0}).sort("name", 1).to_list(None)
-    return [Client(**v) for v in docs]
+    return [await _client_out(v) for v in docs]
 
 
 @api_router.post("/clients", response_model=ClientCreateResponse)
 async def create_client(inp: ClientCreateInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
     if await find_user_by_email(inp.admin_email):
         raise HTTPException(status_code=400, detail="Email already in use")
+    settings = _validated_invoice_settings(inp)
 
-    client_obj = Client(**inp.dict(exclude={"admin_name", "admin_email"}))
-    await db.clients.insert_one({**client_obj.dict(), "_id": client_obj.id})
+    client_obj = Client(**{**inp.dict(exclude={"admin_name", "admin_email", "invoice_next_seq"}), **settings})
+    await db.clients.insert_one({**client_obj.dict(exclude={"invoice_next_seq"}), "_id": client_obj.id})
+    await _raise_invoice_counter(client_obj.id, inp.invoice_next_seq)
 
     admin_obj = User(
         email=normalize_email(inp.admin_email), name=inp.admin_name, role=Role.ADMIN, client_id=client_obj.id
     )
     invite = await _invite_user(admin_obj)
-    return ClientCreateResponse(client=client_obj, admin_user=admin_obj, **invite.dict())
+    return ClientCreateResponse(client=await _client_out(client_obj.dict()), admin_user=admin_obj, **invite.dict())
+
+
+@api_router.get("/clients/me", response_model=Client)
+async def get_my_client(current_user: User = Depends(get_current_user)):
+    """The caller's own tenant (invoice header data) - read-only for admin,
+    warehouse and operator."""
+    if not current_user.client_id:
+        raise HTTPException(status_code=404, detail="No client")
+    doc = await db.clients.find_one({"id": current_user.client_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return await _client_out(doc)
 
 
 @api_router.get("/clients/{client_id}", response_model=Client)
@@ -1118,7 +1197,7 @@ async def get_client(client_id: str, current_user: User = Depends(require_roles(
     doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Client not found")
-    return Client(**doc)
+    return await _client_out(doc)
 
 
 @api_router.put("/clients/{client_id}", response_model=Client)
@@ -1126,9 +1205,13 @@ async def update_client(client_id: str, inp: ClientInput, current_user: User = D
     existing = await db.clients.find_one({"id": client_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Client not found")
-    updated = {**existing, **inp.dict()}
+    settings = _validated_invoice_settings(inp)
+    await _raise_invoice_counter(client_id, inp.invoice_next_seq)
+    updated = {**existing, **inp.dict(exclude={"invoice_next_seq"}), **settings}
     await db.clients.replace_one({"id": client_id}, {**updated, "_id": client_id})
-    return Client(**updated)
+    if existing.get("logo") != updated.get("logo"):
+        await _delete_product_image(existing.get("logo"))
+    return await _client_out(updated)
 
 
 @api_router.delete("/clients/{client_id}")
@@ -1501,6 +1584,8 @@ async def delete_order(order_id: str, current_user: User = Depends(require_manag
 class StatusChangeInput(BaseModel):
     status: OrderStatus
     note: Optional[str] = None
+    # Only for -> shipped on a client with manual invoice numbering.
+    invoice_number: Optional[str] = Field(default=None, max_length=40)
 
 
 class PickedItemInput(BaseModel):
@@ -1549,6 +1634,29 @@ async def _get_order_for_processing(order_id: str, user: User) -> dict:
     return order
 
 
+async def _assign_invoice_number(order: dict, manual_number: Optional[str]) -> Dict[str, Any]:
+    """Invoice number for the first shipment (RBAC_PLAN.md section 5): from
+    the per-client counter ("auto") or typed by the warehouse ("manual")."""
+    client = await db.clients.find_one({"id": order["client_id"]}, {"_id": 0}) or {}
+    if client.get("invoice_numbering", "auto") == "manual":
+        number = (manual_number or "").strip()
+        if not number:
+            raise HTTPException(status_code=400, detail="Invoice number is required")
+        if await db.orders.find_one({"client_id": order["client_id"], "invoice_number": number}, {"_id": 1}):
+            raise HTTPException(status_code=409, detail="Invoice number is already used")
+        return {"invoice_number": number}
+    prefix = client.get("invoice_prefix") or ""
+    if not prefix:
+        raise HTTPException(status_code=400, detail="Set the invoice prefix for this client first")
+    counter = await db.counters.find_one_and_update(
+        {"_id": _invoice_counter_id(order["client_id"])},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return {"invoice_seq": counter["seq"], "invoice_number": f"{prefix}/{counter['seq']:04d}"}
+
+
 @api_router.post("/orders/{order_id}/status", response_model=OrderOut)
 async def change_order_status(
     order_id: str, inp: StatusChangeInput, current_user: User = Depends(get_current_user)
@@ -1582,6 +1690,10 @@ async def change_order_status(
             raise HTTPException(status_code=400, detail="Nothing was picked - reject the order instead")
 
     update: Dict[str, Any] = {"status": target}
+    if target == OrderStatus.SHIPPED.value and not order.get("invoice_number"):
+        # An order keeps the number from its first shipment, even if an admin
+        # later moves it back and ships it again.
+        update.update(await _assign_invoice_number(order, inp.invoice_number))
     if target == OrderStatus.IN_PROGRESS.value:
         update["assigned_to_user_id"] = current_user.id
         update["assigned_to_name"] = current_user.name
@@ -1592,10 +1704,13 @@ async def change_order_status(
         update["shipped_at"] = now_iso()
 
     # Conditional update: if someone else changed the status meanwhile, 409.
-    result = await db.orders.update_one(
-        {"id": order_id, "status": current},
-        {"$set": update, "$push": {"status_history": _history_entry(current_user, current, target, note)}},
-    )
+    try:
+        result = await db.orders.update_one(
+            {"id": order_id, "status": current},
+            {"$set": update, "$push": {"status_history": _history_entry(current_user, current, target, note)}},
+        )
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Invoice number is already used")
     if result.matched_count == 0:
         raise HTTPException(status_code=409, detail="Order was changed in the meantime")
     return _order_out(await db.orders.find_one({"id": order_id}, {"_id": 0}))
