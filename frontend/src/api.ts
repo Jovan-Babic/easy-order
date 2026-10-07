@@ -14,6 +14,8 @@ export type User = {
   // backend rejects every business call until then (see RouteGuard).
   must_change_password?: boolean;
   created_at: string;
+  // Modules the client has (login / me); superadmin gets all.
+  modules?: string[];
 };
 
 export type TokenResponse = {

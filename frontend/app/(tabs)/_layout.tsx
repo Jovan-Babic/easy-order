@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
 import { colors } from "@/src/theme";
+import { hasModule } from "@/src/utils/modules";
 
 export default function TabsLayout() {
   const { t } = useApp();
@@ -17,7 +18,8 @@ export default function TabsLayout() {
   const isWarehouse = user?.role === "warehouse";
   // Admins (a client may have only an admin account) also get the Magacin tab
   // to receive/count/pack, but keep the order screen as their start tab.
-  const showWarehouseTab = isWarehouse || user?.role === "admin";
+  // Without the Magacin module there is no such tab at all.
+  const showWarehouseTab = (isWarehouse || user?.role === "admin") && hasModule(user, "warehouse");
   const hideAdminTab = user?.role === "operator" || isWarehouse;
   const safeBottomPadding = Math.max(insets.bottom, Platform.OS === "ios" ? 18 : 8);
 

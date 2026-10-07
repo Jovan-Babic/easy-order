@@ -1,3 +1,5 @@
+import { ALL_MODULES } from "@/lib/modules";
+
 // Shared bits of the client (tenant) create/edit forms. The logo follows the
 // "upload only on Save" rule: picking a file only makes a local preview.
 export type ClientFormFields = {
@@ -13,6 +15,7 @@ export type ClientFormFields = {
   invoice_numbering: "auto" | "manual";
   invoice_next_seq: string; // "" = leave the counter alone
   expiry_alert_days: string; // e.g. "30, 15, 5"
+  modules: string[]; // enabled modules (see lib/modules.ts)
 };
 
 export const emptyClientFields: ClientFormFields = {
@@ -28,6 +31,7 @@ export const emptyClientFields: ClientFormFields = {
   invoice_numbering: "auto",
   invoice_next_seq: "",
   expiry_alert_days: "30, 15, 5",
+  modules: [...ALL_MODULES],
 };
 
 // Uploads the picked logo; returns its URL, or throws with the backend's message.
@@ -69,5 +73,6 @@ export function clientPayload(form: ClientFormFields, logo: string) {
     invoice_numbering: form.invoice_numbering,
     invoice_next_seq: form.invoice_next_seq !== "" && next >= 1 ? next : null,
     expiry_alert_days: parseAlertDays(form.expiry_alert_days),
+    modules: form.modules,
   };
 }

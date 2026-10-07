@@ -17,7 +17,7 @@ import smtplib
 import logging
 import mimetypes
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, PrivateAttr
 from typing import List, Literal, Optional, Dict, Any
 from enum import Enum
 import uuid
@@ -198,6 +198,47 @@ class Role(str, Enum):
 ADMIN_MANAGEABLE_ROLES = {Role.OPERATOR, Role.WAREHOUSE}
 
 
+# ---------------- Modules (PLAN_MODULI.md) ----------------
+# What a client may use is a list of modules the superadmin turns on per
+# client. Everything not listed here is the always-on base: catalog,
+# customers, orders (create/edit/cancel), invoice from the phone, Excel import
+# of products/customers.
+class Module(str, Enum):
+    WAREHOUSE = "warehouse"  # warehouse role, order flow, packing, barcode + scanner, delivery note
+    STOCK = "stock"  # stock levels, receipts, counts, movements, deduction on shipping
+    EXPIRY = "expiry"  # expiry dates, batches, FEFO, alerts
+    REPORTS = "reports"  # order reports
+
+
+ALL_MODULES = [m.value for m in Module]
+# A module can only be on when the ones it builds on are on too.
+MODULE_REQUIRES: Dict[Module, List[Module]] = {Module.STOCK: [Module.WAREHOUSE], Module.EXPIRY: [Module.STOCK]}
+
+
+def effective_modules(client_doc: Optional[dict]) -> List[str]:
+    """Clients created before modules existed (no field) keep everything."""
+    stored = (client_doc or {}).get("modules")
+    return list(ALL_MODULES) if stored is None else [m for m in ALL_MODULES if m in stored]
+
+
+def validated_modules(values: List[Module]) -> List[str]:
+    chosen = {Module(v) for v in values}
+    for module in Module:
+        for needed in MODULE_REQUIRES.get(module, []):
+            if module in chosen and needed not in chosen:
+                raise HTTPException(
+                    status_code=400, detail=f"Module '{module.value}' requires module '{needed.value}'"
+                )
+    return [m for m in ALL_MODULES if Module(m) in chosen]
+
+
+async def client_has_module(client_id: Optional[str], module: Module) -> bool:
+    if not client_id:  # superadmin: not tied to a client
+        return True
+    doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "modules": 1})
+    return module.value in effective_modules(doc)
+
+
 class Client(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
@@ -213,6 +254,8 @@ class Client(BaseModel):
     invoice_numbering: str = "auto"  # "auto" | "manual"
     # Days before expiry at which batches show up as warnings (warehouse/admin).
     expiry_alert_days: List[int] = Field(default_factory=lambda: list(DEFAULT_EXPIRY_ALERT_DAYS))
+    # Enabled modules (Module values); a stored client without the field has all.
+    modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
     # Read-only: the number the next shipped order will get (auto numbering).
     invoice_next_seq: Optional[int] = None
     active: bool = True
@@ -232,6 +275,8 @@ class ClientInput(BaseModel):
     invoice_numbering: str = "auto"
     # None = keep the stored thresholds (default 30/15/5 days).
     expiry_alert_days: Optional[List[int]] = None
+    # Superadmin only. None = keep (new client: all modules).
+    modules: Optional[List[Module]] = None
     # Only ever raises the counter (to continue a series from an old system).
     invoice_next_seq: Optional[int] = Field(default=None, ge=1)
 
@@ -256,6 +301,14 @@ class User(BaseModel):
     # set, only /auth/me, /auth/change-password and /auth/logout work.
     must_change_password: bool = False
     created_at: str = Field(default_factory=now_iso)
+    # Set per request from the user's client (see get_authenticated_user); not stored.
+    _modules: Optional[List[str]] = PrivateAttr(default=None)
+
+
+class UserOut(User):
+    """/auth/me and login: the user plus the modules their client has
+    (superadmin: all)."""
+    modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
 
 
 class InviteResult(BaseModel):
@@ -339,7 +392,7 @@ class GenericOkResponse(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    user: User
+    user: UserOut
 
 
 # ---------------- Domain models ----------------
@@ -953,13 +1006,27 @@ async def _migrate_user_emails_to_lowercase() -> None:
 async def client_is_active(client_id: Optional[str]) -> bool:
     """Superadmins have no client. For everyone else, a soft-deleted
     (active=False) or missing client locks out all of its users."""
+    return (await _client_gate(client_id))[0]
+
+
+async def _client_gate(client_id: Optional[str]) -> tuple:
+    """(active, modules) of a client in one lookup. Superadmins have no client:
+    always active, every module."""
     if not client_id:
-        return True
-    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "active": 1})
-    return bool(client and client.get("active", True))
+        return True, list(ALL_MODULES)
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "active": 1, "modules": 1})
+    if not client:
+        return False, []
+    return client.get("active", True), effective_modules(client)
 
 
 security = HTTPBearer(auto_error=False)
+
+
+async def user_out(raw: dict) -> UserOut:
+    """User + the modules of their client (login / me responses)."""
+    _, modules = await _client_gate(raw.get("client_id"))
+    return UserOut(**{k: v for k, v in raw.items() if k != "modules"}, modules=modules)
 
 
 async def get_authenticated_user(
@@ -981,9 +1048,12 @@ async def get_authenticated_user(
         raise HTTPException(status_code=401, detail="Session expired, please log in again")
     # Checked on every request (not only at login) so deactivating a client
     # also cuts off tokens that were issued before the deactivation.
-    if not await client_is_active(raw.get("client_id")):
+    active, modules = await _client_gate(raw.get("client_id"))
+    if not active:
         raise HTTPException(status_code=401, detail="Client account is disabled")
-    return User(**raw)
+    user = User(**raw)
+    user._modules = modules
+    return user
 
 
 async def get_current_user(user: User = Depends(get_authenticated_user)) -> User:
@@ -993,6 +1063,21 @@ async def get_current_user(user: User = Depends(get_authenticated_user)) -> User
         # the change-password screen instead of logging them out.
         raise HTTPException(status_code=403, detail="Password change required")
     return user
+
+
+def has_module(user: User, module: Module) -> bool:
+    return user.role == Role.SUPERADMIN or module.value in (user._modules or [])
+
+
+def require_module(module: Module, *roles: Role):
+    """Role check (if roles are given) plus: the caller's client must have the module."""
+    base = require_roles(*roles) if roles else get_current_user
+
+    async def _dep(user: User = Depends(base)) -> User:
+        if not has_module(user, module):
+            raise HTTPException(status_code=403, detail=f"Module not enabled: {module.value}")
+        return user
+    return _dep
 
 
 def require_roles(*roles: Role):
@@ -1081,7 +1166,7 @@ async def login(inp: LoginInput):
     if not await client_is_active(raw.get("client_id")):
         raise HTTPException(status_code=403, detail="Client account is disabled")
     token = create_access_token(raw)
-    return TokenResponse(access_token=token, user=User(**raw))
+    return TokenResponse(access_token=token, user=await user_out(raw))
 
 
 @api_router.post("/auth/forgot-password", response_model=ForgotPasswordResponse)
@@ -1169,12 +1254,13 @@ async def change_password(inp: ChangePasswordInput, current_user: User = Depends
     updated = await _set_password(current_user.id, inp.new_password)
     # The old token is now invalid (token_version bumped) - hand back a fresh
     # one so the user stays logged in on this device.
-    return TokenResponse(access_token=create_access_token(updated), user=User(**updated))
+    return TokenResponse(access_token=create_access_token(updated), user=await user_out(updated))
 
 
-@api_router.get("/auth/me", response_model=User)
+@api_router.get("/auth/me", response_model=UserOut)
 async def me(current_user: User = Depends(get_authenticated_user)):
-    return current_user
+    modules = list(ALL_MODULES) if current_user.role == Role.SUPERADMIN else (current_user._modules or [])
+    return UserOut(**current_user.dict(), modules=modules)
 
 
 @api_router.post("/auth/logout")
@@ -1299,9 +1385,13 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
     alert_days = _validated_alert_days(inp.expiry_alert_days)
     if alert_days:
         settings["expiry_alert_days"] = alert_days
+    settings["modules"] = validated_modules(inp.modules if inp.modules is not None else list(Module))
 
     client_obj = Client(
-        **{**inp.dict(exclude={"admin_name", "admin_email", "invoice_next_seq", "expiry_alert_days"}), **settings}
+        **{
+            **inp.dict(exclude={"admin_name", "admin_email", "invoice_next_seq", "expiry_alert_days", "modules"}),
+            **settings,
+        }
     )
     await db.clients.insert_one({**client_obj.dict(exclude={"invoice_next_seq"}), "_id": client_obj.id})
     await _raise_invoice_counter(client_obj.id, inp.invoice_next_seq)
@@ -1343,7 +1433,9 @@ async def update_client(client_id: str, inp: ClientInput, current_user: User = D
     alert_days = _validated_alert_days(inp.expiry_alert_days)
     if alert_days:
         settings["expiry_alert_days"] = alert_days
-    updated = {**existing, **inp.dict(exclude={"invoice_next_seq", "expiry_alert_days"}), **settings}
+    if inp.modules is not None:
+        settings["modules"] = validated_modules(inp.modules)
+    updated = {**existing, **inp.dict(exclude={"invoice_next_seq", "expiry_alert_days", "modules"}), **settings}
     await db.clients.replace_one({"id": client_id}, {**updated, "_id": client_id})
     if existing.get("logo") != updated.get("logo"):
         await _delete_product_image(existing.get("logo"))
@@ -1400,6 +1492,8 @@ async def create_user(inp: UserInput, current_user: User = Depends(require_manag
                 raise HTTPException(status_code=400, detail="Valid client_id is required for this role")
             client_id = inp.client_id
 
+    if role == Role.WAREHOUSE and not await client_has_module(client_id, Module.WAREHOUSE):
+        raise HTTPException(status_code=403, detail=f"Module not enabled: {Module.WAREHOUSE.value}")
     obj = User(email=normalize_email(inp.email), name=inp.name, phone=inp.phone, role=role, client_id=client_id)
     invite = await _invite_user(obj)
     return UserInviteResponse(**obj.dict(), **invite.dict())
@@ -1432,6 +1526,10 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
     if inp.active is not None:
         updated["active"] = inp.active
     role_changed = inp.role is not None and inp.role != target.get("role")
+    if role_changed and inp.role == Role.WAREHOUSE and not await client_has_module(
+        target.get("client_id"), Module.WAREHOUSE
+    ):
+        raise HTTPException(status_code=403, detail=f"Module not enabled: {Module.WAREHOUSE.value}")
     if inp.role is not None:
         updated["role"] = inp.role
     if inp.password:
@@ -1660,14 +1758,22 @@ async def _reserved_by_product(scope: dict) -> Dict[str, int]:
 def _product_out(doc: dict, reserved: int, expiry: Optional[dict], user: User) -> ProductOut:
     """Stock fields for one product. Expired pieces don't count as available.
     Sales reps get no expiry information at all (only the lower availability)."""
+    # A client without a module sees none of its data (it stays stored).
+    has_stock = has_module(user, Module.STOCK)
+    has_expiry = has_module(user, Module.EXPIRY)
+    if not has_module(user, Module.WAREHOUSE):
+        doc = {**doc, "barcode": None, "package_barcode": None}
+    if not has_stock:
+        doc = {**doc, "stock_qty": None}
+        reserved = 0
     stock = doc.get("stock_qty")
-    expired = (expiry or {}).get("expired_qty", 0)
+    expired = (expiry or {}).get("expired_qty", 0) if has_expiry else 0
     out = ProductOut(
-        **{**doc, "track_expiry": bool(doc.get("track_expiry"))},
+        **{**doc, "track_expiry": bool(doc.get("track_expiry")) and has_expiry},
         reserved_qty=reserved,
         available_qty=None if stock is None else stock - reserved - expired,
     )
-    if user.role != Role.OPERATOR:
+    if user.role != Role.OPERATOR and has_expiry:
         out.expired_qty = expired
         out.next_expiry = (expiry or {}).get("next_expiry")
     else:
@@ -1694,11 +1800,16 @@ async def create_product(inp: ProductInput, current_user: User = Depends(require
     payload["discount"] = max(0.0, min(100.0, float(payload.get("discount") or 0)))
     payload["discounts"] = normalize_discounts(inp.discounts, payload["discount"])
     payload["additional_discounts"] = normalize_additional_discounts(inp.additional_discounts)
-    payload["barcode"] = await _checked_barcode(client_id, inp.barcode)
-    payload["package_barcode"] = await _checked_barcode(client_id, inp.package_barcode, other=payload["barcode"])
-    _require_package_size(payload["package_barcode"], payload.get("pieces_per_package"))
+    # Fields of modules the client doesn't have are ignored, not rejected: the
+    # forms of such a client simply don't show them.
+    if await client_has_module(client_id, Module.WAREHOUSE):
+        payload["barcode"] = await _checked_barcode(client_id, inp.barcode)
+        payload["package_barcode"] = await _checked_barcode(client_id, inp.package_barcode, other=payload["barcode"])
+        _require_package_size(payload["package_barcode"], payload.get("pieces_per_package"))
+    else:
+        payload["barcode"] = payload["package_barcode"] = None
     payload["active"] = True if inp.active is None else inp.active
-    payload["track_expiry"] = bool(inp.track_expiry)
+    payload["track_expiry"] = bool(inp.track_expiry) and await client_has_module(client_id, Module.EXPIRY)
     obj = Product(**payload, client_id=client_id)
     await db.products.insert_one({**obj.dict(), "_id": obj.id})
     return obj
@@ -1724,21 +1835,28 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
         "discounts": normalize_discounts(discounts, discount_value),
         "additional_discounts": normalize_additional_discounts(additional),
     }
+    # Fields of modules the client doesn't have are ignored (stored values stay).
+    in_barcode, in_package = inp.barcode, inp.package_barcode
+    in_track = inp.track_expiry
+    if not await client_has_module(existing["client_id"], Module.WAREHOUSE):
+        in_barcode = in_package = None
+    if not await client_has_module(existing["client_id"], Module.EXPIRY):
+        in_track = None
     was_active = existing.get("active", True)
     updated["active"] = was_active if inp.active is None else inp.active
     was_tracking = bool(existing.get("track_expiry"))
-    updated["track_expiry"] = was_tracking if inp.track_expiry is None else inp.track_expiry
+    updated["track_expiry"] = was_tracking if in_track is None else in_track
     if updated["active"] and not was_active and not (updated.get("price_no_vat") or 0) > 0:
         raise HTTPException(status_code=400, detail="Set a price before activating the product")
-    if inp.barcode is None:
+    if in_barcode is None:
         updated["barcode"] = existing.get("barcode")
     else:
-        updated["barcode"] = await _checked_barcode(existing["client_id"], inp.barcode, exclude_id=product_id)
-    if inp.package_barcode is None:
+        updated["barcode"] = await _checked_barcode(existing["client_id"], in_barcode, exclude_id=product_id)
+    if in_package is None:
         updated["package_barcode"] = existing.get("package_barcode")
     else:
         updated["package_barcode"] = await _checked_barcode(
-            existing["client_id"], inp.package_barcode, exclude_id=product_id, other=updated["barcode"]
+            existing["client_id"], in_package, exclude_id=product_id, other=updated["barcode"]
         )
     _require_package_size(updated["package_barcode"], updated.get("pieces_per_package"))
     if updated["barcode"] and updated["barcode"] == updated["package_barcode"]:
@@ -1811,7 +1929,7 @@ class BarcodeInput(BaseModel):
 
 
 @api_router.get("/products/by-barcode/{code}", response_model=ProductOut)
-async def product_by_barcode(code: str, current_user: User = Depends(get_current_user)):
+async def product_by_barcode(code: str, current_user: User = Depends(require_module(Module.WAREHOUSE))):
     try:
         normalized = normalize_barcode(code)
     except ValueError:
@@ -1838,7 +1956,7 @@ async def product_by_barcode(code: str, current_user: User = Depends(get_current
 
 @api_router.post("/products/{product_id}/barcode", response_model=Product)
 async def set_product_barcode(
-    product_id: str, inp: BarcodeInput, current_user: User = Depends(require_stock_writer)
+    product_id: str, inp: BarcodeInput, current_user: User = Depends(require_module(Module.WAREHOUSE, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))
 ):
     """Links a scanned code to a product (warehouse staff can't edit products)."""
     existing = await get_scoped_or_404("products", product_id, current_user)
@@ -1867,7 +1985,9 @@ class QuickProductInput(BaseModel):
 
 
 @api_router.post("/products/quick", response_model=Product)
-async def quick_add_product(inp: QuickProductInput, current_user: User = Depends(require_stock_writer)):
+async def quick_add_product(
+    inp: QuickProductInput, current_user: User = Depends(require_module(Module.WAREHOUSE, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))
+):
     """Warehouse adds a product that has just arrived but isn't in the system.
     It is created inactive with no price: an admin sets price/VAT and activates
     it before sales reps can see or order it."""
@@ -1933,8 +2053,25 @@ _IMPORT_EXAMPLE_ROWS = [
 ]
 
 
+# Import columns that belong to a module: dropped for clients without it.
+_IMPORT_FIELD_MODULE = {
+    "barcode": Module.WAREHOUSE,
+    "package_barcode": Module.WAREHOUSE,
+    "stock_qty": Module.STOCK,
+    "track_expiry": Module.EXPIRY,
+}
+
+
+async def _import_disabled_fields(client_id: Optional[str]) -> set:
+    doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "modules": 1}) if client_id else None
+    enabled = set(effective_modules(doc))
+    return {f for f, m in _IMPORT_FIELD_MODULE.items() if m.value not in enabled}
+
+
 def _import_header_key(value: Any) -> str:
-    text = str(value or "").lower()
+    # "Stanje (komada)" and "Prati rok (da/ne)" from the downloadable example
+    # must match the plain names: drop the bracketed hint.
+    text = re.sub(r"\(.*?\)", "", str(value or "").lower())
     for src, dst in (("đ", "dj"), ("č", "c"), ("ć", "c"), ("š", "s"), ("ž", "z")):
         text = text.replace(src, dst)
     return re.sub(r"[^a-z0-9]", "", text)
@@ -1960,24 +2097,28 @@ def _import_number(value: Any, label: str, integer: bool = False, maximum: Optio
 
 
 @api_router.get("/products/import-template")
-async def product_import_template(current_user: User = Depends(require_manager)):
+async def product_import_template(
+    client_id: Optional[str] = Query(None), current_user: User = Depends(require_manager)
+):
     from openpyxl import Workbook
     from fastapi.responses import Response
     import io
 
+    # Only the columns the client's modules allow (superadmin: pass client_id, else all).
+    disabled = await _import_disabled_fields(current_user.client_id or client_id)
+    keep = [i for i, (field, _) in enumerate(_IMPORT_TEMPLATE_HEADERS) if field not in disabled]
     wb = Workbook()
     ws = wb.active
     ws.title = "Artikli"
-    ws.append([label for _, label in _IMPORT_TEMPLATE_HEADERS])
-    # name, barcode, manufacturer, price, vat, pieces/pack, pieces/transport, stock
+    ws.append([_IMPORT_TEMPLATE_HEADERS[i][1] for i in keep])
     for row in _IMPORT_EXAMPLE_ROWS:
-        ws.append(list(row))
-    for cell in ws["B"][1:]:  # barcodes as text keep leading zeros
-        cell.number_format = "@"
-    for cell in ws["J"][1:]:
-        cell.number_format = "@"
-    for col, width in zip("ABCDEFGHIJ", (32, 18, 22, 14, 8, 20, 30, 16, 18, 18)):
-        ws.column_dimensions[col].width = width
+        ws.append([row[i] for i in keep])
+    for pos, i in enumerate(keep, start=1):
+        letter = ws.cell(row=1, column=pos).column_letter
+        if _IMPORT_TEMPLATE_HEADERS[i][0] in ("barcode", "package_barcode"):  # text keeps leading zeros
+            for cell in ws[letter][1:]:
+                cell.number_format = "@"
+        ws.column_dimensions[letter].width = (32, 18, 22, 14, 8, 20, 30, 16, 18, 18)[i]
     buf = io.BytesIO()
     wb.save(buf)
     return Response(
@@ -2016,6 +2157,10 @@ async def import_products(
         field = _IMPORT_HEADERS.get(_import_header_key(head))
         if field and field not in columns.values():
             columns[idx] = field
+    # Columns of modules this client doesn't have are skipped (and reported).
+    disabled = await _import_disabled_fields(target_client)
+    ignored_columns = sorted({f for f in columns.values() if f in disabled})
+    columns = {idx: f for idx, f in columns.items() if f not in disabled}
     if "name" not in columns.values() and "barcode" not in columns.values():
         raise HTTPException(status_code=400, detail="Missing a 'Naziv' (name) or 'Barkod' (barcode) column")
     body = [(i + 2, r) for i, r in enumerate(raw_rows[1:]) if any(c not in (None, "") for c in r)]
@@ -2167,7 +2312,7 @@ async def import_products(
         entry.pop("_product", None)
         entry.pop("_values", None)
     summary = {k: sum(1 for r in rows_out if r["action"] == k) for k in ("create", "update", "error")}
-    return {"dry_run": dry_run, "summary": summary, "rows": rows_out}
+    return {"dry_run": dry_run, "summary": summary, "rows": rows_out, "ignored_columns": ignored_columns}
 
 
 # ---------------- Orders ----------------
@@ -2481,9 +2626,13 @@ async def change_order_status(
     target = inp.status.value
     note = (inp.note or "").strip() or None
 
-    override = current_user.role in _MANAGER_ROLES
     if current == target:
         raise HTTPException(status_code=400, detail="Order already has that status")
+    base_flow = {OrderStatus.NEW.value, OrderStatus.CANCELED.value}
+    if (current not in base_flow or target not in base_flow) and not has_module(current_user, Module.WAREHOUSE):
+        # Without the warehouse module an order is only new or canceled.
+        raise HTTPException(status_code=403, detail=f"Module not enabled: {Module.WAREHOUSE.value}")
+    override = current_user.role in _MANAGER_ROLES
     if override:
         # Anything -> anything, but only with a reason, except the normal flow.
         if (current, target) not in _WAREHOUSE_FLOW and not note:
@@ -2529,11 +2678,12 @@ async def change_order_status(
     if result.matched_count == 0:
         raise HTTPException(status_code=409, detail="Order was changed in the meantime")
     updated_doc = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if target == OrderStatus.SHIPPED.value:
-        await _move_stock_for_order(updated_doc, -1, "shipment", current_user)
-    elif current == OrderStatus.SHIPPED.value:
-        # An admin took a shipped order back: the goods return to stock.
-        await _move_stock_for_order(updated_doc, +1, "reversal", current_user)
+    if await client_has_module(updated_doc["client_id"], Module.STOCK):
+        if target == OrderStatus.SHIPPED.value:
+            await _move_stock_for_order(updated_doc, -1, "shipment", current_user)
+        elif current == OrderStatus.SHIPPED.value:
+            # An admin took a shipped order back: the goods return to stock.
+            await _move_stock_for_order(updated_doc, +1, "reversal", current_user)
     if target in (OrderStatus.SHIPPED.value, OrderStatus.REJECTED.value):
         await _send_order_status_email(updated_doc, target, note, current_user)
     return _order_out(updated_doc)
@@ -2566,7 +2716,7 @@ async def _validated_picked_batches(item: dict, line: PickedItemInput) -> List[d
 async def update_picked_items(
     order_id: str,
     inp: PickedItemsInput,
-    current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)),
+    current_user: User = Depends(require_module(Module.WAREHOUSE, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)),
 ):
     order = await get_scoped_or_404("orders", order_id, current_user)
     current = _status_value(order)
@@ -2922,7 +3072,7 @@ async def _move_stock_for_order(order: dict, direction: int, kind: str, user: Us
 
 
 @api_router.post("/stock/receipts")
-async def stock_receipt(inp: StockReceiptInput, current_user: User = Depends(require_stock_writer)):
+async def stock_receipt(inp: StockReceiptInput, current_user: User = Depends(require_module(Module.STOCK, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     products = []
     expiries = []
     for line in inp.items:
@@ -2983,7 +3133,7 @@ async def _apply_count(product: dict, count, user: Optional[User], note: Optiona
 
 
 @api_router.post("/stock/adjustments")
-async def stock_adjustment(inp: StockAdjustmentInput, current_user: User = Depends(require_stock_writer)):
+async def stock_adjustment(inp: StockAdjustmentInput, current_user: User = Depends(require_module(Module.STOCK, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     product = await get_scoped_or_404("products", inp.product_id, current_user)
     count = _validated_count(product, inp.counted_qty, inp.batches)
     delta = await _apply_count(product, count, current_user, inp.note)
@@ -3002,7 +3152,7 @@ class StockBatchAdjustmentInput(BaseModel):
 
 
 @api_router.post("/stock/adjustments/batch")
-async def stock_adjustment_batch(inp: StockBatchAdjustmentInput, current_user: User = Depends(require_stock_writer)):
+async def stock_adjustment_batch(inp: StockBatchAdjustmentInput, current_user: User = Depends(require_module(Module.STOCK, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     """A whole stocktake in one request; every product is checked first so a
     bad id doesn't leave the count half applied."""
     seen = set()
@@ -3022,7 +3172,7 @@ async def stock_adjustment_batch(inp: StockBatchAdjustmentInput, current_user: U
 
 
 @api_router.get("/products/{product_id}/batches", response_model=List[StockBatch])
-async def product_batches(product_id: str, current_user: User = Depends(require_stock_writer)):
+async def product_batches(product_id: str, current_user: User = Depends(require_module(Module.EXPIRY, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     """Batches of one product with pieces in stock, earliest expiry first
     (undated stock first). Warehouse/admin/superadmin only."""
     await get_scoped_or_404("products", product_id, current_user)
@@ -3035,7 +3185,7 @@ class WriteOffInput(BaseModel):
 
 
 @api_router.post("/stock/batches/{batch_id}/writeoff")
-async def writeoff_batch(batch_id: str, inp: WriteOffInput, current_user: User = Depends(require_stock_writer)):
+async def writeoff_batch(batch_id: str, inp: WriteOffInput, current_user: User = Depends(require_module(Module.EXPIRY, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     """Writes the pieces of a batch off the stock (e.g. expired goods)."""
     batch = await get_scoped_or_404("stock_batches", batch_id, current_user)
     if batch["qty"] <= 0:
@@ -3067,7 +3217,7 @@ class ExpiringResponse(BaseModel):
 
 
 @api_router.get("/stock/expiring", response_model=ExpiringResponse)
-async def stock_expiring(current_user: User = Depends(require_roles(Role.ADMIN, Role.WAREHOUSE))):
+async def stock_expiring(current_user: User = Depends(require_module(Module.EXPIRY, Role.ADMIN, Role.WAREHOUSE))):
     """Batches that are expired or reach one of the client's alert thresholds
     (default 30/15/5 days). For the client's admin and warehouse only: no
     superadmin (not tied to a warehouse), no sales reps."""
@@ -3112,7 +3262,7 @@ async def stock_expiring(current_user: User = Depends(require_roles(Role.ADMIN, 
 async def stock_movements(
     product_id: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
-    current_user: User = Depends(require_stock_writer),
+    current_user: User = Depends(require_module(Module.STOCK, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)),
 ):
     query = _scope_query(current_user)
     if product_id:
@@ -3158,7 +3308,7 @@ async def orders_report(
     from_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive (by created_at)"),
     to_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     client_id: Optional[str] = None,
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_module(Module.REPORTS, Role.SUPERADMIN, Role.ADMIN)),
 ):
     """Order counts per status, per sales rep and per warehouse handler for a
     period. Admin: own client. Superadmin: all clients, or one via client_id."""

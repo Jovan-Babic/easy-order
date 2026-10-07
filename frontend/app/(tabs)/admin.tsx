@@ -22,6 +22,8 @@ import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
+import { useAuth } from "@/src/context/AuthContext";
+import { hasModule } from "@/src/utils/modules";
 import { api, ApiError, Customer, Product } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
@@ -138,6 +140,7 @@ function formatPhone(countryCode: string, phoneNumber: string) {
 
 export default function AdminScreen() {
   const { t, showToast } = useApp();
+  const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const safeBottom = Math.max(insets.bottom, 12);
   const [tab, setTab] = useState<Tab>("products");
@@ -528,6 +531,8 @@ export default function AdminScreen() {
                     </View>
                   </View>
                   <FormField label={t("piecesPerPackage")} value={form.pieces_per_package} onChangeText={(v) => setForm((f: any) => ({ ...f, pieces_per_package: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-pieces" />
+                  {hasModule(user, "warehouse") && (
+                  <>
                   <View style={{ flexDirection: "row", alignItems: "flex-end", gap: spacing.sm }}>
                     <View style={{ flex: 1 }}>
                       <FormField label={t("barcode")} value={form.barcode ?? ""} onChangeText={(v) => setForm((f: any) => ({ ...f, barcode: v.replace(/[^A-Za-z0-9-]/g, "") }))} testID="form-barcode" />
@@ -561,6 +566,8 @@ export default function AdminScreen() {
                       setScanBoxOpen(false);
                     }}
                   />
+                  </>
+                  )}
                   <FormField label={t("transportPackage")} value={form.boxes_per_transport} onChangeText={(v) => setForm((f: any) => ({ ...f, boxes_per_transport: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-boxes" />
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: spacing.sm }}>
                     <View style={{ flex: 1, paddingRight: spacing.md }}>
@@ -573,6 +580,7 @@ export default function AdminScreen() {
                       onValueChange={(v) => setForm((f: any) => ({ ...f, active: v }))}
                     />
                   </View>
+                  {hasModule(user, "expiry") && (
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: spacing.sm }}>
                     <View style={{ flex: 1, paddingRight: spacing.md }}>
                       <Text style={{ fontSize: font.base, fontWeight: "600", color: colors.onSurface }}>{t("trackExpiry")}</Text>
@@ -584,6 +592,7 @@ export default function AdminScreen() {
                       onValueChange={(v) => setForm((f: any) => ({ ...f, track_expiry: v }))}
                     />
                   </View>
+                  )}
                 </>
               ) : (
                 <>

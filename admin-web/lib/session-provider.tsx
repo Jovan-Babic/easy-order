@@ -8,6 +8,8 @@ export type SessionUser = {
   email: string;
   role: "superadmin" | "admin" | "warehouse";
   client_id: string | null;
+  // Modules the user's client has (superadmin: all).
+  modules: string[];
 };
 
 const SessionContext = createContext<SessionUser | null>(null);
@@ -16,6 +18,10 @@ const SessionContext = createContext<SessionUser | null>(null);
 // pages read it via useSession() instead of each re-fetching /auth/me.
 export function SessionProvider({ user, children }: { user: SessionUser; children: React.ReactNode }) {
   return <SessionContext.Provider value={user}>{children}</SessionContext.Provider>;
+}
+
+export function useHasModule(module: string): boolean {
+  return useSession().modules.includes(module);
 }
 
 export function useSession(): SessionUser {

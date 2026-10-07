@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useLanguage } from "@/lib/i18n";
 import { ClientFields } from "@/components/ClientFields";
 import { ClientInfo } from "@/lib/orders";
+import { ALL_MODULES } from "@/lib/modules";
 import { ClientFormFields, clientPayload, deleteUploadedLogo, uploadLogo } from "@/lib/clientForm";
 
 // Superadmin-only editor for a client's company data and invoice settings.
@@ -24,6 +25,7 @@ export function ClientEditForm({ client }: { client: ClientInfo }) {
     invoice_numbering: client.invoice_numbering ?? "auto",
     invoice_next_seq: "", // only sent when the superadmin types one
     expiry_alert_days: (client.expiry_alert_days ?? [30, 15, 5]).slice().sort((a, b) => b - a).join(", "),
+    modules: client.modules ?? [...ALL_MODULES],
   });
   const [pendingLogo, setPendingLogo] = useState<File | null>(null);
   const [preview, setPreview] = useState(client.logo ?? "");

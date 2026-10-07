@@ -16,6 +16,8 @@ import dayjs from "dayjs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
+import { useAuth } from "@/src/context/AuthContext";
+import { hasModule } from "@/src/utils/modules";
 import { api, ApiError, ClientInfo, ExpiringResponse, Order, OrderStatus, Product } from "@/src/api";
 import { Button } from "@/src/components/Button";
 import { StatusBadge } from "@/src/components/StatusBadge";
@@ -30,6 +32,11 @@ type Mode = "pack" | "receipt" | "count" | "expiry";
 
 export default function WarehouseScreen() {
   const { t } = useApp();
+  const { user } = useAuth();
+  // Packing is the Magacin module; receipt/count need Zalihe, expiry list needs Rokovi.
+  const modes = (["pack", "receipt", "count", "expiry"] as Mode[]).filter((m) =>
+    m === "pack" ? true : m === "expiry" ? hasModule(user, "expiry") : hasModule(user, "stock")
+  );
   const insets = useSafeAreaInsets();
   const safeBottom = Math.max(insets.bottom, 12);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -45,8 +52,8 @@ export default function WarehouseScreen() {
   // The warehouse home cards open a specific mode (`ts` changes on every tap).
   const params = useLocalSearchParams<{ mode?: string; ts?: string }>();
   useEffect(() => {
-    if (params.mode === "pack" || params.mode === "expiry") setMode(params.mode);
-  }, [params.mode, params.ts]);
+    if (params.mode === "pack" || (params.mode === "expiry" && hasModule(user, "expiry"))) setMode(params.mode);
+  }, [params.mode, params.ts, user]);
   const [expiring, setExpiring] = useState<ExpiringResponse | null>(null);
   // Products with expiry tracking, to hint which expiry date to pack first.
   const [expiryProducts, setExpiryProducts] = useState<Record<string, Product>>({});
@@ -112,8 +119,9 @@ export default function WarehouseScreen() {
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
         <Text style={styles.headerTitle}>{t("warehouse")}</Text>
         <Text style={styles.headerSub}>{t("toPack")}</Text>
+        {modes.length > 1 && (
         <View style={styles.modeRow}>
-          {(["pack", "receipt", "count", "expiry"] as Mode[]).map((m) => (
+          {modes.map((m) => (
             <Pressable
               key={m}
               testID={`mode-${m}`}
@@ -132,6 +140,7 @@ export default function WarehouseScreen() {
             </Pressable>
           ))}
         </View>
+        )}
       </View>
 
       {mode === "expiry" ? (
