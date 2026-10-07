@@ -49,7 +49,7 @@ Napomena: uvoz traži `openpyxl`; B3 traži `expo-camera` (nativno → novi APK 
 - Postojeći backend `/stock/*` ostaje isti; verovatno treba jedan `POST /stock/adjustments/batch` da popis ne šalje desetine zahteva (atomično, jedna napomena).
 
 ### B4 – Opciono
-- `transport_barcode` i množenje pri prijemu.
+- ✅ Urađeno kao `package_barcode` (barkod kutije, množi sa `pieces_per_package`; `boxes_per_transport` se ne koristi): polje na proizvodu, `by-barcode` vraća `scan_unit`/`scan_qty`, skener u Prijemu/Popisu dodaje celu kutiju, Excel kolona „Barkod kutije“. Rok trajanja se i dalje obavezno unosi pri prijemu.
 - Štampa barkod nalepnica iz portala.
 - Offline red čekanja za popis u magacinu sa lošim signalom.
 

@@ -54,6 +54,11 @@ export type Product = {
   pieces_per_package?: number;
   boxes_per_transport?: number;
   barcode?: string | null;
+  // Barcode of one box: a scan stands for pieces_per_package pieces.
+  package_barcode?: string | null;
+  // Only on GET /products/by-barcode: what the scanned code was and how many pieces it stands for.
+  scan_unit?: "piece" | "package" | null;
+  scan_qty?: number;
   // false = delisted / awaiting price; hidden from sales reps. Missing = active.
   active?: boolean;
   // Stock: null/undefined stock_qty = not tracked.
@@ -290,11 +295,12 @@ export const api = {
     }),
   getMyClient: () => req<ClientInfo>("/clients/me"),
   getProductByBarcode: (code: string) => req<Product>(`/products/by-barcode/${encodeURIComponent(code)}`),
-  linkBarcode: (id: string, barcode: string) =>
-    req<Product>(`/products/${id}/barcode`, { method: "POST", body: JSON.stringify({ barcode }) }),
+  linkBarcode: (id: string, barcode: string, kind: "piece" | "package" = "piece") =>
+    req<Product>(`/products/${id}/barcode`, { method: "POST", body: JSON.stringify({ barcode, kind }) }),
   quickAddProduct: (p: {
     name: string;
     barcode: string;
+    barcode_kind?: "piece" | "package";
     manufacturer?: string;
     pieces_per_package?: number;
     boxes_per_transport?: number;

@@ -20,6 +20,7 @@ type Product = {
   pieces_per_package?: number;
   boxes_per_transport?: number;
   barcode?: string | null;
+  package_barcode?: string | null;
   active?: boolean;
   track_expiry?: boolean;
 };
@@ -37,6 +38,7 @@ type ProductFormState = {
   pieces_per_package: string;
   boxes_per_transport: string;
   barcode: string;
+  package_barcode: string;
   active: boolean;
   track_expiry: boolean;
   client_id: string;
@@ -55,6 +57,7 @@ const emptyForm = (): ProductFormState => ({
   pieces_per_package: "",
   boxes_per_transport: "",
   barcode: "",
+  package_barcode: "",
   active: true,
   track_expiry: false,
   client_id: "",
@@ -169,6 +172,7 @@ export default function ProductsPage() {
       pieces_per_package: String(product.pieces_per_package ?? ""),
       boxes_per_transport: String(product.boxes_per_transport ?? ""),
       barcode: product.barcode || "",
+      package_barcode: product.package_barcode || "",
       active: product.active !== false,
       track_expiry: product.track_expiry === true,
       client_id: product.client_id || "",
@@ -202,6 +206,12 @@ export default function ProductsPage() {
     }
     if (form.boxes_per_transport && toInteger(form.boxes_per_transport) < 0) {
       nextErrors.boxes_per_transport = t("valueNonNegative");
+    }
+    if (form.package_barcode.trim() && !(toInteger(form.pieces_per_package) > 0)) {
+      nextErrors.package_barcode = t("boxNeedsPieces");
+    }
+    if (form.package_barcode.trim() && form.package_barcode.trim() === form.barcode.trim()) {
+      nextErrors.package_barcode = t("boxBarcodeDiffers");
     }
     if (isSuperAdmin && !form.client_id) nextErrors.client_id = t("clientRequired");
 
@@ -258,6 +268,7 @@ export default function ProductsPage() {
         pieces_per_package: toInteger(form.pieces_per_package),
         boxes_per_transport: toInteger(form.boxes_per_transport),
         barcode: form.barcode.trim(),
+        package_barcode: form.package_barcode.trim(),
         active: form.active,
         track_expiry: form.track_expiry,
       };
@@ -492,6 +503,13 @@ export default function ProductsPage() {
                   onChange={(value) => setField("barcode", value.replace(/[^A-Za-z0-9-]/g, ""))}
                 />
                 <FormField
+                  label={t("packageBarcode")}
+                  value={form.package_barcode}
+                  error={fieldErrors.package_barcode}
+                  onChange={(value) => setField("package_barcode", value.replace(/[^A-Za-z0-9-]/g, ""))}
+                />
+                <p className="-mt-2 text-xs text-muted sm:col-span-2">{t("packageBarcodeHint")}</p>
+                <FormField
                   label={t("boxesPerTransport")}
                   value={form.boxes_per_transport}
                   inputMode="numeric"
@@ -574,6 +592,7 @@ export default function ProductsPage() {
                 <th className="px-4 py-3">{t("name")}</th>
                 <th className="px-4 py-3">{t("manufacturer")}</th>
                 <th className="px-4 py-3">{t("barcode")}</th>
+                <th className="px-4 py-3">{t("packageBarcode")}</th>
                 <th className="px-4 py-3">{t("productPrice")}</th>
                 <th className="px-4 py-3">{t("defaultDiscount")}</th>
                 <th className="px-4 py-3">{t("additionalDiscountOptions")}</th>
@@ -604,6 +623,7 @@ export default function ProductsPage() {
                   </td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.manufacturer || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.barcode || "-"}</td>
+                  <td className="px-4 py-3 text-onSurfaceSecondary">{p.package_barcode || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{(p.price_no_vat ?? 0).toFixed(2)}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.discount ?? 0}%</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{(p.additional_discounts && p.additional_discounts.length ? p.additional_discounts : [0]).map((d) => `${d}%`).join(", ")}</td>
