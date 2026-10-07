@@ -12,7 +12,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { Redirect, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
@@ -28,7 +28,7 @@ import { Button } from "@/src/components/Button";
 import { BarcodeScanner } from "@/src/components/BarcodeScanner";
 import { LOGOUT } from "@/constants/testIds";
 
-export default function OrderCatalog() {
+function OrderCatalogScreen() {
   const { t, showToast } = useApp();
   const { logout } = useAuth();
   const router = useRouter();
@@ -1023,3 +1023,11 @@ const styles = StyleSheet.create({
   custName: { fontSize: font.lg, fontWeight: "700", color: colors.onSurface },
   custSub: { fontSize: font.sm, color: colors.muted },
 });
+
+// The app opens on "/" which is this screen for everyone, so warehouse staff
+// (who don't order anything) are sent to their own home tab instead.
+export default function OrderCatalog() {
+  const { user } = useAuth();
+  if (user?.role === "warehouse") return <Redirect href="/home" />;
+  return <OrderCatalogScreen />;
+}
