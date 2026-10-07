@@ -23,7 +23,7 @@ export default function TabsLayout() {
 
   return (
     <Tabs
-      initialRouteName={isWarehouse ? "warehouse" : "index"}
+      initialRouteName={isWarehouse ? "home" : "index"}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.brand,
@@ -38,6 +38,16 @@ export default function TabsLayout() {
         tabBarLabelStyle: { fontSize: 11, fontWeight: "600" },
       }}
     >
+      <Tabs.Screen
+        name="home"
+        options={{
+          title: t("home"),
+          href: isWarehouse ? undefined : null,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="home-outline" size={size} color={color} />
+          ),
+        }}
+      />
       <Tabs.Screen
         name="index"
         options={{

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -10,7 +10,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import dayjs from "dayjs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -42,6 +42,11 @@ export default function WarehouseScreen() {
   const [client, setClient] = useState<ClientInfo | null>(null);
   const [invoiceNo, setInvoiceNo] = useState("");
   const [mode, setMode] = useState<Mode>("pack");
+  // The warehouse home cards open a specific mode (`ts` changes on every tap).
+  const params = useLocalSearchParams<{ mode?: string; ts?: string }>();
+  useEffect(() => {
+    if (params.mode === "pack" || params.mode === "expiry") setMode(params.mode);
+  }, [params.mode, params.ts]);
   const [expiring, setExpiring] = useState<ExpiringResponse | null>(null);
   // Products with expiry tracking, to hint which expiry date to pack first.
   const [expiryProducts, setExpiryProducts] = useState<Record<string, Product>>({});
