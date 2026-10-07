@@ -43,7 +43,7 @@ export function ClientEditForm({ client }: { client: ClientInfo }) {
         uploaded = await uploadLogo(pendingLogo);
         logo = uploaded;
       }
-      const res = await fetch(`/api/clients/${client.id}`, { method: "PUT", body: JSON.stringify(clientPayload(form, logo)) });
+      const res = await fetch(`/api/clients/${client.id}`, { method: "PUT", body: JSON.stringify(clientPayload(form, logo, !client.subscription?.plan_id)) });
       if (!res.ok) {
         if (uploaded) await deleteUploadedLogo(uploaded);
         const body = await res.json().catch(() => ({}));
@@ -64,7 +64,13 @@ export function ClientEditForm({ client }: { client: ClientInfo }) {
 
   return (
     <form onSubmit={submit} className="mt-8 grid max-w-xl gap-3 rounded-lg bg-surfaceSecondary p-6 shadow-sm">
+      {client.subscription?.plan_id && (
+        <p className="rounded-md bg-surface p-3 text-sm text-onSurfaceSecondary">
+          {t("onPlan")} <strong>{client.subscription.plan_name}</strong>. {t("modulesFromPlan")}
+        </p>
+      )}
       <ClientFields
+        hideModules={!!client.subscription?.plan_id}
         form={form}
         setForm={setForm}
         logoPreview={preview}

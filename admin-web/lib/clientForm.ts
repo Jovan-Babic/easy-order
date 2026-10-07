@@ -58,7 +58,8 @@ export function parseAlertDays(text: string): number[] | null {
 }
 
 // Body for POST/PUT /clients (without the admin fields on create).
-export function clientPayload(form: ClientFormFields, logo: string) {
+// `withModules` false for a client on a plan: its modules come from the plan.
+export function clientPayload(form: ClientFormFields, logo: string, withModules = true) {
   const next = Math.trunc(Number(form.invoice_next_seq));
   return {
     name: form.name.trim(),
@@ -73,6 +74,6 @@ export function clientPayload(form: ClientFormFields, logo: string) {
     invoice_numbering: form.invoice_numbering,
     invoice_next_seq: form.invoice_next_seq !== "" && next >= 1 ? next : null,
     expiry_alert_days: parseAlertDays(form.expiry_alert_days),
-    modules: form.modules,
+    ...(withModules ? { modules: form.modules } : {}),
   };
 }

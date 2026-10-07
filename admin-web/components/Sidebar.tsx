@@ -14,6 +14,7 @@ type NavUser = {
 const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly string[]; module?: string }> = [
   { href: "/dashboard", labelKey: "dashboard", roles: ["superadmin", "admin"] },
   { href: "/clients", labelKey: "clients", roles: ["superadmin"] },
+  { href: "/subscriptions", labelKey: "subscriptions", roles: ["superadmin"] },
   { href: "/users", labelKey: "users", roles: ["superadmin", "admin"] },
   { href: "/products", labelKey: "products", roles: ["superadmin", "admin"] },
   { href: "/customers", labelKey: "customers", roles: ["superadmin", "admin"] },

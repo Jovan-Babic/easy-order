@@ -10,6 +10,8 @@ export type SessionUser = {
   client_id: string | null;
   // Modules the user's client has (superadmin: all).
   modules: string[];
+  // Only when the client has a subscription.
+  subscription?: { status: "active" | "grace"; ends_at: string; days_left: number; grace_ends_at: string } | null;
 };
 
 const SessionContext = createContext<SessionUser | null>(null);

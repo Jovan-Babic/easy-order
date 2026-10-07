@@ -14,6 +14,7 @@ export function ClientFields({
   onPickLogo,
   onRemoveLogo,
   nextSeqHint,
+  hideModules,
 }: {
   form: ClientFormFields;
   setForm: (f: ClientFormFields) => void;
@@ -21,6 +22,8 @@ export function ClientFields({
   onPickLogo: (file: File) => void;
   onRemoveLogo: () => void;
   nextSeqHint?: number | null;
+  // The modules come from the client's plan, so they aren't edited here.
+  hideModules?: boolean;
 }) {
   const { t } = useLanguage();
   const set = (patch: Partial<ClientFormFields>) => setForm({ ...form, ...patch });
@@ -33,9 +36,9 @@ export function ClientFields({
       <input placeholder={t("companyPhone")} value={form.phone} onChange={(e) => set({ phone: e.target.value })} className={input} />
       <input placeholder={t("taxIdPib")} value={form.pib} onChange={(e) => set({ pib: e.target.value })} className={input} />
 
-      <h2 className="mt-2 font-bold text-onSurface">{t("modules")}</h2>
-      <p className="-mt-2 text-xs text-muted">{t("modulesHint")}</p>
-      {MODULES.map((m) => (
+      {!hideModules && <h2 className="mt-2 font-bold text-onSurface">{t("modules")}</h2>}
+      {!hideModules && <p className="-mt-2 text-xs text-muted">{t("modulesHint")}</p>}
+      {!hideModules && MODULES.map((m) => (
         <label key={m.key} className="flex items-start gap-3 text-sm">
           <input
             type="checkbox"

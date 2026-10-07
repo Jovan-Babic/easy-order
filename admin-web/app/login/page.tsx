@@ -25,7 +25,7 @@ export default function LoginPage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || t("invalidCredentials"));
+        setError(body.detail === "Subscription expired" ? t("subscriptionExpired") : body.detail || t("invalidCredentials"));
         return;
       }
       router.push("/dashboard");

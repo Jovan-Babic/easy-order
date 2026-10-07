@@ -33,7 +33,7 @@ Jedino što treba pratiti zbog veličine baze je `stock_movements` (append-only)
 
 ## Šta nije urađeno (namerno)
 
-- Paketi (Osnovni/Standard/Pun) kao šabloni koji popunjavaju `modules`, i naplata (LemonSqueezy ili drugo).
+- Naplata (LemonSqueezy ili drugo). Paketi, rok važenja i zaključavanje su u `PLAN_PRETPLATE.md`.
 - Ograničenja (broj korisnika, porudžbina mesečno): `limits` uz `modules`, kad se dogovore.
 - Brisanje/arhiviranje podataka isključenog modula.
 - Odluka: broj fakture se dodeljuje pri slanju, tj. u Magacinu. U Osnovi se faktura pravi na telefonu bez broja iz sistema.

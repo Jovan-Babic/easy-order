@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, File, Query, UploadFile
+from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, File, Query, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import hmac
 import secrets
 import smtplib
 import logging
@@ -157,6 +158,10 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("Could not create unique index on products.package_barcode: %s", exc)
     try:
+        await db.subscription_events.create_index([("client_id", 1), ("created_at", -1)])
+    except Exception as exc:
+        logger.error("Could not create index on subscription_events: %s", exc)
+    try:
         # One batch per product and expiry date (expiry_date null = undated stock).
         await db.stock_batches.create_index([("product_id", 1), ("expiry_date", 1)], unique=True)
         await db.stock_batches.create_index([("client_id", 1), ("expiry_date", 1)])
@@ -232,6 +237,55 @@ def validated_modules(values: List[Module]) -> List[str]:
     return [m for m in ALL_MODULES if Module(m) in chosen]
 
 
+# ---------------- Subscriptions (PLAN_PRETPLATE.md) ----------------
+# A client may have a subscription: a package (plan) valid until a date. No
+# subscription = no expiry (older clients, internal/free accounts).
+#   active -> (ends_at passes) grace -> locked -> (90 days locked) data purge
+SUBSCRIPTION_GRACE_DAYS = int(os.environ.get("SUBSCRIPTION_GRACE_DAYS", "14"))
+SUBSCRIPTION_PURGE_AFTER_DAYS = int(os.environ.get("SUBSCRIPTION_PURGE_AFTER_DAYS", "90"))
+SUBSCRIPTION_REMINDER_DAYS = int(os.environ.get("SUBSCRIPTION_REMINDER_DAYS", "14"))
+CRON_SECRET = os.environ.get("CRON_SECRET", "")
+# The purge really deletes only when this is "true"; otherwise the daily job
+# just reports what it would delete (a dry run).
+AUTO_PURGE_ENABLED = os.environ.get("AUTO_PURGE_ENABLED", "false").lower() == "true"
+
+
+def subscription_state(sub: Optional[dict], today: Optional[date] = None) -> dict:
+    """Where a subscription stands today. status: none | active | grace | locked."""
+    if not sub:
+        return {"status": "none"}
+    today = today or datetime.now(timezone.utc).date()
+    ends = date.fromisoformat(sub["ends_at"])
+    grace_ends = ends + timedelta(days=SUBSCRIPTION_GRACE_DAYS)
+    state = {
+        "status": "active",
+        "ends_at": ends.isoformat(),
+        "days_left": (ends - today).days,
+        "grace_ends_at": grace_ends.isoformat(),
+        "locked_since": None,
+        "purge_at": None,
+    }
+    locked_since = None
+    if sub.get("canceled_at"):
+        locked_since = date.fromisoformat(str(sub["canceled_at"])[:10])
+    elif today > grace_ends:
+        locked_since = grace_ends + timedelta(days=1)
+    elif today > ends:
+        state["status"] = "grace"
+    if locked_since is not None and locked_since <= today:
+        state["status"] = "locked"
+        state["locked_since"] = locked_since.isoformat()
+        state["purge_at"] = (locked_since + timedelta(days=SUBSCRIPTION_PURGE_AFTER_DAYS)).isoformat()
+    return state
+
+
+def _add_months(day: date, months: int) -> date:
+    month_index = day.month - 1 + months
+    year, month = day.year + month_index // 12, month_index % 12 + 1
+    last = [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+    return date(year, month, min(day.day, last))
+
+
 async def client_has_module(client_id: Optional[str], module: Module) -> bool:
     if not client_id:  # superadmin: not tied to a client
         return True
@@ -256,6 +310,10 @@ class Client(BaseModel):
     expiry_alert_days: List[int] = Field(default_factory=lambda: list(DEFAULT_EXPIRY_ALERT_DAYS))
     # Enabled modules (Module values); a stored client without the field has all.
     modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
+    # Subscription (superadmin manages it in /subscriptions): plan_id, plan_name,
+    # starts_at, ends_at, note, source, canceled_at, purge_paused, purged_at.
+    subscription: Optional[Dict[str, Any]] = None
+    subscription_state: Optional[Dict[str, Any]] = None  # computed
     # Read-only: the number the next shipped order will get (auto numbering).
     invoice_next_seq: Optional[int] = None
     active: bool = True
@@ -287,6 +345,9 @@ class ClientCreateInput(ClientInput):
     # is ignored.
     admin_name: str
     admin_email: EmailStr
+    # Optional: start the client on a package. Then `modules` comes from the plan.
+    plan_id: Optional[str] = None
+    subscription_ends_at: Optional[str] = None  # YYYY-MM-DD, required with plan_id
 
 
 class User(BaseModel):
@@ -303,12 +364,15 @@ class User(BaseModel):
     created_at: str = Field(default_factory=now_iso)
     # Set per request from the user's client (see get_authenticated_user); not stored.
     _modules: Optional[List[str]] = PrivateAttr(default=None)
+    _subscription: Optional[dict] = PrivateAttr(default=None)
 
 
 class UserOut(User):
     """/auth/me and login: the user plus the modules their client has
     (superadmin: all)."""
     modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
+    # Only when the client has a subscription: status active|grace, ends_at, days_left, grace_ends_at.
+    subscription: Optional[Dict[str, Any]] = None
 
 
 class InviteResult(BaseModel):
@@ -1006,18 +1070,22 @@ async def _migrate_user_emails_to_lowercase() -> None:
 async def client_is_active(client_id: Optional[str]) -> bool:
     """Superadmins have no client. For everyone else, a soft-deleted
     (active=False) or missing client locks out all of its users."""
-    return (await _client_gate(client_id))[0]
+    return (await _client_gate(client_id))["active"]
 
 
-async def _client_gate(client_id: Optional[str]) -> tuple:
-    """(active, modules) of a client in one lookup. Superadmins have no client:
-    always active, every module."""
+async def _client_gate(client_id: Optional[str]) -> dict:
+    """active flag, modules and subscription state of a client in one lookup.
+    Superadmins have no client: always active, every module, no subscription."""
     if not client_id:
-        return True, list(ALL_MODULES)
-    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "active": 1, "modules": 1})
+        return {"active": True, "modules": list(ALL_MODULES), "subscription": {"status": "none"}}
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "active": 1, "modules": 1, "subscription": 1})
     if not client:
-        return False, []
-    return client.get("active", True), effective_modules(client)
+        return {"active": False, "modules": [], "subscription": {"status": "none"}}
+    return {
+        "active": client.get("active", True),
+        "modules": effective_modules(client),
+        "subscription": subscription_state(client.get("subscription")),
+    }
 
 
 security = HTTPBearer(auto_error=False)
@@ -1025,8 +1093,9 @@ security = HTTPBearer(auto_error=False)
 
 async def user_out(raw: dict) -> UserOut:
     """User + the modules of their client (login / me responses)."""
-    _, modules = await _client_gate(raw.get("client_id"))
-    return UserOut(**{k: v for k, v in raw.items() if k != "modules"}, modules=modules)
+    gate = await _client_gate(raw.get("client_id"))
+    sub = gate["subscription"] if gate["subscription"]["status"] != "none" else None
+    return UserOut(**{k: v for k, v in raw.items() if k not in ("modules", "subscription")}, modules=gate["modules"], subscription=sub)
 
 
 async def get_authenticated_user(
@@ -1048,11 +1117,14 @@ async def get_authenticated_user(
         raise HTTPException(status_code=401, detail="Session expired, please log in again")
     # Checked on every request (not only at login) so deactivating a client
     # also cuts off tokens that were issued before the deactivation.
-    active, modules = await _client_gate(raw.get("client_id"))
-    if not active:
+    gate = await _client_gate(raw.get("client_id"))
+    if not gate["active"]:
         raise HTTPException(status_code=401, detail="Client account is disabled")
+    if gate["subscription"]["status"] == "locked":
+        raise HTTPException(status_code=401, detail="Subscription expired")
     user = User(**raw)
-    user._modules = modules
+    user._modules = gate["modules"]
+    user._subscription = gate["subscription"]
     return user
 
 
@@ -1163,8 +1235,11 @@ async def login(inp: LoginInput):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     await db.auth_attempts.delete_many({"key": key})
     # After the password check, so this can't be used to probe which emails exist.
-    if not await client_is_active(raw.get("client_id")):
+    gate = await _client_gate(raw.get("client_id"))
+    if not gate["active"]:
         raise HTTPException(status_code=403, detail="Client account is disabled")
+    if gate["subscription"]["status"] == "locked":
+        raise HTTPException(status_code=403, detail="Subscription expired")
     token = create_access_token(raw)
     return TokenResponse(access_token=token, user=await user_out(raw))
 
@@ -1260,7 +1335,8 @@ async def change_password(inp: ChangePasswordInput, current_user: User = Depends
 @api_router.get("/auth/me", response_model=UserOut)
 async def me(current_user: User = Depends(get_authenticated_user)):
     modules = list(ALL_MODULES) if current_user.role == Role.SUPERADMIN else (current_user._modules or [])
-    return UserOut(**current_user.dict(), modules=modules)
+    sub = current_user._subscription if (current_user._subscription or {}).get("status") not in (None, "none") else None
+    return UserOut(**current_user.dict(), modules=modules, subscription=sub)
 
 
 @api_router.post("/auth/logout")
@@ -1337,7 +1413,14 @@ def _invoice_counter_id(client_id: str) -> str:
 
 async def _client_out(doc: dict) -> Client:
     counter = await db.counters.find_one({"_id": _invoice_counter_id(doc["id"])})
-    return Client(**{**doc, "invoice_next_seq": (counter or {}).get("seq", 0) + 1})
+    state = subscription_state(doc.get("subscription"))
+    return Client(
+        **{
+            **doc,
+            "invoice_next_seq": (counter or {}).get("seq", 0) + 1,
+            "subscription_state": None if state["status"] == "none" else state,
+        }
+    )
 
 
 def _validated_invoice_settings(inp: ClientInput) -> dict:
@@ -1385,17 +1468,32 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
     alert_days = _validated_alert_days(inp.expiry_alert_days)
     if alert_days:
         settings["expiry_alert_days"] = alert_days
-    settings["modules"] = validated_modules(inp.modules if inp.modules is not None else list(Module))
+    plan = None
+    if inp.plan_id:
+        plan = await _get_plan_or_400(inp.plan_id)
+        settings["modules"] = list(plan["modules"])
+        settings["subscription"] = _new_subscription(plan, inp.subscription_ends_at, None, "manual")
+    else:
+        settings["modules"] = validated_modules(inp.modules if inp.modules is not None else list(Module))
 
     client_obj = Client(
         **{
-            **inp.dict(exclude={"admin_name", "admin_email", "invoice_next_seq", "expiry_alert_days", "modules"}),
+            **inp.dict(
+                exclude={
+                    "admin_name", "admin_email", "invoice_next_seq", "expiry_alert_days", "modules",
+                    "plan_id", "subscription_ends_at",
+                }
+            ),
             **settings,
         }
     )
-    await db.clients.insert_one({**client_obj.dict(exclude={"invoice_next_seq"}), "_id": client_obj.id})
+    await db.clients.insert_one(
+        {**client_obj.dict(exclude={"invoice_next_seq", "subscription_state"}), "_id": client_obj.id}
+    )
     await _raise_invoice_counter(client_obj.id, inp.invoice_next_seq)
 
+    if plan:
+        await _log_subscription_event(client_obj.id, "assigned", current_user, plan_name=plan["name"], ends_at=inp.subscription_ends_at)
     admin_obj = User(
         email=normalize_email(inp.admin_email), name=inp.admin_name, role=Role.ADMIN, client_id=client_obj.id
     )
@@ -1434,6 +1532,8 @@ async def update_client(client_id: str, inp: ClientInput, current_user: User = D
     if alert_days:
         settings["expiry_alert_days"] = alert_days
     if inp.modules is not None:
+        if (existing.get("subscription") or {}).get("plan_id"):
+            raise HTTPException(status_code=400, detail="Modules come from the client's plan - change the plan instead")
         settings["modules"] = validated_modules(inp.modules)
     updated = {**existing, **inp.dict(exclude={"invoice_next_seq", "expiry_alert_days", "modules"}), **settings}
     await db.clients.replace_one({"id": client_id}, {**updated, "_id": client_id})
@@ -1458,6 +1558,384 @@ async def activate_client(client_id: str, current_user: User = Depends(require_r
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Client not found")
     return {"ok": True}
+
+
+# ---------------- Plans & subscriptions (PLAN_PRETPLATE.md) ----------------
+class Plan(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    description: Optional[str] = ""
+    modules: List[str] = Field(default_factory=list)
+    active: bool = True  # inactive plans can't be assigned any more
+    created_at: str = Field(default_factory=now_iso)
+
+
+class PlanInput(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: Optional[str] = Field(default="", max_length=500)
+    modules: List[Module] = Field(default_factory=list)
+    active: bool = True
+    # On update: also rewrite the modules of every client currently on this plan.
+    apply_to_clients: bool = False
+
+
+class SubscriptionAssignInput(BaseModel):
+    plan_id: str
+    ends_at: str  # YYYY-MM-DD, last day of validity (inclusive)
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class SubscriptionExtendInput(BaseModel):
+    months: Optional[int] = Field(default=None, ge=1, le=60)
+    ends_at: Optional[str] = None
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class SubscriptionNoteInput(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class PurgePauseInput(BaseModel):
+    paused: bool
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class SubscriptionRow(BaseModel):
+    client_id: str
+    client_name: str
+    client_active: bool
+    plan_id: Optional[str] = None
+    plan_name: Optional[str] = None
+    modules: List[str] = Field(default_factory=list)
+    note: Optional[str] = None
+    purge_paused: bool = False
+    purged_at: Optional[str] = None
+    state: Dict[str, Any] = Field(default_factory=lambda: {"status": "none"})
+
+
+class SubscriptionEvent(BaseModel):
+    id: str
+    client_id: str
+    type: str  # assigned | extended | canceled | purge_paused | purge_resumed | purged
+    plan_name: Optional[str] = None
+    ends_at: Optional[str] = None
+    note: Optional[str] = None
+    actor_name: Optional[str] = None
+    source: str = "manual"  # later e.g. a billing provider
+    data: Optional[Dict[str, Any]] = None
+    created_at: str
+
+
+class SubscriptionDetail(BaseModel):
+    row: SubscriptionRow
+    events: List[SubscriptionEvent]
+
+
+def _valid_day(value: Optional[str], name: str) -> str:
+    try:
+        parsed = datetime.strptime((value or "").strip(), "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{name} must be YYYY-MM-DD")
+    if parsed.year < 2000 or parsed.year > _today().year + 20:
+        raise HTTPException(status_code=400, detail=f"{name} is out of range")
+    return parsed.isoformat()
+
+
+async def _get_plan_or_400(plan_id: str, must_be_active: bool = True) -> dict:
+    plan = await db.plans.find_one({"id": plan_id}, {"_id": 0})
+    if not plan:
+        raise HTTPException(status_code=400, detail="Plan not found")
+    if must_be_active and not plan.get("active", True):
+        raise HTTPException(status_code=400, detail="Plan is not active")
+    return plan
+
+
+def _new_subscription(plan: dict, ends_at: Optional[str], note: Optional[str], source: str) -> dict:
+    return {
+        "plan_id": plan["id"],
+        "plan_name": plan["name"],
+        "starts_at": _today().isoformat(),
+        "ends_at": _valid_day(ends_at, "ends_at"),
+        "note": note,
+        "source": source,
+        "canceled_at": None,
+        "purge_paused": False,
+        "purged_at": None,
+    }
+
+
+async def _log_subscription_event(
+    client_id: str, type_: str, user: Optional[User], note: Optional[str] = None,
+    plan_name: Optional[str] = None, ends_at: Optional[str] = None, data: Optional[dict] = None,
+    source: str = "manual",
+) -> None:
+    await db.subscription_events.insert_one({
+        "_id": str(uuid.uuid4()), "id": str(uuid.uuid4()), "client_id": client_id, "type": type_,
+        "plan_name": plan_name, "ends_at": ends_at, "note": note,
+        "actor_name": user.name if user else "system", "source": source, "data": data, "created_at": now_iso(),
+    })
+
+
+async def _subscription_row(client: dict) -> SubscriptionRow:
+    sub = client.get("subscription") or {}
+    return SubscriptionRow(
+        client_id=client["id"],
+        client_name=client["name"],
+        client_active=client.get("active", True),
+        plan_id=sub.get("plan_id"),
+        plan_name=sub.get("plan_name"),
+        modules=effective_modules(client),
+        note=sub.get("note"),
+        purge_paused=bool(sub.get("purge_paused")),
+        purged_at=sub.get("purged_at"),
+        state=subscription_state(client.get("subscription")),
+    )
+
+
+async def _client_or_404(client_id: str) -> dict:
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return client
+
+
+@api_router.get("/plans", response_model=List[Plan])
+async def list_plans(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    return [Plan(**p) for p in await db.plans.find({}, {"_id": 0}).sort("name", 1).to_list(None)]
+
+
+@api_router.post("/plans", response_model=Plan)
+async def create_plan(inp: PlanInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    if await db.plans.find_one({"name": inp.name.strip()}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="A plan with that name already exists")
+    plan = Plan(
+        name=inp.name.strip(), description=inp.description or "", modules=validated_modules(inp.modules), active=inp.active
+    )
+    await db.plans.insert_one({**plan.dict(), "_id": plan.id})
+    return plan
+
+
+@api_router.put("/plans/{plan_id}", response_model=Plan)
+async def update_plan(plan_id: str, inp: PlanInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    existing = await db.plans.find_one({"id": plan_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    clash = await db.plans.find_one({"name": inp.name.strip(), "id": {"$ne": plan_id}}, {"_id": 1})
+    if clash:
+        raise HTTPException(status_code=409, detail="A plan with that name already exists")
+    updated = {
+        **existing, "name": inp.name.strip(), "description": inp.description or "",
+        "modules": validated_modules(inp.modules), "active": inp.active,
+    }
+    await db.plans.replace_one({"id": plan_id}, {**updated, "_id": plan_id})
+    # Clients keep their own copy of the plan name; refresh it, and optionally the modules.
+    await db.clients.update_many({"subscription.plan_id": plan_id}, {"$set": {"subscription.plan_name": updated["name"]}})
+    if inp.apply_to_clients:
+        async for client in db.clients.find({"subscription.plan_id": plan_id}, {"_id": 0, "id": 1}):
+            await db.clients.update_one({"id": client["id"]}, {"$set": {"modules": updated["modules"]}})
+    return Plan(**updated)
+
+
+@api_router.delete("/plans/{plan_id}")
+async def delete_plan(plan_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    if not await db.plans.find_one({"id": plan_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if await db.clients.find_one({"subscription.plan_id": plan_id}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Clients are on this plan - deactivate it instead")
+    await db.plans.delete_one({"id": plan_id})
+    return {"ok": True}
+
+
+@api_router.get("/subscriptions", response_model=List[SubscriptionRow])
+async def list_subscriptions(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    clients = await db.clients.find({}, {"_id": 0}).sort("name", 1).to_list(None)
+    return [await _subscription_row(c) for c in clients]
+
+
+@api_router.get("/subscriptions/{client_id}", response_model=SubscriptionDetail)
+async def get_subscription(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    client = await _client_or_404(client_id)
+    events = await db.subscription_events.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return SubscriptionDetail(row=await _subscription_row(client), events=[SubscriptionEvent(**e) for e in events])
+
+
+@api_router.post("/subscriptions/{client_id}/assign", response_model=SubscriptionRow)
+async def assign_subscription(
+    client_id: str, inp: SubscriptionAssignInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """Gives the client a package until `ends_at` (replaces any earlier subscription,
+    unlocks a locked client) and sets its modules to the plan's."""
+    await _client_or_404(client_id)
+    plan = await _get_plan_or_400(inp.plan_id)
+    subscription = _new_subscription(plan, inp.ends_at, inp.note, "manual")
+    await db.clients.update_one({"id": client_id}, {"$set": {"subscription": subscription, "modules": plan["modules"]}})
+    await _log_subscription_event(
+        client_id, "assigned", current_user, note=inp.note, plan_name=plan["name"], ends_at=subscription["ends_at"]
+    )
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+@api_router.post("/subscriptions/{client_id}/extend", response_model=SubscriptionRow)
+async def extend_subscription(
+    client_id: str, inp: SubscriptionExtendInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """Pushes `ends_at` forward by whole months (from the later of today and the
+    current end) or to an exact date. Also lifts a lock and a cancel."""
+    client = await _client_or_404(client_id)
+    sub = client.get("subscription")
+    if not sub:
+        raise HTTPException(status_code=400, detail="Client has no subscription - assign a plan first")
+    if (inp.months is None) == (inp.ends_at is None):
+        raise HTTPException(status_code=400, detail="Send either months or ends_at")
+    if inp.months is not None:
+        base = max(date.fromisoformat(sub["ends_at"]), _today())
+        new_end = _add_months(base, inp.months).isoformat()
+    else:
+        new_end = _valid_day(inp.ends_at, "ends_at")
+    sub = {
+        **sub, "ends_at": new_end, "canceled_at": None, "purge_paused": False, "reminder_for": None, "purge_warned_for": None,
+    }
+    if inp.note:
+        sub["note"] = inp.note
+    await db.clients.update_one({"id": client_id}, {"$set": {"subscription": sub}})
+    await _log_subscription_event(client_id, "extended", current_user, note=inp.note, plan_name=sub.get("plan_name"), ends_at=new_end)
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+@api_router.post("/subscriptions/{client_id}/cancel", response_model=SubscriptionRow)
+async def cancel_subscription(
+    client_id: str, inp: SubscriptionNoteInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """Locks the client right away (no grace period); data stays until the purge."""
+    client = await _client_or_404(client_id)
+    sub = client.get("subscription")
+    if not sub:
+        raise HTTPException(status_code=400, detail="Client has no subscription")
+    sub = {**sub, "canceled_at": now_iso()}
+    await db.clients.update_one({"id": client_id}, {"$set": {"subscription": sub}})
+    await _log_subscription_event(client_id, "canceled", current_user, note=inp.note, plan_name=sub.get("plan_name"), ends_at=sub["ends_at"])
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+@api_router.post("/subscriptions/{client_id}/purge-pause", response_model=SubscriptionRow)
+async def pause_purge(
+    client_id: str, inp: PurgePauseInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """Stops (or resumes) the scheduled deletion of this client's module data."""
+    client = await _client_or_404(client_id)
+    sub = client.get("subscription")
+    if not sub:
+        raise HTTPException(status_code=400, detail="Client has no subscription")
+    await db.clients.update_one({"id": client_id}, {"$set": {"subscription.purge_paused": inp.paused}})
+    await _log_subscription_event(
+        client_id, "purge_paused" if inp.paused else "purge_resumed", current_user, note=inp.note, plan_name=sub.get("plan_name")
+    )
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+@api_router.get("/subscriptions/{client_id}/export")
+async def export_purgeable_data(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Everything the purge would delete, as JSON - to hand over before it runs."""
+    client = await _client_or_404(client_id)
+    products = await db.products.find({"client_id": client_id}, {"_id": 0}).to_list(None)
+    return {
+        "exported_at": now_iso(),
+        "client": {"id": client_id, "name": client["name"]},
+        "products_stock": [
+            {"id": p["id"], "name": p["name"], "barcode": p.get("barcode"), "stock_qty": p.get("stock_qty"),
+             "track_expiry": bool(p.get("track_expiry"))}
+            for p in products
+        ],
+        "stock_batches": await db.stock_batches.find({"client_id": client_id}, {"_id": 0}).to_list(None),
+        "stock_movements": await db.stock_movements.find({"client_id": client_id}, {"_id": 0}).to_list(None),
+    }
+
+
+async def _purge_module_data(client_id: str) -> Dict[str, int]:
+    """What the scheduled purge deletes for a client that stayed locked: the data
+    of the optional modules (stock levels, movements, batches). Orders,
+    customers, products and users are never touched."""
+    movements = await db.stock_movements.delete_many({"client_id": client_id})
+    batches = await db.stock_batches.delete_many({"client_id": client_id})
+    products = await db.products.update_many(
+        {"client_id": client_id}, {"$unset": {"stock_qty": ""}, "$set": {"track_expiry": False}}
+    )
+    return {
+        "stock_movements": movements.deleted_count,
+        "stock_batches": batches.deleted_count,
+        "products_reset": products.modified_count,
+    }
+
+
+async def _count_purgeable(client_id: str) -> Dict[str, int]:
+    return {
+        "stock_movements": await db.stock_movements.count_documents({"client_id": client_id}),
+        "stock_batches": await db.stock_batches.count_documents({"client_id": client_id}),
+        "products_reset": await db.products.count_documents({"client_id": client_id, "stock_qty": {"$exists": True}}),
+    }
+
+
+async def _email_client_admins(client_id: str, subject: str, body: str) -> int:
+    """Best effort: skipped (0) when SMTP isn't configured."""
+    if not _smtp_is_configured():
+        return 0
+    sent = 0
+    async for admin in db.users.find({"client_id": client_id, "role": Role.ADMIN.value, "active": {"$ne": False}}, {"email": 1}):
+        try:
+            await asyncio.to_thread(_send_smtp_email_sync, admin["email"], subject, body)
+            sent += 1
+        except Exception as exc:
+            logger.warning("Subscription email to %s failed: %s", admin.get("email"), exc)
+    return sent
+
+
+@api_router.get("/internal/cron/subscriptions")
+async def cron_subscriptions(dry_run: bool = Query(False), authorization: Optional[str] = Header(None)):
+    """Daily job (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`):
+    expiry reminders, purge warnings and the purge itself. The purge deletes
+    only when AUTO_PURGE_ENABLED=true and dry_run is not set; otherwise it
+    reports what it would delete."""
+    if not CRON_SECRET:
+        raise HTTPException(status_code=503, detail="CRON_SECRET is not configured")
+    if not hmac.compare_digest(authorization or "", f"Bearer {CRON_SECRET}"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    live = AUTO_PURGE_ENABLED and not dry_run
+    today = _today()
+    result: Dict[str, Any] = {"live": live, "reminders": [], "purge_warnings": [], "purged": [], "would_purge": []}
+    async for client in db.clients.find({"subscription": {"$ne": None}}, {"_id": 0}):
+        sub, cid = client["subscription"], client["id"]
+        state = subscription_state(sub, today)
+        if state["status"] == "active" and state["days_left"] <= SUBSCRIPTION_REMINDER_DAYS and sub.get("reminder_for") != sub["ends_at"]:
+            await _email_client_admins(
+                cid, "Easy Order - pretplata uskoro ističe / subscription ends soon",
+                f"Pretplata za {client['name']} ističe {sub['ends_at']} (za {state['days_left']} dana).\n\n"
+                f"Your subscription for {client['name']} ends on {sub['ends_at']}.",
+            )
+            await db.clients.update_one({"id": cid}, {"$set": {"subscription.reminder_for": sub["ends_at"]}})
+            result["reminders"].append(client["name"])
+        if state["status"] != "locked" or sub.get("purged_at") or sub.get("purge_paused"):
+            continue
+        purge_at = date.fromisoformat(state["purge_at"])
+        if purge_at > today:
+            if (purge_at - today).days <= SUBSCRIPTION_REMINDER_DAYS and sub.get("purge_warned_for") != state["purge_at"]:
+                await _email_client_admins(
+                    cid, "Easy Order - podaci će biti obrisani / data will be deleted",
+                    f"Nalog {client['name']} je zaključan. Podaci o zalihama biće obrisani {state['purge_at']}. "
+                    f"Obratite se podršci ako želite da produžite pretplatu.\n\n"
+                    f"The account {client['name']} is locked. Stock data will be deleted on {state['purge_at']}.",
+                )
+                await db.clients.update_one({"id": cid}, {"$set": {"subscription.purge_warned_for": state["purge_at"]}})
+                result["purge_warnings"].append(client["name"])
+            continue
+        if live:
+            counts = await _purge_module_data(cid)
+            await db.clients.update_one({"id": cid}, {"$set": {"subscription.purged_at": now_iso()}})
+            await _log_subscription_event(cid, "purged", None, plan_name=sub.get("plan_name"), data=counts, source="cron")
+            result["purged"].append({"client": client["name"], **counts})
+        else:
+            counts = await _count_purgeable(cid)
+            result["would_purge"].append({"client": client["name"], **counts})
+    return result
 
 
 # ---------------- Users ----------------

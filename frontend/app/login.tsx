@@ -43,6 +43,7 @@ export default function LoginScreen() {
       }
     } catch (e) {
       if (e instanceof ApiError && e.status === 429) setError(t("tooManyAttempts"));
+      else if (e instanceof ApiError && e.status === 403 && e.detail === "Subscription expired") setError(t("subscriptionExpired"));
       else if (e instanceof ApiError && e.status === 403) setError(t("accountDisabled"));
       else if (e instanceof ApiError) setError(t("invalidCredentials"));
       else setError(t("networkError"));

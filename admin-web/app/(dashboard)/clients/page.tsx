@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ClientFields } from "@/components/ClientFields";
+import { Plan } from "@/lib/subscriptions";
 import { ClientFormFields, clientPayload, deleteUploadedLogo, emptyClientFields, uploadLogo } from "@/lib/clientForm";
 
 type Client = {
@@ -25,6 +26,10 @@ type InviteNotice = { email: string; sent: boolean; temporaryPassword?: string |
 export default function ClientsPage() {
   const { t } = useLanguage();
   const [clients, setClients] = useState<Client[]>([]);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  // Optional: start the client on a package (then the modules come from it).
+  const [planId, setPlanId] = useState("");
+  const [endsAt, setEndsAt] = useState("");
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<ClientFormFields>(emptyClientFields);
@@ -39,9 +44,10 @@ export default function ClientsPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/clients");
+      const [res, plansRes] = await Promise.all([fetch("/api/clients"), fetch("/api/plans")]);
       if (!res.ok) throw new Error();
       setClients(await res.json());
+      if (plansRes.ok) setPlans((await plansRes.json()) as Plan[]);
     } catch {
       setError(t("loadFailed"));
     } finally {
@@ -60,7 +66,11 @@ export default function ClientsPage() {
     let uploaded: string | null = null;
     try {
       if (pendingLogo) uploaded = await uploadLogo(pendingLogo);
-      const payload = { ...clientPayload(form, uploaded ?? ""), ...admin };
+      const payload = {
+        ...clientPayload(form, uploaded ?? ""),
+        ...admin,
+        ...(planId ? { plan_id: planId, subscription_ends_at: endsAt } : {}),
+      };
       const res = await fetch("/api/clients", { method: "POST", body: JSON.stringify(payload) });
       if (!res.ok) {
         if (uploaded) await deleteUploadedLogo(uploaded);
@@ -75,6 +85,8 @@ export default function ClientsPage() {
         temporaryPassword: created.temporary_password,
       });
       setForm(emptyClientFields);
+      setPlanId("");
+      setEndsAt("");
       setAdmin(emptyAdmin);
       setPendingLogo(null);
       setLogoPreview("");
@@ -122,7 +134,38 @@ export default function ClientsPage() {
 
       {showForm && (
         <form onSubmit={submit} className="mb-8 grid max-w-xl gap-3 rounded-lg bg-surfaceSecondary p-6 shadow-sm">
+          <h2 className="font-bold text-onSurface">{t("plan")}</h2>
+          <select
+            value={planId}
+            onChange={(e) => {
+              setPlanId(e.target.value);
+              if (e.target.value && !endsAt) setEndsAt(new Date(Date.now() + 365 * 864e5).toISOString().slice(0, 10));
+            }}
+            className="rounded-md border border-border px-3 py-2"
+          >
+            <option value="">{t("noPlan")}</option>
+            {plans
+              .filter((p) => p.active)
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+          </select>
+          {planId && (
+            <label className="text-sm font-semibold text-onSurface">
+              {t("validUntil")}
+              <input
+                required
+                type="date"
+                value={endsAt}
+                onChange={(e) => setEndsAt(e.target.value)}
+                className="mt-1 block w-full rounded-md border border-border px-3 py-2"
+              />
+            </label>
+          )}
           <ClientFields
+            hideModules={!!planId}
             form={form}
             setForm={setForm}
             logoPreview={logoPreview}
