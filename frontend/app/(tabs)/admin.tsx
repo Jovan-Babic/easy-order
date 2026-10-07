@@ -147,6 +147,7 @@ export default function AdminScreen() {
 
   const [formOpen, setFormOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
+  const [scanBoxOpen, setScanBoxOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [form, setForm] = useState<any>({});
   const [countryCodeOpen, setCountryCodeOpen] = useState(false);
@@ -182,7 +183,7 @@ export default function AdminScreen() {
     setPendingImage(null);
     setEditing(null);
     setForm(tab === "products"
-      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "", barcode: "", active: true, track_expiry: false }
+      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "", barcode: "", package_barcode: "", active: true, track_expiry: false }
       : { name: "", address: "", email: "", phone: "", countryCode: "+381", phoneNumber: "", pib: "" });
     setCountryCodeOpen(false);
     setPermMsg(false);
@@ -211,6 +212,7 @@ export default function AdminScreen() {
             pieces_per_package: String(item.pieces_per_package ?? ""),
             boxes_per_transport: String(item.boxes_per_transport ?? ""),
             barcode: item.barcode ?? "",
+            package_barcode: item.package_barcode ?? "",
             active: item.active !== false,
             track_expiry: item.track_expiry === true,
           }
@@ -303,6 +305,7 @@ export default function AdminScreen() {
           pieces_per_package: Number(form.pieces_per_package) || 0,
           boxes_per_transport: Number(form.boxes_per_transport) || 0,
           barcode: String(form.barcode ?? "").trim(),
+          package_barcode: String(form.package_barcode ?? "").trim(),
           active: form.active !== false,
           track_expiry: form.track_expiry === true,
         };
@@ -539,6 +542,23 @@ export default function AdminScreen() {
                     onScanned={(code) => {
                       setForm((f: any) => ({ ...f, barcode: code }));
                       setScanOpen(false);
+                    }}
+                  />
+                  <View style={{ flexDirection: "row", alignItems: "flex-end", gap: spacing.sm }}>
+                    <View style={{ flex: 1 }}>
+                      <FormField label={t("packageBarcode")} value={form.package_barcode ?? ""} onChangeText={(v) => setForm((f: any) => ({ ...f, package_barcode: v.replace(/[^A-Za-z0-9-]/g, "") }))} testID="form-package-barcode" />
+                    </View>
+                    <Pressable testID="form-package-barcode-scan" onPress={() => setScanBoxOpen(true)} style={{ padding: spacing.md }} hitSlop={8}>
+                      <Ionicons name="barcode-outline" size={28} color={colors.brand} />
+                    </Pressable>
+                  </View>
+                  <Text style={{ fontSize: font.sm, color: colors.muted }}>{t("packageBarcodeHint")}</Text>
+                  <BarcodeScanner
+                    visible={scanBoxOpen}
+                    onClose={() => setScanBoxOpen(false)}
+                    onScanned={(code) => {
+                      setForm((f: any) => ({ ...f, package_barcode: code }));
+                      setScanBoxOpen(false);
                     }}
                   />
                   <FormField label={t("transportPackage")} value={form.boxes_per_transport} onChangeText={(v) => setForm((f: any) => ({ ...f, boxes_per_transport: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-boxes" />

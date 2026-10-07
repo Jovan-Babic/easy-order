@@ -52,6 +52,8 @@ export function StockScanPanel({ mode }: Props) {
   const [busy, setBusy] = useState(false);
   // What the unknown-barcode sheet shows: the two choices, the new-product form or the link list.
   const [unknownMode, setUnknownMode] = useState<"choice" | "new" | "link">("choice");
+  // Whether the unknown code is one piece or a whole box (box = pieces_per_package pieces).
+  const [unknownKind, setUnknownKind] = useState<"piece" | "package">("piece");
 
   const load = useCallback(async () => {
     try {
@@ -92,7 +94,8 @@ export function StockScanPanel({ mode }: Props) {
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
 
   // Scan or pick = one more piece on that line (a fresh line starts at 1).
-  const addOne = (p: Product) => {
+  // A scanned box adds `amount` = its pieces_per_package at once.
+  const addOne = (p: Product, amount = 1) => {
     const id = p.id;
     if (p.track_expiry) {
       // A scan adds a piece to the latest expiry row; the date is typed on the card.
@@ -100,13 +103,15 @@ export function StockScanPanel({ mode }: Props) {
       const last = current[current.length - 1];
       setProductRows(
         id,
-        last ? [...current.slice(0, -1), { ...last, qty: String((Number(last.qty) || 0) + 1) }] : [newRow({ qty: "1" })]
+        last
+          ? [...current.slice(0, -1), { ...last, qty: String((Number(last.qty) || 0) + amount) }]
+          : [newRow({ qty: String(amount) })]
       );
       if (!current.length) loadBatches(id);
       setOrder((prev) => (prev.includes(id) ? prev : [id, ...prev]));
       return totalPieces(rowsRef.current[id]);
     }
-    const next = (Number(qtyRef.current[id]) || 0) + 1;
+    const next = (Number(qtyRef.current[id]) || 0) + amount;
     qtyRef.current = { ...qtyRef.current, [id]: String(next) };
     setQtys(qtyRef.current);
     setOrder((prev) => (prev.includes(id) ? prev : [id, ...prev]));
@@ -114,15 +119,19 @@ export function StockScanPanel({ mode }: Props) {
   };
 
   const onScanned = async (code: string): Promise<ScanFeedback> => {
-    let product = products.find((p) => p.barcode === code);
+    let product = products.find((p) => p.barcode === code || p.package_barcode === code);
+    let amount = 1;
+    if (product && product.package_barcode === code) amount = product.pieces_per_package || 1;
     if (!product) {
       try {
         product = await api.getProductByBarcode(code);
         const found = product;
+        amount = found.scan_unit === "package" ? found.scan_qty || 1 : 1;
         setProducts((prev) => (prev.some((p) => p.id === found.id) ? prev : [...prev, found]));
       } catch (e) {
         if (e instanceof ApiError && e.status === 404) {
           setScanning(false);
+          setUnknownKind("piece");
           setUnknownCode(code);
           return { ok: false, label: `${t("productNotFound")}: ${code}` };
         }
@@ -130,16 +139,21 @@ export function StockScanPanel({ mode }: Props) {
         return { ok: false, label: t("networkError") };
       }
     }
-    const qty = addOne(product);
-    return { ok: true, label: `${product.name} · ${qty}` };
+    const qty = addOne(product, amount);
+    return { ok: true, label: `${product.name}${amount > 1 ? ` +${amount}` : ""} · ${qty}` };
   };
 
   const link = async (product: Product) => {
     if (!unknownCode) return;
     try {
-      const updated = await api.linkBarcode(product.id, unknownCode);
-      setProducts((prev) => prev.map((p) => (p.id === updated.id ? { ...p, barcode: updated.barcode } : p)));
-      addOne({ ...product, barcode: updated.barcode });
+      if (unknownKind === "package" && !(product.pieces_per_package && product.pieces_per_package > 0)) {
+        Alert.alert(t("somethingWentWrong"), t("boxNeedsPieces"));
+        return;
+      }
+      const updated = await api.linkBarcode(product.id, unknownCode, unknownKind);
+      const merged = { ...product, barcode: updated.barcode, package_barcode: updated.package_barcode };
+      setProducts((prev) => prev.map((p) => (p.id === updated.id ? { ...p, ...merged } : p)));
+      addOne(merged, unknownKind === "package" ? product.pieces_per_package || 1 : 1);
       showToast(t("barcodeLinked"));
       setUnknownCode(null);
     } catch (e) {
@@ -154,12 +168,13 @@ export function StockScanPanel({ mode }: Props) {
       const created = await api.quickAddProduct({
         name: v.name.trim(),
         barcode: unknownCode,
+        barcode_kind: unknownKind,
         manufacturer: v.manufacturer.trim() || undefined,
         pieces_per_package: v.pieces ? Number(v.pieces) : undefined,
         boxes_per_transport: v.boxes ? Number(v.boxes) : undefined,
       });
       setProducts((prev) => [...prev, created]);
-      addOne(created);
+      addOne(created, unknownKind === "package" ? created.pieces_per_package || 1 : 1);
       showToast(t("productAdded"));
       setUnknownCode(null);
       setUnknownMode("choice");
@@ -372,9 +387,24 @@ export function StockScanPanel({ mode }: Props) {
         <View style={[styles.modal, { paddingTop: insets.top + spacing.lg }]}>
           <Text style={styles.modalTitle}>{t("productNotFound")}</Text>
           <Text style={styles.sub}>{unknownCode}</Text>
+          <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.md }}>
+            {(["piece", "package"] as const).map((kind) => (
+              <Pressable
+                key={kind}
+                testID={`unknown-kind-${kind}`}
+                style={[styles.chip, unknownKind === kind && styles.chipActive]}
+                onPress={() => setUnknownKind(kind)}
+              >
+                <Text style={[styles.chipText, unknownKind === kind && styles.chipTextActive]}>
+                  {kind === "piece" ? t("barcodeKindPiece") : t("barcodeKindBox")}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
           {unknownMode === "new" ? (
             <NewProductForm
               code={unknownCode ?? ""}
+              requirePieces={unknownKind === "package"}
               busy={busy}
               onSubmit={createProduct}
               onBack={() => setUnknownMode("choice")}
@@ -520,8 +550,10 @@ function NewProductForm({
   busy,
   onSubmit,
   onBack,
+  requirePieces = false,
 }: {
   code: string;
+  requirePieces?: boolean;
   busy: boolean;
   onSubmit: (v: { name: string; manufacturer: string; pieces: string; boxes: string }) => void;
   onBack: () => void;
@@ -571,7 +603,7 @@ function NewProductForm({
         title={t("save")}
         testID="quick-save"
         loading={busy}
-        disabled={busy || !name.trim() || !code}
+        disabled={busy || !name.trim() || !code || (requirePieces && !(Number(pieces) > 0))}
         onPress={() => onSubmit({ name, manufacturer, pieces, boxes })}
       />
       <Button title={t("backToList")} variant="ghost" onPress={onBack} />
@@ -682,6 +714,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   chipText: { color: colors.brand, fontSize: font.sm, fontWeight: "600" },
+  chipActive: { backgroundColor: colors.brand },
+  chipTextActive: { color: colors.onBrand },
   modal: { flex: 1, backgroundColor: colors.surface, paddingHorizontal: spacing.lg, paddingBottom: spacing.xl },
   modalTitle: { fontSize: font.xl, fontWeight: "800", color: colors.onSurface },
 });

@@ -18,7 +18,7 @@ import logging
 import mimetypes
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional, Dict, Any
+from typing import List, Literal, Optional, Dict, Any
 from enum import Enum
 import uuid
 import bcrypt
@@ -148,6 +148,14 @@ async def lifespan(app: FastAPI):
         )
     except Exception as exc:
         logger.error("Could not create unique index on products.barcode: %s", exc)
+    try:
+        await db.products.create_index(
+            [("client_id", 1), ("package_barcode", 1)],
+            unique=True,
+            partialFilterExpression={"package_barcode": {"$type": "string"}},
+        )
+    except Exception as exc:
+        logger.error("Could not create unique index on products.package_barcode: %s", exc)
     try:
         # One batch per product and expiry date (expiry_date null = undated stock).
         await db.stock_batches.create_index([("product_id", 1), ("expiry_date", 1)], unique=True)
@@ -370,6 +378,10 @@ class Product(BaseModel):
     boxes_per_transport: Optional[int] = 0
     # Barcode of one piece (EAN etc.), unique per client. None = not set.
     barcode: Optional[str] = None
+    # Barcode of one box (pieces_per_package pieces): a scan in receipt/count
+    # adds the whole box. Unique per client together with `barcode` (no code
+    # can be both). Needs pieces_per_package > 0. None = not set.
+    package_barcode: Optional[str] = None
     # False = delisted/draft: hidden from sales reps and can't be ordered, but
     # stock, history and past orders stay. Documents without the field are active.
     active: bool = True
@@ -389,6 +401,9 @@ class ProductOut(Product):
     # Expiry info is for warehouse/admin only; sales reps always get the defaults.
     expired_qty: int = 0
     next_expiry: Optional[str] = None  # earliest expiry date among batches still in stock
+    # Only set by GET /products/by-barcode: what the scanned code was.
+    scan_unit: Optional[str] = None  # "piece" | "package"
+    scan_qty: int = 1  # pieces one scan stands for (pieces_per_package for a box)
 
 
 class ProductInput(BaseModel):
@@ -406,6 +421,8 @@ class ProductInput(BaseModel):
     boxes_per_transport: Optional[int] = 0
     # None = keep the stored barcode, "" = clear it.
     barcode: Optional[str] = None
+    # Same rules as barcode (None = keep, "" = clear).
+    package_barcode: Optional[str] = None
     # None = keep. Activating a product that has no price yet is refused.
     active: Optional[bool] = None
     # None = keep. Switching it on turns the current stock into an undated batch.
@@ -1678,6 +1695,8 @@ async def create_product(inp: ProductInput, current_user: User = Depends(require
     payload["discounts"] = normalize_discounts(inp.discounts, payload["discount"])
     payload["additional_discounts"] = normalize_additional_discounts(inp.additional_discounts)
     payload["barcode"] = await _checked_barcode(client_id, inp.barcode)
+    payload["package_barcode"] = await _checked_barcode(client_id, inp.package_barcode, other=payload["barcode"])
+    _require_package_size(payload["package_barcode"], payload.get("pieces_per_package"))
     payload["active"] = True if inp.active is None else inp.active
     payload["track_expiry"] = bool(inp.track_expiry)
     obj = Product(**payload, client_id=client_id)
@@ -1715,6 +1734,15 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
         updated["barcode"] = existing.get("barcode")
     else:
         updated["barcode"] = await _checked_barcode(existing["client_id"], inp.barcode, exclude_id=product_id)
+    if inp.package_barcode is None:
+        updated["package_barcode"] = existing.get("package_barcode")
+    else:
+        updated["package_barcode"] = await _checked_barcode(
+            existing["client_id"], inp.package_barcode, exclude_id=product_id, other=updated["barcode"]
+        )
+    _require_package_size(updated["package_barcode"], updated.get("pieces_per_package"))
+    if updated["barcode"] and updated["barcode"] == updated["package_barcode"]:
+        raise HTTPException(status_code=409, detail="Piece and box barcode must differ")
     if updated["track_expiry"] != was_tracking:
         await _switch_expiry_tracking(existing, updated["track_expiry"])
     # $set instead of replace_one: a concurrent stock change ($inc) must not
@@ -1751,20 +1779,35 @@ def normalize_barcode(value: Any) -> Optional[str]:
     return code
 
 
-async def _checked_barcode(client_id: str, value: Optional[str], exclude_id: Optional[str] = None) -> Optional[str]:
+async def _checked_barcode(
+    client_id: str, value: Optional[str], exclude_id: Optional[str] = None, other: Optional[str] = None
+) -> Optional[str]:
+    """Normalized code, 409 if another product already uses it as piece OR box
+    barcode. `other` is the same product's other code (a code can't be both)."""
     try:
         code = normalize_barcode(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if code:
-        clash = await db.products.find_one({"client_id": client_id, "barcode": code}, {"id": 1, "name": 1})
+        if other and other == code:
+            raise HTTPException(status_code=409, detail="Piece and box barcode must differ")
+        clash = await db.products.find_one(
+            {"client_id": client_id, "$or": [{"barcode": code}, {"package_barcode": code}]}, {"id": 1, "name": 1}
+        )
         if clash and clash["id"] != exclude_id:
             raise HTTPException(status_code=409, detail=f"Barcode already used by product: {clash.get('name', '')}")
     return code
 
 
+def _require_package_size(package_barcode: Optional[str], pieces_per_package: Optional[int]) -> None:
+    """A box barcode only makes sense with a known number of pieces per box."""
+    if package_barcode and not (pieces_per_package or 0) > 0:
+        raise HTTPException(status_code=400, detail="Set pieces per package before adding a box barcode")
+
+
 class BarcodeInput(BaseModel):
     barcode: str = Field(min_length=1, max_length=40)
+    kind: Literal["piece", "package"] = "piece"
 
 
 @api_router.get("/products/by-barcode/{code}", response_model=ProductOut)
@@ -1774,12 +1817,23 @@ async def product_by_barcode(code: str, current_user: User = Depends(get_current
     except ValueError:
         normalized = None
     scope = _scope_query(current_user)
-    doc = await db.products.find_one({**scope, "barcode": normalized}, {"_id": 0}) if normalized else None
+    doc = (
+        await db.products.find_one(
+            {**scope, "$or": [{"barcode": normalized}, {"package_barcode": normalized}]}, {"_id": 0}
+        )
+        if normalized
+        else None
+    )
     if not doc:
         raise HTTPException(status_code=404, detail="Product not found")
     r = (await _reserved_by_product(scope)).get(doc["id"], 0)
     expiry = await _expiry_info(scope, product_id=doc["id"])
-    return _product_out(doc, r, expiry.get(doc["id"]), current_user)
+    out = _product_out(doc, r, expiry.get(doc["id"]), current_user)
+    if doc.get("package_barcode") == normalized and (doc.get("pieces_per_package") or 0) > 0:
+        out.scan_unit, out.scan_qty = "package", int(doc["pieces_per_package"])
+    else:
+        out.scan_unit, out.scan_qty = "piece", 1
+    return out
 
 
 @api_router.post("/products/{product_id}/barcode", response_model=Product)
@@ -1788,7 +1842,16 @@ async def set_product_barcode(
 ):
     """Links a scanned code to a product (warehouse staff can't edit products)."""
     existing = await get_scoped_or_404("products", product_id, current_user)
-    code = await _checked_barcode(existing["client_id"], inp.barcode, exclude_id=product_id)
+    if inp.kind == "package":
+        code = await _checked_barcode(
+            existing["client_id"], inp.barcode, exclude_id=product_id, other=existing.get("barcode")
+        )
+        _require_package_size(code, existing.get("pieces_per_package"))
+        await db.products.update_one({"id": product_id}, {"$set": {"package_barcode": code}})
+        return Product(**{**existing, "package_barcode": code})
+    code = await _checked_barcode(
+        existing["client_id"], inp.barcode, exclude_id=product_id, other=existing.get("package_barcode")
+    )
     await db.products.update_one({"id": product_id}, {"$set": {"barcode": code}})
     return Product(**{**existing, "barcode": code})
 
@@ -1797,6 +1860,7 @@ class QuickProductInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     manufacturer: Optional[str] = Field(default="", max_length=200)
     barcode: Optional[str] = None
+    barcode_kind: Literal["piece", "package"] = "piece"  # what `barcode` is; a box needs pieces_per_package
     pieces_per_package: Optional[int] = Field(default=0, ge=0, le=100000)
     boxes_per_transport: Optional[int] = Field(default=0, ge=0, le=100000)
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
@@ -1808,14 +1872,17 @@ async def quick_add_product(inp: QuickProductInput, current_user: User = Depends
     It is created inactive with no price: an admin sets price/VAT and activates
     it before sales reps can see or order it."""
     client_id = await resolve_write_client_id(current_user, inp.client_id)
-    barcode = await _checked_barcode(client_id, inp.barcode)
+    code = await _checked_barcode(client_id, inp.barcode)
+    if inp.barcode_kind == "package":
+        _require_package_size(code, inp.pieces_per_package)
     obj = Product(
         client_id=client_id,
         name=inp.name.strip(),
         manufacturer=(inp.manufacturer or "").strip(),
         pieces_per_package=inp.pieces_per_package or 0,
         boxes_per_transport=inp.boxes_per_transport or 0,
-        barcode=barcode,
+        barcode=code if inp.barcode_kind == "piece" else None,
+        package_barcode=code if inp.barcode_kind == "package" else None,
         price_no_vat=0,
         active=False,
     )
@@ -1831,6 +1898,8 @@ IMPORT_MAX_ROWS = 2000
 _IMPORT_HEADERS = {
     "name": "name", "naziv": "name", "nazivproizvoda": "name", "proizvod": "name", "artikal": "name",
     "barcode": "barcode", "barkod": "barcode", "ean": "barcode",
+    "packagebarcode": "package_barcode", "barkodkutije": "package_barcode", "barkodpakovanja": "package_barcode",
+    "barkodkutija": "package_barcode", "eankutije": "package_barcode",
     "manufacturer": "manufacturer", "proizvodjac": "manufacturer",
     "pricenovat": "price_no_vat", "cena": "price_no_vat", "cenabezpdv": "price_no_vat", "cenabezpdva": "price_no_vat",
     "vatrate": "vat_rate", "pdv": "vat_rate", "stopapdv": "vat_rate", "stopapdva": "vat_rate",
@@ -1846,21 +1915,21 @@ _IMPORT_TEMPLATE_HEADERS = [
     ("name", "Naziv"), ("barcode", "Barkod"), ("manufacturer", "Proizvođač"), ("price_no_vat", "Cena bez PDV"),
     ("vat_rate", "PDV %"), ("pieces_per_package", "Komada u pakovanju"),
     ("boxes_per_transport", "Transportno pakovanje (komada)"), ("stock_qty", "Stanje (komada)"),
-    ("track_expiry", "Prati rok (da/ne)"),
+    ("track_expiry", "Prati rok (da/ne)"), ("package_barcode", "Barkod kutije"),
 ]
 
 
 # Downloadable example: includes a product without a barcode (matched by name)
 # and a text price with a comma, both of which the import accepts.
 _IMPORT_EXAMPLE_ROWS = [
-    ("Jaffa keks 150g", "8601000000018", "Jaffa", 46.5, 20, 12, 48, 240, "ne"),
-    ("Plazma keks 300g", "8601000000025", "Bambi", 189.9, 20, 10, 40, 120, "ne"),
-    ("Smoki 50g", None, "Bambi", 39, 20, 24, 96, 0, "ne"),
-    ("Mleko 2.8% 1l", "8601000000049", "Imlek", "124,5", 10, 12, 72, 360, "da"),
-    ("Jogurt 2.8% 1l", "8601000000056", "Imlek", 118, 10, 12, 72, 300, "da"),
-    ("Ulje suncokretovo 1l", "8601000000063", "Dijamant", 259, 20, 12, 60, 180, "ne"),
-    ("Brašno T-500 1kg", "8601000000070", "Mlin", "79,9", 10, 10, 100, 500, "ne"),
-    ("Kafa Grand 200g", "8601000000087", "Strauss", 299, 20, 12, 48, None, "ne"),
+    ("Jaffa keks 150g", "8601000000018", "Jaffa", 46.5, 20, 12, 48, 240, "ne", "8601000100011"),
+    ("Plazma keks 300g", "8601000000025", "Bambi", 189.9, 20, 10, 40, 120, "ne", "8601000100028"),
+    ("Smoki 50g", None, "Bambi", 39, 20, 24, 96, 0, "ne", None),
+    ("Mleko 2.8% 1l", "8601000000049", "Imlek", "124,5", 10, 12, 72, 360, "da", "8601000100042"),
+    ("Jogurt 2.8% 1l", "8601000000056", "Imlek", 118, 10, 12, 72, 300, "da", None),
+    ("Ulje suncokretovo 1l", "8601000000063", "Dijamant", 259, 20, 12, 60, 180, "ne", None),
+    ("Brašno T-500 1kg", "8601000000070", "Mlin", "79,9", 10, 10, 100, 500, "ne", None),
+    ("Kafa Grand 200g", "8601000000087", "Strauss", 299, 20, 12, 48, None, "ne", None),
 ]
 
 
@@ -1905,7 +1974,9 @@ async def product_import_template(current_user: User = Depends(require_manager))
         ws.append(list(row))
     for cell in ws["B"][1:]:  # barcodes as text keep leading zeros
         cell.number_format = "@"
-    for col, width in zip("ABCDEFGHI", (32, 18, 22, 14, 8, 20, 30, 16, 18)):
+    for cell in ws["J"][1:]:
+        cell.number_format = "@"
+    for col, width in zip("ABCDEFGHIJ", (32, 18, 22, 14, 8, 20, 30, 16, 18, 18)):
         ws.column_dimensions[col].width = width
     buf = io.BytesIO()
     wb.save(buf)
@@ -1953,6 +2024,7 @@ async def import_products(
 
     existing = await db.products.find({"client_id": target_client}, {"_id": 0}).to_list(None)
     by_barcode = {p["barcode"]: p for p in existing if p.get("barcode")}
+    by_package = {p["package_barcode"]: p for p in existing if p.get("package_barcode")}
     by_name = {p["name"].strip().lower(): p for p in existing if p.get("name")}
     seen_barcodes: Dict[str, int] = {}
     seen_ids: Dict[str, int] = {}
@@ -1966,6 +2038,11 @@ async def import_products(
             code = normalize_barcode(values.get("barcode"))
         except ValueError as exc:
             code = None
+            errors.append(str(exc))
+        try:
+            package_code = normalize_barcode(values.get("package_barcode"))
+        except ValueError as exc:
+            package_code = None
             errors.append(str(exc))
         for field, kwargs in (
             ("price_no_vat", {}), ("vat_rate", {"maximum": 100}), ("pieces_per_package", {"integer": True}),
@@ -1992,12 +2069,40 @@ async def import_products(
                 errors.append("Prati rok must be da or ne")
 
         product = by_barcode.get(code) if code else None
+        if product is None and package_code:
+            product = by_package.get(package_code)
         if product is None and name:
             product = by_name.get(name.lower())
         if product is not None and code and product.get("barcode") not in (None, code):
             errors.append("Product already has a different barcode")
         if code and code in seen_barcodes:
             errors.append(f"Barcode repeated (row {seen_barcodes[code]})")
+        if package_code:
+            if package_code in seen_barcodes:
+                errors.append(f"Box barcode repeated (row {seen_barcodes[package_code]})")
+            if product is not None and product.get("package_barcode") not in (None, package_code):
+                errors.append("Product already has a different box barcode")
+            owner = by_package.get(package_code) or by_barcode.get(package_code)
+            if owner and (product is None or owner["id"] != product["id"]):
+                errors.append("Box barcode belongs to another product")
+            pieces = parsed.get("pieces_per_package", (product or {}).get("pieces_per_package") or 0)
+            if not pieces > 0:
+                errors.append("Set 'Komada u pakovanju' before adding a box barcode")
+        elif (
+            product is not None
+            and product.get("package_barcode")
+            and "pieces_per_package" in parsed
+            and not parsed["pieces_per_package"] > 0
+        ):
+            errors.append("Pieces per package can't be 0 while the product has a box barcode")
+        if code:
+            owner = by_package.get(code)
+            if owner and (product is None or owner["id"] != product["id"]):
+                errors.append("Barcode belongs to another product")
+        final_piece = code or (product or {}).get("barcode")
+        final_box = package_code or (product or {}).get("package_barcode")
+        if final_piece and final_piece == final_box:
+            errors.append("Piece and box barcode must differ")
         if product is not None and product["id"] in seen_ids:
             errors.append(f"Same product repeated (row {seen_ids[product['id']]})")
         if product is None and not name:
@@ -2017,18 +2122,26 @@ async def import_products(
             errors.append("Can't switch off expiry tracking while dated batches are in stock")
         if code:
             seen_barcodes.setdefault(code, row_no)
+        if package_code:
+            seen_barcodes.setdefault(package_code, row_no)
         if product is not None:
             seen_ids.setdefault(product["id"], row_no)
         entry = {
             "row": row_no,
             "name": name or (product or {}).get("name", ""),
             "barcode": code,
+            "package_barcode": package_code,
             "action": "error" if errors else ("update" if product else "create"),
             "errors": errors,
         }
         if not errors:
             entry["_product"] = product
-            entry["_values"] = {**parsed, **({"name": name} if name else {}), **({"barcode": code} if code else {})}
+            entry["_values"] = {
+                **parsed,
+                **({"name": name} if name else {}),
+                **({"barcode": code} if code else {}),
+                **({"package_barcode": package_code} if package_code else {}),
+            }
         rows_out.append(entry)
 
     if not dry_run:

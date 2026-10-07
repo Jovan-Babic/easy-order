@@ -9,6 +9,7 @@ type Product = {
   name: string;
   manufacturer?: string;
   barcode?: string | null;
+  package_barcode?: string | null;
   boxes_per_transport?: number;
   stock_qty: number | null;
   reserved_qty: number;
@@ -160,7 +161,7 @@ export default function StockPage() {
 
   const filtered = products.filter((p) => {
     const q = search.trim().toLowerCase();
-    return !q || p.name.toLowerCase().includes(q) || (p.manufacturer ?? "").toLowerCase().includes(q) || (p.barcode ?? "").toLowerCase().includes(q);
+    return !q || p.name.toLowerCase().includes(q) || (p.manufacturer ?? "").toLowerCase().includes(q) || (p.barcode ?? "").toLowerCase().includes(q) || (p.package_barcode ?? "").toLowerCase().includes(q);
   });
 
   const tracked = panel?.product.track_expiry === true;
