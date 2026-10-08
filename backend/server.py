@@ -314,6 +314,7 @@ class Client(BaseModel):
     # starts_at, ends_at, note, source, canceled_at, purge_paused, purged_at.
     subscription: Optional[Dict[str, Any]] = None
     subscription_state: Optional[Dict[str, Any]] = None  # computed
+    user_count: Optional[int] = None  # computed in GET /clients: active users of the client
     # Read-only: the number the next shipped order will get (auto numbering).
     invoice_next_seq: Optional[int] = None
     active: bool = True
@@ -365,6 +366,11 @@ class User(BaseModel):
     # Set per request from the user's client (see get_authenticated_user); not stored.
     _modules: Optional[List[str]] = PrivateAttr(default=None)
     _subscription: Optional[dict] = PrivateAttr(default=None)
+
+
+class UserRow(User):
+    """Row of GET /users: the user plus the name of their client (superadmin list)."""
+    client_name: Optional[str] = None
 
 
 class UserOut(User):
@@ -1457,7 +1463,19 @@ async def _raise_invoice_counter(client_id: str, next_seq: Optional[int]) -> Non
 @api_router.get("/clients", response_model=List[Client])
 async def list_clients(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
     docs = await db.clients.find({}, {"_id": 0}).sort("name", 1).to_list(None)
-    return [await _client_out(v) for v in docs]
+    counts = {
+        row["_id"]: row["n"]
+        async for row in db.users.aggregate([
+            {"$match": {"client_id": {"$ne": None}, "active": {"$ne": False}}},
+            {"$group": {"_id": "$client_id", "n": {"$sum": 1}}},
+        ])
+    }
+    out = []
+    for doc in docs:
+        client = await _client_out(doc)
+        client.user_count = counts.get(doc["id"], 0)
+        out.append(client)
+    return out
 
 
 @api_router.post("/clients", response_model=ClientCreateResponse)
@@ -1488,7 +1506,7 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
         }
     )
     await db.clients.insert_one(
-        {**client_obj.dict(exclude={"invoice_next_seq", "subscription_state"}), "_id": client_obj.id}
+        {**client_obj.dict(exclude={"invoice_next_seq", "subscription_state", "user_count"}), "_id": client_obj.id}
     )
     await _raise_invoice_counter(client_obj.id, inp.invoice_next_seq)
 
@@ -1938,15 +1956,109 @@ async def cron_subscriptions(dry_run: bool = Query(False), authorization: Option
     return result
 
 
+# ---------------- Superadmin overview (PLAN_SUPERADMIN.md, phase A) ----------------
+class OverviewClients(BaseModel):
+    total: int = 0
+    active: int = 0
+    inactive: int = 0
+    locked: int = 0  # active clients whose subscription is locked
+
+
+class OverviewUsers(BaseModel):
+    total: int = 0
+    by_role: Dict[str, int] = Field(default_factory=dict)
+
+
+class OverviewSubscriptions(BaseModel):
+    active: int = 0
+    ending_30d: int = 0  # active and ending within 30 days (also counted in active)
+    grace: int = 0
+    locked: int = 0
+    none: int = 0
+
+
+class AttentionItem(BaseModel):
+    client_id: str
+    client_name: str
+    reason: str  # locked | grace | purge_soon | ending_soon
+    date: Optional[str] = None  # the date that matters for the reason
+    plan_name: Optional[str] = None
+
+
+class SuperadminOverview(BaseModel):
+    clients: OverviewClients
+    users: OverviewUsers
+    subscriptions: OverviewSubscriptions
+    attention: List[AttentionItem]
+
+
+_ATTENTION_ORDER = {"locked": 0, "purge_soon": 1, "grace": 2, "ending_soon": 3}
+
+
+@api_router.get("/superadmin/overview", response_model=SuperadminOverview)
+async def superadmin_overview(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Numbers for the superadmin dashboard. Deactivated clients are counted as
+    such and left out of the subscription figures and the attention list."""
+    today = _today()
+    clients = OverviewClients()
+    subs = OverviewSubscriptions()
+    attention: List[AttentionItem] = []
+    active_ids = set()
+    async for client in db.clients.find({}, {"_id": 0}):
+        clients.total += 1
+        if not client.get("active", True):
+            clients.inactive += 1
+            continue
+        clients.active += 1
+        active_ids.add(client["id"])
+        sub = client.get("subscription")
+        state = subscription_state(sub, today)
+        status = state["status"]
+        setattr(subs, status, getattr(subs, status) + 1)
+        item = {"client_id": client["id"], "client_name": client["name"], "plan_name": (sub or {}).get("plan_name")}
+        if status == "locked":
+            clients.locked += 1
+            purge_at = date.fromisoformat(state["purge_at"])
+            if not sub.get("purged_at") and not sub.get("purge_paused") and (purge_at - today).days <= SUBSCRIPTION_REMINDER_DAYS:
+                attention.append(AttentionItem(**item, reason="purge_soon", date=state["purge_at"]))
+            else:
+                attention.append(AttentionItem(**item, reason="locked", date=state["locked_since"]))
+        elif status == "grace":
+            attention.append(AttentionItem(**item, reason="grace", date=state["grace_ends_at"]))
+        elif status == "active":
+            if state["days_left"] <= 30:
+                subs.ending_30d += 1
+            if state["days_left"] <= SUBSCRIPTION_REMINDER_DAYS:
+                attention.append(AttentionItem(**item, reason="ending_soon", date=state["ends_at"]))
+    by_role: Dict[str, int] = {}
+    async for row in db.users.aggregate([
+        {"$match": {"client_id": {"$in": list(active_ids)}, "active": {"$ne": False}}},
+        {"$group": {"_id": "$role", "n": {"$sum": 1}}},
+    ]):
+        by_role[row["_id"]] = row["n"]
+    attention.sort(key=lambda a: (_ATTENTION_ORDER[a.reason], a.date or "", a.client_name))
+    return SuperadminOverview(
+        clients=clients,
+        users=OverviewUsers(total=sum(by_role.values()), by_role=by_role),
+        subscriptions=subs,
+        attention=attention[:50],
+    )
+
+
 # ---------------- Users ----------------
-@api_router.get("/users", response_model=List[User])
+@api_router.get("/users", response_model=List[UserRow])
 async def list_users(client_id: Optional[str] = None, current_user: User = Depends(require_manager)):
     if current_user.role == Role.SUPERADMIN:
         query = {"client_id": client_id} if client_id else {}
     else:
         query = {"client_id": current_user.client_id}
     docs = await db.users.find(query, {"_id": 0}).sort("name", 1).to_list(None)
-    return [User(**v) for v in docs]
+    names: Dict[str, str] = {}
+    if current_user.role == Role.SUPERADMIN:
+        ids = list({d["client_id"] for d in docs if d.get("client_id")})
+        if ids:
+            names = {c["id"]: c["name"] async for c in db.clients.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1})}
+    return [UserRow(**{**v, "client_name": names.get(v.get("client_id"))}) for v in docs]
 
 
 @api_router.post("/users", response_model=UserInviteResponse)

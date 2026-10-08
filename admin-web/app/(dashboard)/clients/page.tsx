@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ClientFields } from "@/components/ClientFields";
-import { Plan } from "@/lib/subscriptions";
+import { Plan, STATUS_KEYS, STATUS_STYLES, SubState } from "@/lib/subscriptions";
 import { ClientFormFields, clientPayload, deleteUploadedLogo, emptyClientFields, uploadLogo } from "@/lib/clientForm";
 
 type Client = {
@@ -15,6 +15,9 @@ type Client = {
   phone?: string;
   pib?: string;
   active: boolean;
+  subscription?: { plan_name?: string | null } | null;
+  subscription_state?: SubState | null;
+  user_count?: number | null;
 };
 
 const emptyAdmin = { admin_name: "", admin_email: "" };
@@ -245,6 +248,9 @@ export default function ClientsPage() {
                 <th className="px-4 py-3">{t("name")}</th>
                 <th className="px-4 py-3">{t("email")}</th>
                 <th className="px-4 py-3">{t("taxIdPib")}</th>
+                <th className="px-4 py-3">{t("plan")}</th>
+                <th className="px-4 py-3">{t("subscription")}</th>
+                <th className="px-4 py-3">{t("users")}</th>
                 <th className="px-4 py-3">{t("status")}</th>
                 <th className="px-4 py-3" />
               </tr>
@@ -255,6 +261,21 @@ export default function ClientsPage() {
                   <td className="px-4 py-3 font-semibold text-onSurface">{c.name}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.email || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.pib || "-"}</td>
+                  <td className="px-4 py-3 text-onSurfaceSecondary">{c.subscription?.plan_name ?? "-"}</td>
+                  <td className="px-4 py-3">
+                    {(() => {
+                      const state = c.subscription_state ?? { status: "none" as const };
+                      return (
+                        <>
+                          <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${STATUS_STYLES[state.status]}`}>
+                            {t(STATUS_KEYS[state.status])}
+                          </span>
+                          {state.ends_at && <p className="mt-1 text-xs text-muted">{state.ends_at}</p>}
+                        </>
+                      );
+                    })()}
+                  </td>
+                  <td className="px-4 py-3 text-onSurfaceSecondary">{c.user_count ?? 0}</td>
                   <td className="px-4 py-3">
                     <span className={c.active ? "text-success" : "text-error"}>
                       {c.active ? t("active") : t("inactive")}

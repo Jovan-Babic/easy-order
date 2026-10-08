@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import { ByClientChart } from "@/components/ByClientChart";
 import { DashboardAnalytics, DashboardStats } from "@/components/DashboardAnalytics";
 import { StatCard } from "@/components/StatCard";
+import { SuperadminDashboard } from "@/components/SuperadminDashboard";
 import { useLanguage } from "@/lib/i18n";
+import { useSession } from "@/lib/session-provider";
 
 type ClientStats = {
   client_id: string;
@@ -23,7 +25,13 @@ type StatsResponse = {
   by_client: ClientStats[];
 };
 
+// The system owner gets owner-level cards; a client's admin gets the charts.
 export default function DashboardPage() {
+  const session = useSession();
+  return session.role === "superadmin" ? <SuperadminDashboard /> : <ClientDashboard />;
+}
+
+function ClientDashboard() {
   const { t } = useLanguage();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [dashboard, setDashboard] = useState<DashboardStats | null>(null);
