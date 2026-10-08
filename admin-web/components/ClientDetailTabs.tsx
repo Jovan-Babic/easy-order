@@ -20,7 +20,7 @@ import { ClientInfo } from "@/lib/orders";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
 
 type Stats = { order_count: number; customer_count: number; product_count: number; total_grand: number } | null;
-type Tab = "overview" | "users" | "subscription" | "payments";
+type Tab = "overview" | "users" | "subscription" | "payments" | "activity" | "notes";
 type ClientUser = { id: string; name: string; email: string; phone?: string; role: string; active: boolean };
 
 // Superadmin's page for one client: company data, its users, its subscription.
@@ -32,6 +32,8 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
     ["users", t("users")],
     ["subscription", t("subscription")],
     ["payments", t("payments")],
+    ["activity", t("activity")],
+    ["notes", t("notes")],
   ];
   return (
     <div>
@@ -64,6 +66,8 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
       {tab === "users" && <ClientUsers clientId={client.id} />}
       {tab === "subscription" && <ClientSubscription clientId={client.id} />}
       {tab === "payments" && <PaymentsPanel clientId={client.id} />}
+      {tab === "activity" && <ClientActivity clientId={client.id} />}
+      {tab === "notes" && <ClientNotes clientId={client.id} />}
     </div>
   );
 }
@@ -219,6 +223,142 @@ function ClientSubscription({ clientId }: { clientId: string }) {
       {dialog === "extend" && <ExtendDialog row={row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "cancel" && <CancelDialog row={row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "history" && <HistoryDialog row={row} onClose={() => setDialog(null)} onChanged={load} />}
+    </div>
+  );
+}
+
+type Activity = {
+  last_activity_at: string | null;
+  last_order_at: string | null;
+  orders_30d: number;
+  orders_total: number;
+  users: Array<{ id: string; name: string; role: string; active: boolean; last_login_at: string | null; last_seen_at: string | null }>;
+};
+
+const when = (iso: string | null | undefined, never: string) => (iso ? new Date(iso).toLocaleString() : never);
+
+function ClientActivity({ clientId }: { clientId: string }) {
+  const { t } = useLanguage();
+  const [data, setData] = useState<Activity | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    fetch(`/api/clients/${clientId}/activity`)
+      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then(setData)
+      .catch(() => setError(true));
+  }, [clientId]);
+  if (error) return <p className="text-error">{t("loadFailed")}</p>;
+  if (!data) return <p className="text-muted">{t("loading")}</p>;
+  return (
+    <div>
+      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+        <StatCard label={t("lastActivity")} value={when(data.last_activity_at, t("never"))} />
+        <StatCard label={t("lastOrder")} value={when(data.last_order_at, t("never"))} />
+        <StatCard label={t("orders30d")} value={data.orders_30d} />
+        <StatCard label={t("ordersTotal")} value={data.orders_total} />
+      </div>
+      <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
+        <table className="w-full text-left text-sm">
+          <thead className="border-b border-border text-xs uppercase text-muted">
+            <tr>
+              <th className="px-4 py-3">{t("name")}</th>
+              <th className="px-4 py-3">{t("role")}</th>
+              <th className="px-4 py-3">{t("lastLogin")}</th>
+              <th className="px-4 py-3">{t("lastSeen")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.users.map((u) => (
+              <tr key={u.id} className="border-b border-border last:border-0">
+                <td className="px-4 py-3 font-semibold text-onSurface">
+                  {u.name}
+                  {!u.active && <span className="ml-2 text-xs text-muted">({t("inactive")})</span>}
+                </td>
+                <td className="px-4 py-3 text-onSurfaceSecondary">{u.role}</td>
+                <td className="px-4 py-3 text-onSurfaceSecondary">{when(u.last_login_at, t("never"))}</td>
+                <td className="px-4 py-3 text-onSurfaceSecondary">{when(u.last_seen_at, t("never"))}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+type Note = { id: string; text: string; author_name: string | null; created_at: string };
+
+function ClientNotes({ clientId }: { clientId: string }) {
+  const { t } = useLanguage();
+  const [notes, setNotes] = useState<Note[] | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/clients/${clientId}/notes`);
+    if (!res.ok) {
+      setError(await detailOf(res, t("loadFailed")));
+      return;
+    }
+    setNotes(await res.json());
+  }, [clientId, t]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/clients/${clientId}/notes`, { method: "POST", body: JSON.stringify({ text }) });
+      if (!res.ok) {
+        setError(await detailOf(res, t("saveFailed")));
+        return;
+      }
+      setText("");
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="max-w-2xl">
+      <form onSubmit={add} className="mb-6 grid gap-2">
+        <textarea
+          rows={3}
+          maxLength={2000}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          className="w-full rounded-md border border-border px-3 py-2 text-sm"
+        />
+        <p className="text-xs text-muted">{t("noteHint")}</p>
+        {error && <p className="text-sm text-error">{error}</p>}
+        <div>
+          <button type="submit" disabled={busy || !text.trim()} className={primary}>
+            {t("noteAdd")}
+          </button>
+        </div>
+      </form>
+      {notes === null ? (
+        <p className="text-muted">{t("loading")}</p>
+      ) : notes.length === 0 ? (
+        <p className="text-sm text-muted">{t("noNotes")}</p>
+      ) : (
+        <ul className="grid gap-3">
+          {notes.map((n) => (
+            <li key={n.id} className="rounded-lg bg-surfaceSecondary p-4 shadow-sm">
+              <p className="whitespace-pre-wrap text-sm text-onSurface">{n.text}</p>
+              <p className="mt-2 text-xs text-muted">
+                {new Date(n.created_at).toLocaleString()} · {n.author_name}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

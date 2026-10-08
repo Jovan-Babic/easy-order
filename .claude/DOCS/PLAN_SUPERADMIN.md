@@ -38,9 +38,10 @@ Cilj: superadmin je vlasnik sistema, ne korisnik poslovnih podataka klijenata. V
 - Svaka akcija piše i u istoriju pretplate (`subscription_events`).
 - Testovi: iznosi i zbirovi, dug → primljeno, produženje uz uplatu, otkazana uplata se ne računa, samo superadmin.
 
-## Faza D — Uvid i kontrola (srednja)
+## Faza D — Uvid i kontrola (srednja) — ✅ urađeno
 
 - **Beleške po klijentu** (`client_notes`, samo se dodaje: tekst, autor, vreme) — tab Beleške.
+- Implementacija: `users.last_login_at` / `last_seen_at` (najviše jedan upis na sat), `GET /clients/{id}/activity`, `GET /superadmin/system` (cron upisuje `system_runs`), `GET /audit` (`_audit()`; `_log_subscription_event` ga poziva za sve akcije pretplate/uplata), `announcements` CRUD + isporuka kroz `/auth/me` (`announcements`). Dnevnik beleži samo akcije superadmina (ne i akcije admina klijenta).
 - **Poslednja aktivnost:** `users.last_login_at` (pri prijavi) i `last_seen_at` (osvežava se najviše jednom na sat); po klijentu: poslednja prijava, poslednja porudžbina, porudžbine u 30 dana — kolona u spisku klijenata i tab Aktivnost; filter „neaktivni 30+ dana“.
 - **Stanje sistema** (`GET /superadmin/system`): kad je poslednji put radio dnevni posao i šta je uradio (cron upisuje `system_runs`), da li je SMTP podešen, Cloudinary, `AUTO_PURGE_ENABLED`, verzija aplikacije. Kartica na dashboardu; upozorenje ako cron nije radio duže od 2 dana.
 - **Dnevnik akcija superadmina** (`audit_log`): ko, kad, šta, nad kim (klijent, paket, pretplata, uplata, korisnik, impersonate). Stranica Dnevnik, samo pregled.

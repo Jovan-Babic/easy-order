@@ -16,6 +16,8 @@ export type User = {
   created_at: string;
   // Modules the client has (login / me); superadmin gets all.
   modules?: string[];
+  // Live announcements from the system owner.
+  announcements?: Array<{ id: string; level: "info" | "warning"; message_sr: string; message_en: string }>;
   // Only when the client has a subscription that is ending (active) or over (grace).
   subscription?: {
     status: "active" | "grace";

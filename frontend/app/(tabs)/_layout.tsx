@@ -6,7 +6,7 @@ import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
 import { colors } from "@/src/theme";
 import { hasModule } from "@/src/utils/modules";
-import { SubscriptionBanner, useSubscriptionNotice } from "@/src/components/SubscriptionBanner";
+import { TopBanners, useTopNotices } from "@/src/components/SubscriptionBanner";
 
 export default function TabsLayout() {
   const { t } = useApp();
@@ -24,12 +24,12 @@ export default function TabsLayout() {
   const hideAdminTab = user?.role === "operator" || isWarehouse;
   // With the banner on top it takes the status bar inset, so the screens below
   // (which pad themselves by insets.top) must not add it a second time.
-  const bannerShown = useSubscriptionNotice() !== null;
+  const bannerShown = useTopNotices().length > 0;
   const safeBottomPadding = Math.max(insets.bottom, Platform.OS === "ios" ? 18 : 8);
 
   return (
     <View style={{ flex: 1 }}>
-    <SubscriptionBanner />
+    <TopBanners />
     <SafeAreaInsetsContext.Provider value={bannerShown ? { ...insets, top: 0 } : insets}>
     <Tabs
       initialRouteName={isWarehouse ? "home" : "index"}

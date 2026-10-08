@@ -30,6 +30,59 @@ const REASON_STYLES: Record<string, string> = {
   ending_soon: "bg-amber-100 text-warning",
 };
 
+type SystemStatus = {
+  environment: string;
+  smtp_configured: boolean;
+  cloudinary_configured: boolean;
+  auto_purge_enabled: boolean;
+  app_version: string | null;
+  cron: { configured: boolean; status: "ok" | "late" | "never" | "disabled"; last_run_at: string | null; live: boolean | null };
+};
+
+const CRON_KEYS: Record<SystemStatus["cron"]["status"], TranslationKey> = {
+  ok: "cronOk",
+  late: "cronLate",
+  never: "cronNever",
+  disabled: "cronDisabled",
+};
+
+function Row({ label, value, bad }: { label: string; value: string; bad?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-border px-4 py-3 last:border-0">
+      <span className="text-sm text-onSurfaceSecondary">{label}</span>
+      <span className={`text-sm font-semibold ${bad ? "text-error" : "text-onSurface"}`}>{value}</span>
+    </div>
+  );
+}
+
+// Is the daily job running, is mail/image storage set up.
+function SystemCard() {
+  const { t } = useLanguage();
+  const [sys, setSys] = useState<SystemStatus | null>(null);
+  useEffect(() => {
+    fetch("/api/superadmin/system")
+      .then((res) => (res.ok ? res.json() : null))
+      .then(setSys)
+      .catch(() => {});
+  }, []);
+  if (!sys) return null;
+  const set = (on: boolean) => (on ? t("sysConfigured") : t("sysNotConfigured"));
+  return (
+    <section className="mb-8">
+      <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-muted">{t("systemStatus")}</h2>
+      <div className="max-w-xl overflow-hidden rounded-lg bg-surfaceSecondary shadow-sm">
+        <Row label={t("sysCron")} value={t(CRON_KEYS[sys.cron.status])} bad={sys.cron.status !== "ok"} />
+        <Row label={t("lastRun")} value={sys.cron.last_run_at ? new Date(sys.cron.last_run_at).toLocaleString() : t("never")} />
+        <Row label={t("sysAutoPurge")} value={sys.auto_purge_enabled ? t("sysOn") : t("sysOff")} />
+        <Row label={t("sysSmtp")} value={set(sys.smtp_configured)} bad={!sys.smtp_configured} />
+        <Row label={t("sysCloudinary")} value={set(sys.cloudinary_configured)} bad={!sys.cloudinary_configured} />
+        <Row label={t("sysAppVersion")} value={sys.app_version ?? "-"} />
+        <Row label={t("sysEnvironment")} value={sys.environment} />
+      </div>
+    </section>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="mb-8">
@@ -89,6 +142,8 @@ export function SuperadminDashboard() {
         <StatCard label={t("overviewDebt")} value={rsd(payments.expected_total)} />
         <StatCard label={t("overviewOverdue")} value={`${rsd(payments.overdue_total)} (${payments.overdue_count})`} />
       </Section>
+
+      <SystemCard />
 
       <section>
         <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-muted">{t("needsAttention")}</h2>
