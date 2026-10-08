@@ -3,12 +3,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ClientEditForm } from "@/components/ClientEditForm";
+import { PaymentsPanel } from "@/components/PaymentsPanel";
 import { StatCard } from "@/components/StatCard";
 import {
   AssignDialog,
   CancelDialog,
   ExtendDialog,
   HistoryDialog,
+  PayDialog,
   link,
   primary,
 } from "@/components/SubscriptionDialogs";
@@ -18,7 +20,7 @@ import { ClientInfo } from "@/lib/orders";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
 
 type Stats = { order_count: number; customer_count: number; product_count: number; total_grand: number } | null;
-type Tab = "overview" | "users" | "subscription";
+type Tab = "overview" | "users" | "subscription" | "payments";
 type ClientUser = { id: string; name: string; email: string; phone?: string; role: string; active: boolean };
 
 // Superadmin's page for one client: company data, its users, its subscription.
@@ -29,6 +31,7 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
     ["overview", t("clientOverview")],
     ["users", t("users")],
     ["subscription", t("subscription")],
+    ["payments", t("payments")],
   ];
   return (
     <div>
@@ -60,6 +63,7 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
       )}
       {tab === "users" && <ClientUsers clientId={client.id} />}
       {tab === "subscription" && <ClientSubscription clientId={client.id} />}
+      {tab === "payments" && <PaymentsPanel clientId={client.id} />}
     </div>
   );
 }
@@ -123,7 +127,7 @@ function ClientUsers({ clientId }: { clientId: string }) {
   );
 }
 
-type Dialog = "assign" | "extend" | "cancel" | "history" | null;
+type Dialog = "assign" | "extend" | "cancel" | "history" | "pay" | null;
 
 function ClientSubscription({ clientId }: { clientId: string }) {
   const { t } = useLanguage();
@@ -190,7 +194,10 @@ function ClientSubscription({ clientId }: { clientId: string }) {
         )}
       </dl>
       <div className="mt-5 flex flex-wrap gap-4">
-        <button className={primary} onClick={() => setDialog("assign")}>
+        <button className={primary} onClick={() => setDialog("pay")}>
+          {t("payAndExtend")}
+        </button>
+        <button className={link} onClick={() => setDialog("assign")}>
           {has ? t("changePlan") : t("assignPlan")}
         </button>
         {has && (
@@ -207,6 +214,7 @@ function ClientSubscription({ clientId }: { clientId: string }) {
           </button>
         )}
       </div>
+      {dialog === "pay" && <PayDialog row={row} plans={plans} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "assign" && <AssignDialog row={row} plans={plans} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "extend" && <ExtendDialog row={row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "cancel" && <CancelDialog row={row} onClose={() => setDialog(null)} onDone={done} />}

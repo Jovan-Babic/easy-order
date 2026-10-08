@@ -15,6 +15,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/dashboard", labelKey: "dashboard", roles: ["superadmin", "admin"] },
   { href: "/clients", labelKey: "clients", roles: ["superadmin"] },
   { href: "/subscriptions", labelKey: "subscriptions", roles: ["superadmin"] },
+  { href: "/payments", labelKey: "payments", roles: ["superadmin"] },
   { href: "/users", labelKey: "users", roles: ["superadmin", "admin"] },
   // The system owner doesn't work with a client's business data (products,
   // customers, orders, warehouse, stock, reports): those pages stay reachable

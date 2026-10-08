@@ -31,7 +31,7 @@ export type SubscriptionEvent = {
   note: string | null;
   actor_name: string | null;
   source: string;
-  data: Record<string, number> | null;
+  data: Record<string, number | string> | null;
   created_at: string;
 };
 
@@ -41,6 +41,8 @@ export type Plan = {
   description?: string;
   modules: string[];
   active: boolean;
+  prices?: Record<string, number>; // months -> amount
+  currency?: string;
 };
 
 export const STATUS_KEYS: Record<SubState["status"], TranslationKey> = {
@@ -64,6 +66,9 @@ export const EVENT_KEYS: Record<string, TranslationKey> = {
   purge_paused: "eventPurgePaused",
   purge_resumed: "eventPurgeResumed",
   purged: "eventPurged",
+  payment_received: "eventPaymentReceived",
+  charge_created: "eventChargeCreated",
+  payment_canceled: "eventPaymentCanceled",
 };
 
 export const detailOf = async (res: Response, fallback: string) => {

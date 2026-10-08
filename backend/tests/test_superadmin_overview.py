@@ -78,7 +78,7 @@ def test_counts_and_attention(superadmin_client):
         assert quiet["id"] not in reasons
     # most urgent first: locked, purge_soon, grace, ending_soon
     order = [a["reason"] for a in after["attention"]]
-    assert order == sorted(order, key=lambda r: {"locked": 0, "purge_soon": 1, "grace": 2, "ending_soon": 3}[r])
+    assert order == sorted(order, key=lambda r: {"locked": 0, "purge_soon": 1, "payment_overdue": 2, "grace": 3, "ending_soon": 4}[r])
 
 
 def test_users_list_has_client_names_and_clients_have_user_counts(superadmin_client):

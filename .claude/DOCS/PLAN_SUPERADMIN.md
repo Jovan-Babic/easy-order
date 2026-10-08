@@ -25,7 +25,7 @@ Cilj: superadmin je vlasnik sistema, ne korisnik poslovnih podataka klijenata. V
 - `GET /users` za superadmina vraća i naziv klijenta; stranica Korisnici dobija kolonu Klijent (link na klijenta) i filter po klijentu.
 - Spisak klijenata: kolone paket, status pretplate, broj korisnika.
 
-## Faza C — Cene, uplate i dugovi (velika)
+## Faza C — Cene, uplate i dugovi (velika) — ✅ urađeno
 
 - **Cene:** `plans.prices` = mapa meseci → iznos (npr. `{"1": 1500, "12": 15000}`), `currency` = `RSD`. Polje je opciono; paket bez cene radi kao do sada.
 - **Uplate** (`payments`): `client_id`, `amount`, `currency`, `status` (`expected` = dug, `received` = primljeno, `canceled`), `due_date` (za dug), `paid_at` (za primljeno), `method` (uplata na račun / kartica / gotovina / ostalo), `note` (slobodan tekst; poziv na broj se ne vodi), `plan_name`, `period_months`, `created_by`, `source` (`manual`).

@@ -4,17 +4,20 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { StatCard } from "@/components/StatCard";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
+import { money } from "@/lib/payments";
 
 type Overview = {
   clients: { total: number; active: number; inactive: number; locked: number };
   users: { total: number; by_role: Record<string, number> };
   subscriptions: { active: number; ending_30d: number; grace: number; locked: number; none: number };
+  payments: { currency: string; received_month: number; received_year: number; expected_total: number; overdue_total: number; overdue_count: number };
   attention: Array<{ client_id: string; client_name: string; reason: string; date: string | null; plan_name: string | null }>;
 };
 
 const REASON_KEYS: Record<string, TranslationKey> = {
   locked: "attentionLocked",
   purge_soon: "attentionPurgeSoon",
+  payment_overdue: "attentionPaymentOverdue",
   grace: "attentionGrace",
   ending_soon: "attentionEndingSoon",
 };
@@ -22,6 +25,7 @@ const REASON_KEYS: Record<string, TranslationKey> = {
 const REASON_STYLES: Record<string, string> = {
   locked: "bg-red-100 text-error",
   purge_soon: "bg-red-100 text-error",
+  payment_overdue: "bg-red-100 text-error",
   grace: "bg-amber-100 text-warning",
   ending_soon: "bg-amber-100 text-warning",
 };
@@ -50,7 +54,8 @@ export function SuperadminDashboard() {
 
   if (error) return <p className="text-error">{t("loadFailed")}</p>;
   if (!data) return <p className="text-muted">{t("loading")}</p>;
-  const { clients, users, subscriptions, attention } = data;
+  const { clients, users, subscriptions, payments, attention } = data;
+  const rsd = (v: number) => money(v, payments.currency);
 
   return (
     <div>
@@ -76,6 +81,13 @@ export function SuperadminDashboard() {
         <StatCard label={t("subGrace")} value={subscriptions.grace} />
         <StatCard label={t("subLocked")} value={subscriptions.locked} />
         <StatCard label={t("subNone")} value={subscriptions.none} />
+      </Section>
+
+      <Section title={t("payments")}>
+        <StatCard label={t("overviewReceivedMonth")} value={rsd(payments.received_month)} />
+        <StatCard label={t("overviewReceivedYear")} value={rsd(payments.received_year)} />
+        <StatCard label={t("overviewDebt")} value={rsd(payments.expected_total)} />
+        <StatCard label={t("overviewOverdue")} value={`${rsd(payments.overdue_total)} (${payments.overdue_count})`} />
       </Section>
 
       <section>

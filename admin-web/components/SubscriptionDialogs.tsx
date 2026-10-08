@@ -267,3 +267,158 @@ export function HistoryDialog({ row, onClose, onChanged }: { row: SubscriptionRo
   );
 }
 
+
+// "The client paid for N months": records the payment (or settles a debt) and
+// extends the subscription - or starts it, for a client with none yet.
+export function PayDialog({
+  row,
+  plans,
+  onClose,
+  onDone,
+}: {
+  row: SubscriptionRow;
+  plans: Plan[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { t } = useLanguage();
+  const hasSub = row.state.status !== "none";
+  const usable = plans.filter((p) => p.active);
+  const [planId, setPlanId] = useState(row.plan_id ?? usable[0]?.id ?? "");
+  const [months, setMonths] = useState(12);
+  const [debts, setDebts] = useState<Array<{ id: string; amount: number; due_date: string | null }>>([]);
+  const [debtId, setDebtId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [day, setDay] = useState(new Date().toISOString().slice(0, 10));
+  const [method, setMethod] = useState("bank");
+  const [note, setNote] = useState("");
+  const { busy, error, send } = useSubmit(onDone);
+
+  useEffect(() => {
+    fetch(`/api/payments?client_id=${encodeURIComponent(row.client_id)}&status=expected`)
+      .then((res) => (res.ok ? res.json() : { items: [] }))
+      .then((body) => setDebts(body.items))
+      .catch(() => {});
+  }, [row.client_id]);
+
+  // Prefill from the plan's price for the period (until the amount is edited by hand).
+  const price = plans.find((p) => p.id === planId)?.prices?.[String(months)];
+  useEffect(() => {
+    if (!touched && !debtId) setAmount(price ? String(price) : "");
+  }, [price, touched, debtId]);
+
+  const pickDebt = (id: string) => {
+    setDebtId(id);
+    const debt = debts.find((d) => d.id === id);
+    if (debt) {
+      setAmount(String(debt.amount));
+      setTouched(true);
+    } else {
+      setTouched(false);
+    }
+  };
+
+  return (
+    <Modal title={`${row.client_name} · ${t("payAndExtend")}`} onClose={onClose}>
+      <form
+        className="grid gap-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(`/api/subscriptions/${row.client_id}/pay`, "POST", {
+            months,
+            amount: Number(amount),
+            paid_at: day,
+            method,
+            note: note || null,
+            ...(hasSub ? {} : { plan_id: planId }),
+            ...(debtId ? { payment_id: debtId } : {}),
+          });
+        }}
+      >
+        {hasSub ? (
+          <p className="text-sm text-muted">
+            {row.plan_name} · {t("validUntil")}: {row.state.ends_at}
+          </p>
+        ) : (
+          <label className="text-sm font-semibold text-onSurface">
+            {t("plan")}
+            <select required value={planId} onChange={(e) => setPlanId(e.target.value)} className={`${input} mt-1`}>
+              <option value="">{t("payPlanRequired")}</option>
+              {usable.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label className="text-sm font-semibold text-onSurface">
+          {t("payMonths")}
+          <select value={months} onChange={(e) => setMonths(Number(e.target.value))} className={`${input} mt-1`}>
+            {[1, 3, 6, 12, 24].map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </label>
+        {debts.length > 0 && (
+          <label className="text-sm font-semibold text-onSurface">
+            {t("paySettleDebt")}
+            <select value={debtId} onChange={(e) => pickDebt(e.target.value)} className={`${input} mt-1`}>
+              <option value="">{t("payNewPayment")}</option>
+              {debts.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.amount} RSD · {d.due_date}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label className="text-sm font-semibold text-onSurface">
+          {t("payAmount")}
+          <input
+            required
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={amount}
+            onChange={(e) => {
+              setAmount(e.target.value);
+              setTouched(true);
+            }}
+            className={`${input} mt-1`}
+          />
+        </label>
+        {price != null && <p className="-mt-2 text-xs text-muted">{t("payPriceHint")}</p>}
+        <label className="text-sm font-semibold text-onSurface">
+          {t("payDate")}
+          <input required type="date" max={new Date().toISOString().slice(0, 10)} value={day} onChange={(e) => setDay(e.target.value)} className={`${input} mt-1`} />
+        </label>
+        <label className="text-sm font-semibold text-onSurface">
+          {t("payMethod")}
+          <select value={method} onChange={(e) => setMethod(e.target.value)} className={`${input} mt-1`}>
+            <option value="bank">{t("methodBank")}</option>
+            <option value="card">{t("methodCard")}</option>
+            <option value="cash">{t("methodCash")}</option>
+            <option value="other">{t("methodOther")}</option>
+          </select>
+        </label>
+        <label className="text-sm font-semibold text-onSurface">
+          {t("subNote")}
+          <input value={note} onChange={(e) => setNote(e.target.value)} className={`${input} mt-1`} />
+        </label>
+        {error && <p className="text-sm text-error">{error}</p>}
+        <div className="flex justify-end gap-3">
+          <button type="button" onClick={onClose} className={secondary}>
+            {t("cancel")}
+          </button>
+          <button type="submit" disabled={busy || !amount || (!hasSub && !planId)} className={primary}>
+            {t("save")}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}

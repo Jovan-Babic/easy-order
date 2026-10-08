@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useLanguage } from "@/lib/i18n";
+import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MODULES, toggleModule } from "@/lib/modules";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
@@ -11,6 +11,7 @@ import {
   ExtendDialog,
   HistoryDialog,
   Modal,
+  PayDialog,
   link,
   primary,
   secondary,
@@ -18,8 +19,10 @@ import {
   useSubmit,
 } from "@/components/SubscriptionDialogs";
 
+const PRICE_PERIODS = [1, 3, 6, 12];
+
 type Dialog =
-  | { kind: "assign" | "extend" | "cancel" | "history"; row: SubscriptionRow }
+  | { kind: "assign" | "extend" | "cancel" | "history" | "pay"; row: SubscriptionRow }
   | { kind: "plan"; plan: Plan | null }
   | null;
 
@@ -145,6 +148,9 @@ export default function SubscriptionsPage() {
                         {r.modules.length ? MODULES.filter((m) => r.modules.includes(m.key)).map((m) => t(m.labelKey)).join(", ") : "-"}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-right">
+                        <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "pay", row: r })}>
+                          {t("payAndExtend")}
+                        </button>
                         <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "assign", row: r })}>
                           {has ? t("changePlan") : t("assignPlan")}
                         </button>
@@ -176,6 +182,7 @@ export default function SubscriptionsPage() {
               <tr>
                 <th className="px-4 py-3">{t("plan")}</th>
                 <th className="px-4 py-3">{t("modules")}</th>
+                <th className="px-4 py-3">{t("planPrices")}</th>
                 <th className="px-4 py-3">{t("status")}</th>
                 <th className="px-4 py-3" />
               </tr>
@@ -190,6 +197,11 @@ export default function SubscriptionsPage() {
                   <td className="px-4 py-3 text-xs text-onSurfaceSecondary">
                     {p.modules.length ? MODULES.filter((m) => p.modules.includes(m.key)).map((m) => t(m.labelKey)).join(", ") : "-"}
                   </td>
+                  <td className="px-4 py-3 text-xs text-onSurfaceSecondary">
+                    {Object.entries(p.prices ?? {}).length
+                      ? Object.entries(p.prices ?? {}).map(([months, amount]) => `${months} ${t("payPeriodShort")}: ${amount}`).join(" · ")
+                      : "-"}
+                  </td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.active ? t("active") : t("inactive")}</td>
                   <td className="px-4 py-3 text-right">
                     <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "plan", plan: p })}>
@@ -203,7 +215,7 @@ export default function SubscriptionsPage() {
               ))}
               {plans.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-4 py-6 text-center text-muted">
+                  <td colSpan={5} className="px-4 py-6 text-center text-muted">
                     {t("noPlans")}
                   </td>
                 </tr>
@@ -214,6 +226,7 @@ export default function SubscriptionsPage() {
       )}
 
       {dialog?.kind === "assign" && <AssignDialog row={dialog.row} plans={plans} onClose={() => setDialog(null)} onDone={done} />}
+      {dialog?.kind === "pay" && <PayDialog row={dialog.row} plans={plans} onClose={() => setDialog(null)} onDone={done} />}
       {dialog?.kind === "extend" && <ExtendDialog row={dialog.row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog?.kind === "cancel" && <CancelDialog row={dialog.row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog?.kind === "history" && <HistoryDialog row={dialog.row} onClose={() => setDialog(null)} onChanged={load} />}
@@ -232,6 +245,9 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
   const [modules, setModules] = useState<string[]>(plan?.modules ?? []);
   const [active, setActive] = useState(plan?.active ?? true);
   const [apply, setApply] = useState(false);
+  const [prices, setPrices] = useState<Record<string, string>>(
+    Object.fromEntries(PRICE_PERIODS.map((m) => [String(m), plan?.prices?.[String(m)] ? String(plan.prices[String(m)]) : ""]))
+  );
   const { busy, error, send } = useSubmit(onDone);
   return (
     <Modal title={plan ? t("editPlan") : t("newPlan")} onClose={onClose}>
@@ -245,6 +261,11 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
             modules,
             active,
             apply_to_clients: apply,
+            // Prices of other periods (set elsewhere) are kept by sending them back.
+            prices: {
+              ...Object.fromEntries(Object.entries(plan?.prices ?? {}).filter(([m]) => !PRICE_PERIODS.includes(Number(m)))),
+              ...Object.fromEntries(Object.entries(prices).filter(([, v]) => v !== "" && Number(v) > 0).map(([m, v]) => [m, Number(v)])),
+            },
           });
         }}
       >
@@ -265,6 +286,23 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
             </span>
           </label>
         ))}
+        <p className="text-sm font-semibold text-onSurface">{t("planPrices")}</p>
+        <div className="grid grid-cols-2 gap-3">
+          {PRICE_PERIODS.map((m) => (
+            <label key={m} className="text-xs font-semibold text-onSurfaceSecondary">
+              {t(`periodMonths${m}` as TranslationKey)}
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={prices[String(m)]}
+                onChange={(e) => setPrices({ ...prices, [String(m)]: e.target.value })}
+                className={`${input} mt-1`}
+              />
+            </label>
+          ))}
+        </div>
+        <p className="-mt-2 text-xs text-muted">{t("planPricesHint")}</p>
         <label className="flex items-center gap-2 text-sm font-semibold text-onSurface">
           <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
           {t("planActive")}
