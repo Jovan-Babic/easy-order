@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { backendFetch } from "@/lib/backend";
 import { Sidebar } from "@/components/Sidebar";
 import { SessionProvider } from "@/lib/session-provider";
+import { AnnouncementBanner } from "@/components/AnnouncementBanner";
 import { SubscriptionBanner } from "@/components/SubscriptionBanner";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -24,6 +25,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       <div className="flex">
         <Sidebar user={user} />
         <main className="min-h-screen flex-1 bg-surface p-8">
+          <AnnouncementBanner />
           <SubscriptionBanner />
           {children}
         </main>

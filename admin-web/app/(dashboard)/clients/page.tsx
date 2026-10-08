@@ -18,6 +18,7 @@ type Client = {
   subscription?: { plan_name?: string | null } | null;
   subscription_state?: SubState | null;
   user_count?: number | null;
+  last_activity_at?: string | null;
 };
 
 const emptyAdmin = { admin_name: "", admin_email: "" };
@@ -31,6 +32,7 @@ export default function ClientsPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [plans, setPlans] = useState<Plan[]>([]);
   // Optional: start the client on a package (then the modules come from it).
+  const [inactiveOnly, setInactiveOnly] = useState(false);
   const [planId, setPlanId] = useState("");
   const [endsAt, setEndsAt] = useState("");
   const [loading, setLoading] = useState(true);
@@ -102,6 +104,10 @@ export default function ClientsPage() {
       setSaving(false);
     }
   };
+
+  // "Inactive": active clients nobody has used for 30 days (or ever).
+  const isShown = (c: Client) =>
+    !inactiveOnly || (c.active && (!c.last_activity_at || Date.now() - new Date(c.last_activity_at).getTime() > 30 * 864e5));
 
   const remove = async () => {
     if (!pendingDelete) return;
@@ -238,6 +244,11 @@ export default function ClientsPage() {
 
       {!showForm && error && <p className="mb-4 text-sm text-error">{error}</p>}
 
+      <label className="mb-3 flex items-center gap-2 text-sm text-onSurfaceSecondary">
+        <input type="checkbox" checked={inactiveOnly} onChange={(e) => setInactiveOnly(e.target.checked)} />
+        {t("inactive30")}
+      </label>
+
       {loading ? (
         <p className="text-muted">{t("loading")}</p>
       ) : (
@@ -251,12 +262,13 @@ export default function ClientsPage() {
                 <th className="px-4 py-3">{t("plan")}</th>
                 <th className="px-4 py-3">{t("subscription")}</th>
                 <th className="px-4 py-3">{t("users")}</th>
+                <th className="px-4 py-3">{t("lastActivity")}</th>
                 <th className="px-4 py-3">{t("status")}</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody>
-              {clients.map((c) => (
+              {clients.filter(isShown).map((c) => (
                 <tr key={c.id} className="border-b border-border last:border-0">
                   <td className="px-4 py-3 font-semibold text-onSurface">{c.name}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.email || "-"}</td>
@@ -276,6 +288,9 @@ export default function ClientsPage() {
                     })()}
                   </td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.user_count ?? 0}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-xs text-onSurfaceSecondary">
+                    {c.last_activity_at ? new Date(c.last_activity_at).toLocaleDateString() : t("never")}
+                  </td>
                   <td className="px-4 py-3">
                     <span className={c.active ? "text-success" : "text-error"}>
                       {c.active ? t("active") : t("inactive")}

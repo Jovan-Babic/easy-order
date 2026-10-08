@@ -158,6 +158,10 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("Could not create unique index on products.package_barcode: %s", exc)
     try:
+        await db.payments.create_index([("client_id", 1), ("created_at", -1)])
+    except Exception as exc:
+        logger.error("Could not create index on payments: %s", exc)
+    try:
         await db.subscription_events.create_index([("client_id", 1), ("created_at", -1)])
     except Exception as exc:
         logger.error("Could not create index on subscription_events: %s", exc)
@@ -315,6 +319,9 @@ class Client(BaseModel):
     subscription: Optional[Dict[str, Any]] = None
     subscription_state: Optional[Dict[str, Any]] = None  # computed
     user_count: Optional[int] = None  # computed in GET /clients: active users of the client
+    last_activity_at: Optional[str] = None  # computed in GET /clients: last time a user was active / ordered
+    last_order_at: Optional[str] = None  # computed in GET /clients
+    orders_30d: Optional[int] = None  # computed in GET /clients
     # Read-only: the number the next shipped order will get (auto numbering).
     invoice_next_seq: Optional[int] = None
     active: bool = True
@@ -379,6 +386,8 @@ class UserOut(User):
     modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
     # Only when the client has a subscription: status active|grace, ends_at, days_left, grace_ends_at.
     subscription: Optional[Dict[str, Any]] = None
+    # Live announcements from the system owner: [{id, level, message_sr, message_en}].
+    announcements: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class InviteResult(BaseModel):
@@ -1101,7 +1110,22 @@ async def user_out(raw: dict) -> UserOut:
     """User + the modules of their client (login / me responses)."""
     gate = await _client_gate(raw.get("client_id"))
     sub = gate["subscription"] if gate["subscription"]["status"] != "none" else None
-    return UserOut(**{k: v for k, v in raw.items() if k not in ("modules", "subscription")}, modules=gate["modules"], subscription=sub)
+    return UserOut(
+        **{k: v for k, v in raw.items() if k not in ("modules", "subscription", "announcements")},
+        modules=gate["modules"], subscription=sub, announcements=await _announcements_for(raw.get("client_id")),
+    )
+
+
+async def _touch_last_seen(raw: dict) -> None:
+    """Remembers when a user was last active - at most one write per hour."""
+    seen = raw.get("last_seen_at")
+    if seen:
+        try:
+            if datetime.now(timezone.utc) - datetime.fromisoformat(seen) < timedelta(hours=1):
+                return
+        except ValueError:
+            pass
+    await db.users.update_one({"id": raw["id"]}, {"$set": {"last_seen_at": now_iso()}})
 
 
 async def get_authenticated_user(
@@ -1128,6 +1152,7 @@ async def get_authenticated_user(
         raise HTTPException(status_code=401, detail="Client account is disabled")
     if gate["subscription"]["status"] == "locked":
         raise HTTPException(status_code=401, detail="Subscription expired")
+    await _touch_last_seen(raw)
     user = User(**raw)
     user._modules = gate["modules"]
     user._subscription = gate["subscription"]
@@ -1246,6 +1271,8 @@ async def login(inp: LoginInput):
         raise HTTPException(status_code=403, detail="Client account is disabled")
     if gate["subscription"]["status"] == "locked":
         raise HTTPException(status_code=403, detail="Subscription expired")
+    stamp = now_iso()
+    await db.users.update_one({"id": raw["id"]}, {"$set": {"last_login_at": stamp, "last_seen_at": stamp}})
     token = create_access_token(raw)
     return TokenResponse(access_token=token, user=await user_out(raw))
 
@@ -1342,7 +1369,10 @@ async def change_password(inp: ChangePasswordInput, current_user: User = Depends
 async def me(current_user: User = Depends(get_authenticated_user)):
     modules = list(ALL_MODULES) if current_user.role == Role.SUPERADMIN else (current_user._modules or [])
     sub = current_user._subscription if (current_user._subscription or {}).get("status") not in (None, "none") else None
-    return UserOut(**current_user.dict(), modules=modules, subscription=sub)
+    return UserOut(
+        **current_user.dict(), modules=modules, subscription=sub,
+        announcements=await _announcements_for(current_user.client_id),
+    )
 
 
 @api_router.post("/auth/logout")
@@ -1417,6 +1447,9 @@ def _invoice_counter_id(client_id: str) -> str:
     return f"invoice:{client_id}"
 
 
+_CLIENT_COMPUTED = {"invoice_next_seq", "subscription_state", "user_count", "last_activity_at", "last_order_at", "orders_30d"}
+
+
 async def _client_out(doc: dict) -> Client:
     counter = await db.counters.find_one({"_id": _invoice_counter_id(doc["id"])})
     state = subscription_state(doc.get("subscription"))
@@ -1463,17 +1496,37 @@ async def _raise_invoice_counter(client_id: str, next_seq: Optional[int]) -> Non
 @api_router.get("/clients", response_model=List[Client])
 async def list_clients(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
     docs = await db.clients.find({}, {"_id": 0}).sort("name", 1).to_list(None)
-    counts = {
-        row["_id"]: row["n"]
+    users = {
+        row["_id"]: row
         async for row in db.users.aggregate([
-            {"$match": {"client_id": {"$ne": None}, "active": {"$ne": False}}},
-            {"$group": {"_id": "$client_id", "n": {"$sum": 1}}},
+            {"$match": {"client_id": {"$ne": None}}},
+            {"$group": {
+                "_id": "$client_id",
+                "n": {"$sum": {"$cond": [{"$ne": ["$active", False]}, 1, 0]}},
+                "seen": {"$max": "$last_seen_at"},
+            }},
+        ])
+    }
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    orders = {
+        row["_id"]: row
+        async for row in db.orders.aggregate([
+            {"$group": {
+                "_id": "$client_id",
+                "last": {"$max": "$created_at"},
+                "recent": {"$sum": {"$cond": [{"$gte": ["$created_at", cutoff]}, 1, 0]}},
+            }},
         ])
     }
     out = []
     for doc in docs:
         client = await _client_out(doc)
-        client.user_count = counts.get(doc["id"], 0)
+        u, o = users.get(doc["id"], {}), orders.get(doc["id"], {})
+        client.user_count = u.get("n", 0)
+        client.last_order_at = o.get("last")
+        client.orders_30d = o.get("recent", 0)
+        stamps = [x for x in (u.get("seen"), o.get("last")) if x]
+        client.last_activity_at = max(stamps) if stamps else None
         out.append(client)
     return out
 
@@ -1506,9 +1559,10 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
         }
     )
     await db.clients.insert_one(
-        {**client_obj.dict(exclude={"invoice_next_seq", "subscription_state", "user_count"}), "_id": client_obj.id}
+        {**client_obj.dict(exclude=_CLIENT_COMPUTED), "_id": client_obj.id}
     )
     await _raise_invoice_counter(client_obj.id, inp.invoice_next_seq)
+    await _audit(current_user, "client.create", "client", client_obj.id, client_obj.name, client_obj.id)
 
     if plan:
         await _log_subscription_event(client_obj.id, "assigned", current_user, plan_name=plan["name"], ends_at=inp.subscription_ends_at)
@@ -1555,6 +1609,7 @@ async def update_client(client_id: str, inp: ClientInput, current_user: User = D
         settings["modules"] = validated_modules(inp.modules)
     updated = {**existing, **inp.dict(exclude={"invoice_next_seq", "expiry_alert_days", "modules"}), **settings}
     await db.clients.replace_one({"id": client_id}, {**updated, "_id": client_id})
+    await _audit(current_user, "client.update", "client", client_id, updated.get("name"), client_id)
     if existing.get("logo") != updated.get("logo"):
         await _delete_product_image(existing.get("logo"))
     return await _client_out(updated)
@@ -1562,11 +1617,13 @@ async def update_client(client_id: str, inp: ClientInput, current_user: User = D
 
 @api_router.delete("/clients/{client_id}")
 async def delete_client(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
-    if not await db.clients.find_one({"id": client_id}, {"_id": 0}):
+    existing = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not existing:
         raise HTTPException(status_code=404, detail="Client not found")
     # Soft delete: hard-deleting would orphan this client's users/products/
     # customers/orders and break historical stats.
     await db.clients.update_one({"id": client_id}, {"$set": {"active": False}})
+    await _audit(current_user, "client.deactivate", "client", client_id, existing.get("name"), client_id)
     return {"ok": True}
 
 
@@ -1575,6 +1632,8 @@ async def activate_client(client_id: str, current_user: User = Depends(require_r
     result = await db.clients.update_one({"id": client_id}, {"$set": {"active": True}})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Client not found")
+    named = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
+    await _audit(current_user, "client.activate", "client", client_id, (named or {}).get("name"), client_id)
     return {"ok": True}
 
 
@@ -1585,6 +1644,9 @@ class Plan(BaseModel):
     description: Optional[str] = ""
     modules: List[str] = Field(default_factory=list)
     active: bool = True  # inactive plans can't be assigned any more
+    # List price per period: months ("1", "3", "6", "12", ...) -> amount. Optional.
+    prices: Dict[str, float] = Field(default_factory=dict)
+    currency: str = "RSD"
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -1593,6 +1655,8 @@ class PlanInput(BaseModel):
     description: Optional[str] = Field(default="", max_length=500)
     modules: List[Module] = Field(default_factory=list)
     active: bool = True
+    # months -> amount; None = keep the stored prices (update) / no prices (create).
+    prices: Optional[Dict[str, float]] = None
     # On update: also rewrite the modules of every client currently on this plan.
     apply_to_clients: bool = False
 
@@ -1634,7 +1698,7 @@ class SubscriptionRow(BaseModel):
 class SubscriptionEvent(BaseModel):
     id: str
     client_id: str
-    type: str  # assigned | extended | canceled | purge_paused | purge_resumed | purged
+    type: str  # assigned | extended | canceled | purge_paused | purge_resumed | purged | payment_received | charge_created | payment_canceled
     plan_name: Optional[str] = None
     ends_at: Optional[str] = None
     note: Optional[str] = None
@@ -1657,6 +1721,17 @@ def _valid_day(value: Optional[str], name: str) -> str:
     if parsed.year < 2000 or parsed.year > _today().year + 20:
         raise HTTPException(status_code=400, detail=f"{name} is out of range")
     return parsed.isoformat()
+
+
+def _validated_prices(prices: Optional[Dict[str, float]]) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for key, amount in (prices or {}).items():
+        if not str(key).isdigit() or not 1 <= int(key) <= 60:
+            raise HTTPException(status_code=400, detail="Price period must be a number of months (1-60)")
+        if not 0 < float(amount) <= 1_000_000_000:
+            raise HTTPException(status_code=400, detail="Price must be greater than 0")
+        out[str(int(key))] = round(float(amount), 2)
+    return dict(sorted(out.items(), key=lambda kv: int(kv[0])))
 
 
 async def _get_plan_or_400(plan_id: str, must_be_active: bool = True) -> dict:
@@ -1682,11 +1757,33 @@ def _new_subscription(plan: dict, ends_at: Optional[str], note: Optional[str], s
     }
 
 
+async def _audit(
+    user: Optional[User], action: str, target_type: Optional[str] = None, target_id: Optional[str] = None,
+    target_name: Optional[str] = None, client_id: Optional[str] = None, data: Optional[dict] = None,
+) -> None:
+    """Superadmin action log (who did what to whom). Nothing is logged for the system itself."""
+    if user is None:
+        return
+    entry_id = str(uuid.uuid4())
+    await db.audit_log.insert_one({
+        "_id": entry_id, "id": entry_id, "created_at": now_iso(), "actor_id": user.id, "actor_name": user.name,
+        "action": action, "target_type": target_type, "target_id": target_id, "target_name": target_name,
+        "client_id": client_id, "data": data,
+    })
+
+
 async def _log_subscription_event(
     client_id: str, type_: str, user: Optional[User], note: Optional[str] = None,
     plan_name: Optional[str] = None, ends_at: Optional[str] = None, data: Optional[dict] = None,
     source: str = "manual",
 ) -> None:
+    if user is not None:
+        client = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
+        detail = {"plan": plan_name, "ends_at": ends_at, "note": note, **(data or {})}
+        await _audit(
+            user, f"subscription.{type_}", "client", client_id, (client or {}).get("name"), client_id,
+            {k: v for k, v in detail.items() if v is not None},
+        )
     await db.subscription_events.insert_one({
         "_id": str(uuid.uuid4()), "id": str(uuid.uuid4()), "client_id": client_id, "type": type_,
         "plan_name": plan_name, "ends_at": ends_at, "note": note,
@@ -1727,9 +1824,11 @@ async def create_plan(inp: PlanInput, current_user: User = Depends(require_roles
     if await db.plans.find_one({"name": inp.name.strip()}, {"_id": 1}):
         raise HTTPException(status_code=409, detail="A plan with that name already exists")
     plan = Plan(
-        name=inp.name.strip(), description=inp.description or "", modules=validated_modules(inp.modules), active=inp.active
+        name=inp.name.strip(), description=inp.description or "", modules=validated_modules(inp.modules), active=inp.active,
+        prices=_validated_prices(inp.prices),
     )
     await db.plans.insert_one({**plan.dict(), "_id": plan.id})
+    await _audit(current_user, "plan.create", "plan", plan.id, plan.name)
     return plan
 
 
@@ -1745,7 +1844,10 @@ async def update_plan(plan_id: str, inp: PlanInput, current_user: User = Depends
         **existing, "name": inp.name.strip(), "description": inp.description or "",
         "modules": validated_modules(inp.modules), "active": inp.active,
     }
+    if inp.prices is not None:
+        updated["prices"] = _validated_prices(inp.prices)
     await db.plans.replace_one({"id": plan_id}, {**updated, "_id": plan_id})
+    await _audit(current_user, "plan.update", "plan", plan_id, updated["name"], data={"apply_to_clients": inp.apply_to_clients})
     # Clients keep their own copy of the plan name; refresh it, and optionally the modules.
     await db.clients.update_many({"subscription.plan_id": plan_id}, {"$set": {"subscription.plan_name": updated["name"]}})
     if inp.apply_to_clients:
@@ -1760,7 +1862,9 @@ async def delete_plan(plan_id: str, current_user: User = Depends(require_roles(R
         raise HTTPException(status_code=404, detail="Plan not found")
     if await db.clients.find_one({"subscription.plan_id": plan_id}, {"_id": 1}):
         raise HTTPException(status_code=409, detail="Clients are on this plan - deactivate it instead")
+    named = await db.plans.find_one({"id": plan_id}, {"_id": 0, "name": 1})
     await db.plans.delete_one({"id": plan_id})
+    await _audit(current_user, "plan.delete", "plan", plan_id, (named or {}).get("name"))
     return {"ok": True}
 
 
@@ -1793,6 +1897,24 @@ async def assign_subscription(
     return await _subscription_row(await _client_or_404(client_id))
 
 
+async def _extend_subscription(
+    client: dict, months: Optional[int], ends_at: Optional[str], note: Optional[str], user: User
+) -> str:
+    """Moves `ends_at` forward by whole months (from the later of today and the
+    current end) or to an exact date; lifts a lock/cancel. Returns the new end."""
+    sub = client["subscription"]
+    if months is not None:
+        new_end = _add_months(max(date.fromisoformat(sub["ends_at"]), _today()), months).isoformat()
+    else:
+        new_end = _valid_day(ends_at, "ends_at")
+    sub = {**sub, "ends_at": new_end, "canceled_at": None, "purge_paused": False, "reminder_for": None, "purge_warned_for": None}
+    if note:
+        sub["note"] = note
+    await db.clients.update_one({"id": client["id"]}, {"$set": {"subscription": sub}})
+    await _log_subscription_event(client["id"], "extended", user, note=note, plan_name=sub.get("plan_name"), ends_at=new_end)
+    return new_end
+
+
 @api_router.post("/subscriptions/{client_id}/extend", response_model=SubscriptionRow)
 async def extend_subscription(
     client_id: str, inp: SubscriptionExtendInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
@@ -1800,23 +1922,11 @@ async def extend_subscription(
     """Pushes `ends_at` forward by whole months (from the later of today and the
     current end) or to an exact date. Also lifts a lock and a cancel."""
     client = await _client_or_404(client_id)
-    sub = client.get("subscription")
-    if not sub:
+    if not client.get("subscription"):
         raise HTTPException(status_code=400, detail="Client has no subscription - assign a plan first")
     if (inp.months is None) == (inp.ends_at is None):
         raise HTTPException(status_code=400, detail="Send either months or ends_at")
-    if inp.months is not None:
-        base = max(date.fromisoformat(sub["ends_at"]), _today())
-        new_end = _add_months(base, inp.months).isoformat()
-    else:
-        new_end = _valid_day(inp.ends_at, "ends_at")
-    sub = {
-        **sub, "ends_at": new_end, "canceled_at": None, "purge_paused": False, "reminder_for": None, "purge_warned_for": None,
-    }
-    if inp.note:
-        sub["note"] = inp.note
-    await db.clients.update_one({"id": client_id}, {"$set": {"subscription": sub}})
-    await _log_subscription_event(client_id, "extended", current_user, note=inp.note, plan_name=sub.get("plan_name"), ends_at=new_end)
+    await _extend_subscription(client, inp.months, inp.ends_at, inp.note, current_user)
     return await _subscription_row(await _client_or_404(client_id))
 
 
@@ -1953,7 +2063,555 @@ async def cron_subscriptions(dry_run: bool = Query(False), authorization: Option
         else:
             counts = await _count_purgeable(cid)
             result["would_purge"].append({"client": client["name"], **counts})
+    await db.system_runs.replace_one(
+        {"_id": "subscriptions_cron"},
+        {
+            "_id": "subscriptions_cron", "finished_at": now_iso(), "live": live,
+            "summary": {k: len(result[k]) for k in ("reminders", "purge_warnings", "purged", "would_purge")},
+        },
+        upsert=True,
+    )
     return result
+
+
+# ---------------- Payments & debts (PLAN_SUPERADMIN.md, phase C) ----------------
+# Kept by hand by the superadmin. `expected` = a debt (due_date), `received` =
+# money in (paid_at), `canceled` stays on record but is never counted.
+PAYMENT_CURRENCY = "RSD"
+
+
+class Payment(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    client_id: str
+    client_name: Optional[str] = None  # filled in lists
+    status: Literal["expected", "received", "canceled"]
+    amount: float
+    currency: str = PAYMENT_CURRENCY
+    due_date: Optional[str] = None
+    paid_at: Optional[str] = None
+    method: Optional[Literal["bank", "card", "cash", "other"]] = None
+    note: Optional[str] = None
+    plan_name: Optional[str] = None
+    period_months: Optional[int] = None
+    created_by: Optional[str] = None
+    source: str = "manual"
+    created_at: str = Field(default_factory=now_iso)
+    canceled_at: Optional[str] = None
+    overdue: bool = False  # computed: expected and past its due date
+
+
+class PaymentInput(BaseModel):
+    client_id: str
+    status: Literal["received", "expected"] = "received"
+    amount: float = Field(gt=0, le=1_000_000_000)
+    paid_at: Optional[str] = None  # received: defaults to today
+    due_date: Optional[str] = None  # expected: required
+    method: Optional[Literal["bank", "card", "cash", "other"]] = None
+    note: Optional[str] = Field(default=None, max_length=500)
+    period_months: Optional[int] = Field(default=None, ge=1, le=60)
+    plan_name: Optional[str] = Field(default=None, max_length=80)
+
+
+class PaymentReceiveInput(BaseModel):
+    paid_at: Optional[str] = None
+    amount: Optional[float] = Field(default=None, gt=0, le=1_000_000_000)
+    method: Optional[Literal["bank", "card", "cash", "other"]] = None
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class PaymentTotals(BaseModel):
+    received: float = 0
+    expected: float = 0
+    overdue_total: float = 0
+    overdue_count: int = 0
+
+
+class PaymentsList(BaseModel):
+    items: List[Payment]
+    totals: PaymentTotals
+
+
+class SubscriptionPayInput(BaseModel):
+    months: int = Field(ge=1, le=60)
+    amount: float = Field(gt=0, le=1_000_000_000)
+    paid_at: Optional[str] = None
+    method: Literal["bank", "card", "cash", "other"] = "bank"
+    note: Optional[str] = Field(default=None, max_length=500)
+    plan_id: Optional[str] = None  # only for a client that has no subscription yet
+    payment_id: Optional[str] = None  # settle this expected payment instead of adding a new one
+
+
+class PayResult(BaseModel):
+    subscription: SubscriptionRow
+    payment: Payment
+
+
+def _payment_out(doc: dict, names: Optional[Dict[str, str]] = None, today: Optional[date] = None) -> Payment:
+    today = today or _today()
+    overdue = doc.get("status") == "expected" and bool(doc.get("due_date")) and date.fromisoformat(doc["due_date"]) < today
+    return Payment(**{**doc, "client_name": (names or {}).get(doc["client_id"]), "overdue": overdue})
+
+
+def _paid_day(value: Optional[str]) -> str:
+    """Day the money arrived: today by default, never in the future."""
+    if not value:
+        return _today().isoformat()
+    day = _valid_day(value, "paid_at")
+    if date.fromisoformat(day) > _today():
+        raise HTTPException(status_code=400, detail="paid_at cannot be in the future")
+    return day
+
+
+async def _payment_or_404(payment_id: str) -> dict:
+    doc = await db.payments.find_one({"id": payment_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return doc
+
+
+async def _client_names() -> Dict[str, str]:
+    return {c["id"]: c["name"] async for c in db.clients.find({}, {"_id": 0, "id": 1, "name": 1})}
+
+
+@api_router.get("/payments", response_model=PaymentsList)
+async def list_payments(
+    client_id: Optional[str] = None,
+    status: Optional[Literal["expected", "received", "canceled"]] = None,
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD, by paid_at (received) or due_date (expected)"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    current_user: User = Depends(require_roles(Role.SUPERADMIN)),
+):
+    query: Dict[str, Any] = {}
+    if client_id:
+        query["client_id"] = client_id
+    if status:
+        query["status"] = status
+    lo = _valid_day(from_date, "from_date") if from_date else None
+    hi = _valid_day(to_date, "to_date") if to_date else None
+    names, today = await _client_names(), _today()
+    items = []
+    for doc in await db.payments.find(query, {"_id": 0}).to_list(None):
+        day = doc.get("paid_at") or doc.get("due_date") or doc["created_at"][:10]
+        if (lo and day < lo) or (hi and day > hi):
+            continue
+        items.append((day, _payment_out(doc, names, today)))
+    items.sort(key=lambda pair: (pair[0], pair[1].created_at), reverse=True)
+    out = [p for _, p in items]
+    totals = PaymentTotals()
+    for p in out:
+        if p.status == "received":
+            totals.received += p.amount
+        elif p.status == "expected":
+            totals.expected += p.amount
+            if p.overdue:
+                totals.overdue_total += p.amount
+                totals.overdue_count += 1
+    totals.received, totals.expected, totals.overdue_total = (
+        round(totals.received, 2), round(totals.expected, 2), round(totals.overdue_total, 2)
+    )
+    return PaymentsList(items=out, totals=totals)
+
+
+@api_router.post("/payments", response_model=Payment)
+async def create_payment(inp: PaymentInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Records money received (paid_at) or a debt to be paid (due_date)."""
+    client = await _client_or_404(inp.client_id)
+    doc = {
+        "id": str(uuid.uuid4()), "client_id": client["id"], "status": inp.status, "amount": round(inp.amount, 2),
+        "currency": PAYMENT_CURRENCY, "due_date": None, "paid_at": None, "method": inp.method, "note": inp.note,
+        "plan_name": inp.plan_name or (client.get("subscription") or {}).get("plan_name"),
+        "period_months": inp.period_months, "created_by": current_user.name, "source": "manual",
+        "created_at": now_iso(), "canceled_at": None,
+    }
+    if inp.status == "received":
+        doc["paid_at"] = _paid_day(inp.paid_at)
+        doc["method"] = inp.method or "bank"
+    else:
+        if not inp.due_date:
+            raise HTTPException(status_code=400, detail="due_date is required for a debt")
+        doc["due_date"] = _valid_day(inp.due_date, "due_date")
+    await db.payments.insert_one({**doc, "_id": doc["id"]})
+    await _log_subscription_event(
+        client["id"], "payment_received" if inp.status == "received" else "charge_created", current_user,
+        note=inp.note, plan_name=doc["plan_name"], data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY},
+    )
+    return _payment_out(doc, {client["id"]: client["name"]})
+
+
+async def _settle_payment(doc: dict, inp: PaymentReceiveInput, user: User, period_months: Optional[int] = None) -> dict:
+    if doc["status"] != "expected":
+        raise HTTPException(status_code=409, detail="Only an expected payment can be marked as received")
+    update = {
+        "status": "received", "paid_at": _paid_day(inp.paid_at), "method": inp.method or doc.get("method") or "bank",
+        "amount": round(inp.amount, 2) if inp.amount else doc["amount"], "note": inp.note or doc.get("note"),
+    }
+    if period_months:
+        update["period_months"] = period_months
+    await db.payments.update_one({"id": doc["id"]}, {"$set": update})
+    await _log_subscription_event(
+        doc["client_id"], "payment_received", user, note=update["note"], plan_name=doc.get("plan_name"),
+        data={"amount": update["amount"], "currency": PAYMENT_CURRENCY},
+    )
+    return await _payment_or_404(doc["id"])
+
+
+@api_router.post("/payments/{payment_id}/receive", response_model=Payment)
+async def receive_payment(
+    payment_id: str, inp: PaymentReceiveInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """Turns an expected payment (debt) into a received one."""
+    doc = await _settle_payment(await _payment_or_404(payment_id), inp, current_user)
+    return _payment_out(doc, await _client_names())
+
+
+@api_router.post("/payments/{payment_id}/cancel", response_model=Payment)
+async def cancel_payment(
+    payment_id: str, inp: SubscriptionNoteInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """A wrong entry stays on record as canceled and is not counted."""
+    doc = await _payment_or_404(payment_id)
+    if doc["status"] == "canceled":
+        raise HTTPException(status_code=409, detail="Payment is already canceled")
+    note = inp.note or doc.get("note")
+    await db.payments.update_one({"id": payment_id}, {"$set": {"status": "canceled", "canceled_at": now_iso(), "note": note}})
+    await _log_subscription_event(
+        doc["client_id"], "payment_canceled", current_user, note=inp.note, plan_name=doc.get("plan_name"),
+        data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "was": doc["status"]},
+    )
+    return _payment_out(await _payment_or_404(payment_id), await _client_names())
+
+
+@api_router.post("/subscriptions/{client_id}/pay", response_model=PayResult)
+async def pay_and_extend(
+    client_id: str, inp: SubscriptionPayInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """One step for the usual case: the client paid for N months. Records the
+    payment (or settles an expected one) and extends the subscription - or
+    starts it on `plan_id` when the client has none yet."""
+    client = await _client_or_404(client_id)
+    sub = client.get("subscription")
+    expected = None
+    if inp.payment_id:
+        expected = await _payment_or_404(inp.payment_id)
+        if expected["client_id"] != client_id:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        if expected["status"] != "expected":
+            raise HTTPException(status_code=409, detail="Only an expected payment can be marked as received")
+    paid_at = _paid_day(inp.paid_at)  # validated before anything is written
+    if sub:
+        if inp.plan_id and inp.plan_id != sub.get("plan_id"):
+            raise HTTPException(status_code=400, detail="To change the plan use the assign action")
+        await _extend_subscription(client, inp.months, None, inp.note, current_user)
+    else:
+        if not inp.plan_id:
+            raise HTTPException(status_code=400, detail="plan_id is required for a client without a subscription")
+        plan = await _get_plan_or_400(inp.plan_id)
+        ends_at = _add_months(_today(), inp.months).isoformat()
+        subscription = _new_subscription(plan, ends_at, inp.note, "manual")
+        await db.clients.update_one({"id": client_id}, {"$set": {"subscription": subscription, "modules": plan["modules"]}})
+        await _log_subscription_event(client_id, "assigned", current_user, note=inp.note, plan_name=plan["name"], ends_at=ends_at)
+    fresh = await _client_or_404(client_id)
+    plan_name = (fresh.get("subscription") or {}).get("plan_name")
+    receive = PaymentReceiveInput(paid_at=paid_at, amount=inp.amount, method=inp.method, note=inp.note)
+    if expected:
+        payment_doc = await _settle_payment({**expected, "plan_name": plan_name}, receive, current_user, inp.months)
+    else:
+        payment = await create_payment(
+            PaymentInput(
+                client_id=client_id, status="received", amount=inp.amount, paid_at=paid_at, method=inp.method,
+                note=inp.note, period_months=inp.months, plan_name=plan_name,
+            ),
+            current_user,
+        )
+        payment_doc = payment.dict()
+    return PayResult(
+        subscription=await _subscription_row(fresh),
+        payment=_payment_out(payment_doc, {client_id: client["name"]}),
+    )
+
+
+async def _payment_figures(today: date) -> Dict[str, Any]:
+    """Money figures for the dashboard (canceled entries are never counted)."""
+    month, year = today.strftime("%Y-%m"), today.strftime("%Y")
+    out: Dict[str, Any] = {
+        "received_month": 0.0, "received_year": 0.0, "expected_total": 0.0, "overdue_total": 0.0, "overdue_count": 0,
+        "overdue_by_client": {},
+    }
+    async for doc in db.payments.find({"status": {"$in": ["received", "expected"]}}, {"_id": 0}):
+        if doc["status"] == "received":
+            paid = doc.get("paid_at") or ""
+            if paid.startswith(month):
+                out["received_month"] += doc["amount"]
+            if paid.startswith(year):
+                out["received_year"] += doc["amount"]
+        else:
+            out["expected_total"] += doc["amount"]
+            if doc.get("due_date") and date.fromisoformat(doc["due_date"]) < today:
+                out["overdue_total"] += doc["amount"]
+                out["overdue_count"] += 1
+                oldest = out["overdue_by_client"].get(doc["client_id"])
+                out["overdue_by_client"][doc["client_id"]] = min(oldest, doc["due_date"]) if oldest else doc["due_date"]
+    for key in ("received_month", "received_year", "expected_total", "overdue_total"):
+        out[key] = round(out[key], 2)
+    return out
+
+
+# ---------------- Superadmin tools (PLAN_SUPERADMIN.md, phase D) ----------------
+# --- client notes: internal, append-only ---
+class ClientNote(BaseModel):
+    id: str
+    client_id: str
+    text: str
+    author_name: Optional[str] = None
+    created_at: str
+
+
+class ClientNoteInput(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@api_router.get("/clients/{client_id}/notes", response_model=List[ClientNote])
+async def list_client_notes(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    await _client_or_404(client_id)
+    docs = await db.client_notes.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [ClientNote(**d) for d in docs]
+
+
+@api_router.post("/clients/{client_id}/notes", response_model=ClientNote)
+async def add_client_note(
+    client_id: str, inp: ClientNoteInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    await _client_or_404(client_id)
+    doc = {
+        "id": str(uuid.uuid4()), "client_id": client_id, "text": inp.text.strip(),
+        "author_name": current_user.name, "created_at": now_iso(),
+    }
+    if not doc["text"]:
+        raise HTTPException(status_code=400, detail="Note is empty")
+    await db.client_notes.insert_one({**doc, "_id": doc["id"]})
+    return ClientNote(**doc)
+
+
+# --- activity of a client ---
+class UserActivity(BaseModel):
+    id: str
+    name: str
+    role: str
+    active: bool = True
+    last_login_at: Optional[str] = None
+    last_seen_at: Optional[str] = None
+
+
+class ClientActivity(BaseModel):
+    last_activity_at: Optional[str] = None
+    last_order_at: Optional[str] = None
+    orders_30d: int = 0
+    orders_total: int = 0
+    users: List[UserActivity]
+
+
+@api_router.get("/clients/{client_id}/activity", response_model=ClientActivity)
+async def client_activity(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    await _client_or_404(client_id)
+    users = await db.users.find({"client_id": client_id}, {"_id": 0}).sort("name", 1).to_list(None)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    orders_total = await db.orders.count_documents({"client_id": client_id})
+    orders_30d = await db.orders.count_documents({"client_id": client_id, "created_at": {"$gte": cutoff}})
+    last = await db.orders.find({"client_id": client_id}, {"_id": 0, "created_at": 1}).sort("created_at", -1).limit(1).to_list(1)
+    last_order = last[0]["created_at"] if last else None
+    seen = [u["last_seen_at"] for u in users if u.get("last_seen_at")]
+    return ClientActivity(
+        last_activity_at=max(seen + ([last_order] if last_order else [])) if (seen or last_order) else None,
+        last_order_at=last_order,
+        orders_30d=orders_30d,
+        orders_total=orders_total,
+        users=[UserActivity(**{**u, "role": str(getattr(u["role"], "value", u["role"]))}) for u in users],
+    )
+
+
+# --- system status ---
+class SystemCron(BaseModel):
+    configured: bool
+    status: str  # ok | late | never | disabled
+    last_run_at: Optional[str] = None
+    live: Optional[bool] = None
+    summary: Dict[str, int] = Field(default_factory=dict)
+
+
+class SystemStatus(BaseModel):
+    environment: str
+    server_time: str
+    smtp_configured: bool
+    cloudinary_configured: bool
+    auto_purge_enabled: bool
+    app_version: Optional[str] = None
+    cron: SystemCron
+
+
+CRON_LATE_HOURS = 48
+
+
+@api_router.get("/superadmin/system", response_model=SystemStatus)
+async def system_status(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Is the daily job running, is mail/image storage set up. Nothing secret is returned."""
+    run = await db.system_runs.find_one({"_id": "subscriptions_cron"})
+    if not CRON_SECRET:
+        cron_status = "disabled"
+    elif not run:
+        cron_status = "never"
+    else:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(run["finished_at"])
+        cron_status = "late" if age > timedelta(hours=CRON_LATE_HOURS) else "ok"
+    version = None
+    try:
+        version = json.loads(APP_UPDATE_FILE.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError):
+        pass
+    return SystemStatus(
+        environment="production" if IS_PRODUCTION else "development",
+        server_time=now_iso(),
+        smtp_configured=_smtp_is_configured(),
+        cloudinary_configured=cloudinary_available(),
+        auto_purge_enabled=AUTO_PURGE_ENABLED,
+        app_version=version,
+        cron=SystemCron(
+            configured=bool(CRON_SECRET),
+            status=cron_status,
+            last_run_at=(run or {}).get("finished_at"),
+            live=(run or {}).get("live"),
+            summary=(run or {}).get("summary") or {},
+        ),
+    )
+
+
+# --- audit log of superadmin actions ---
+class AuditEntry(BaseModel):
+    id: str
+    created_at: str
+    actor_name: Optional[str] = None
+    action: str
+    target_type: Optional[str] = None
+    target_name: Optional[str] = None
+    client_id: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+@api_router.get("/audit", response_model=List[AuditEntry])
+async def list_audit(
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+    action: Optional[str] = Query(None, description="prefix, e.g. 'client.' or 'subscription.payment'"),
+    client_id: Optional[str] = None,
+    current_user: User = Depends(require_roles(Role.SUPERADMIN)),
+):
+    query: Dict[str, Any] = {}
+    if action:
+        query["action"] = {"$regex": f"^{re.escape(action)}"}
+    if client_id:
+        query["client_id"] = client_id
+    docs = await db.audit_log.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    return [AuditEntry(**d) for d in docs]
+
+
+# --- announcements to clients ---
+class AnnouncementInput(BaseModel):
+    message_sr: str = Field(default="", max_length=500)
+    message_en: str = Field(default="", max_length=500)
+    level: Literal["info", "warning"] = "info"
+    starts_at: Optional[str] = None  # YYYY-MM-DD; empty = from now on
+    ends_at: Optional[str] = None  # YYYY-MM-DD, inclusive; empty = until switched off
+    client_ids: List[str] = Field(default_factory=list)  # empty = every client
+    active: bool = True
+
+
+class Announcement(AnnouncementInput):
+    id: str
+    status: str = "live"  # computed: live | scheduled | ended | off
+    created_by: Optional[str] = None
+    created_at: str
+
+
+def _announcement_status(doc: dict, today: date) -> str:
+    if not doc.get("active", True):
+        return "off"
+    if doc.get("starts_at") and date.fromisoformat(doc["starts_at"]) > today:
+        return "scheduled"
+    if doc.get("ends_at") and date.fromisoformat(doc["ends_at"]) < today:
+        return "ended"
+    return "live"
+
+
+async def _validated_announcement(inp: AnnouncementInput) -> dict:
+    if not inp.message_sr.strip() and not inp.message_en.strip():
+        raise HTTPException(status_code=400, detail="Write the message in at least one language")
+    starts = _valid_day(inp.starts_at, "starts_at") if inp.starts_at else None
+    ends = _valid_day(inp.ends_at, "ends_at") if inp.ends_at else None
+    if starts and ends and ends < starts:
+        raise HTTPException(status_code=400, detail="ends_at is before starts_at")
+    ids = list(dict.fromkeys(inp.client_ids))
+    if ids and await db.clients.count_documents({"id": {"$in": ids}}) != len(ids):
+        raise HTTPException(status_code=400, detail="Unknown client in client_ids")
+    return {
+        "message_sr": inp.message_sr.strip(), "message_en": inp.message_en.strip(), "level": inp.level,
+        "starts_at": starts, "ends_at": ends, "client_ids": ids, "active": inp.active,
+    }
+
+
+async def _announcements_for(client_id: Optional[str]) -> List[dict]:
+    """Live announcements a client's users see (a missing language falls back to the other)."""
+    if not client_id:
+        return []
+    today = _today()
+    out = []
+    async for doc in db.announcements.find({"active": {"$ne": False}}, {"_id": 0}).sort("created_at", -1):
+        if _announcement_status(doc, today) != "live":
+            continue
+        if doc.get("client_ids") and client_id not in doc["client_ids"]:
+            continue
+        sr, en = doc.get("message_sr") or doc.get("message_en"), doc.get("message_en") or doc.get("message_sr")
+        out.append({"id": doc["id"], "level": doc.get("level", "info"), "message_sr": sr, "message_en": en})
+    return out
+
+
+@api_router.get("/announcements", response_model=List[Announcement])
+async def list_announcements(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    today = _today()
+    docs = await db.announcements.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return [Announcement(**{**d, "status": _announcement_status(d, today)}) for d in docs]
+
+
+@api_router.post("/announcements", response_model=Announcement)
+async def create_announcement(inp: AnnouncementInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    doc = {
+        "id": str(uuid.uuid4()), **await _validated_announcement(inp),
+        "created_by": current_user.name, "created_at": now_iso(),
+    }
+    await db.announcements.insert_one({**doc, "_id": doc["id"]})
+    await _audit(current_user, "announcement.create", "announcement", doc["id"], (doc["message_sr"] or doc["message_en"])[:60])
+    return Announcement(**{**doc, "status": _announcement_status(doc, _today())})
+
+
+@api_router.put("/announcements/{announcement_id}", response_model=Announcement)
+async def update_announcement(
+    announcement_id: str, inp: AnnouncementInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    existing = await db.announcements.find_one({"id": announcement_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    doc = {**existing, **await _validated_announcement(inp)}
+    await db.announcements.replace_one({"id": announcement_id}, {**doc, "_id": announcement_id})
+    await _audit(current_user, "announcement.update", "announcement", announcement_id, (doc["message_sr"] or doc["message_en"])[:60])
+    return Announcement(**{**doc, "status": _announcement_status(doc, _today())})
+
+
+@api_router.delete("/announcements/{announcement_id}")
+async def delete_announcement(announcement_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    existing = await db.announcements.find_one({"id": announcement_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    await db.announcements.delete_one({"id": announcement_id})
+    await _audit(current_user, "announcement.delete", "announcement", announcement_id, (existing.get("message_sr") or existing.get("message_en") or "")[:60])
+    return {"ok": True}
 
 
 # ---------------- Superadmin overview (PLAN_SUPERADMIN.md, phase A) ----------------
@@ -1985,14 +2643,24 @@ class AttentionItem(BaseModel):
     plan_name: Optional[str] = None
 
 
+class OverviewPayments(BaseModel):
+    currency: str = PAYMENT_CURRENCY
+    received_month: float = 0
+    received_year: float = 0
+    expected_total: float = 0  # open debts (expected payments)
+    overdue_total: float = 0
+    overdue_count: int = 0
+
+
 class SuperadminOverview(BaseModel):
     clients: OverviewClients
     users: OverviewUsers
     subscriptions: OverviewSubscriptions
+    payments: OverviewPayments
     attention: List[AttentionItem]
 
 
-_ATTENTION_ORDER = {"locked": 0, "purge_soon": 1, "grace": 2, "ending_soon": 3}
+_ATTENTION_ORDER = {"locked": 0, "purge_soon": 1, "payment_overdue": 2, "grace": 3, "ending_soon": 4}
 
 
 @api_router.get("/superadmin/overview", response_model=SuperadminOverview)
@@ -2004,6 +2672,7 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
     subs = OverviewSubscriptions()
     attention: List[AttentionItem] = []
     active_ids = set()
+    active_clients: Dict[str, dict] = {}
     async for client in db.clients.find({}, {"_id": 0}):
         clients.total += 1
         if not client.get("active", True):
@@ -2011,6 +2680,7 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
             continue
         clients.active += 1
         active_ids.add(client["id"])
+        active_clients[client["id"]] = client
         sub = client.get("subscription")
         state = subscription_state(sub, today)
         status = state["status"]
@@ -2030,6 +2700,14 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
                 subs.ending_30d += 1
             if state["days_left"] <= SUBSCRIPTION_REMINDER_DAYS:
                 attention.append(AttentionItem(**item, reason="ending_soon", date=state["ends_at"]))
+    money = await _payment_figures(today)
+    for client_id, oldest_due in money["overdue_by_client"].items():
+        if client_id in active_clients:
+            c = active_clients[client_id]
+            attention.append(AttentionItem(
+                client_id=client_id, client_name=c["name"], reason="payment_overdue", date=oldest_due,
+                plan_name=(c.get("subscription") or {}).get("plan_name"),
+            ))
     by_role: Dict[str, int] = {}
     async for row in db.users.aggregate([
         {"$match": {"client_id": {"$in": list(active_ids)}, "active": {"$ne": False}}},
@@ -2041,6 +2719,7 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
         clients=clients,
         users=OverviewUsers(total=sum(by_role.values()), by_role=by_role),
         subscriptions=subs,
+        payments=OverviewPayments(**{k: v for k, v in money.items() if k != "overdue_by_client"}),
         attention=attention[:50],
     )
 
@@ -2086,6 +2765,8 @@ async def create_user(inp: UserInput, current_user: User = Depends(require_manag
         raise HTTPException(status_code=403, detail=f"Module not enabled: {Module.WAREHOUSE.value}")
     obj = User(email=normalize_email(inp.email), name=inp.name, phone=inp.phone, role=role, client_id=client_id)
     invite = await _invite_user(obj)
+    if current_user.role == Role.SUPERADMIN:
+        await _audit(current_user, "user.create", "user", obj.id, obj.email, client_id, {"role": role.value})
     return UserInviteResponse(**obj.dict(), **invite.dict())
 
 
@@ -2132,6 +2813,9 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
         # Old tokens carry the old role/password - log them out everywhere.
         updated["token_version"] = target.get("token_version", 0) + 1
     await db.users.replace_one({"id": user_id}, {**updated, "_id": user_id})
+    if current_user.role == Role.SUPERADMIN:
+        changes = {k: v for k, v in {"role": inp.role.value if role_changed else None, "active": inp.active, "password_reset": True if inp.password else None}.items() if v is not None}
+        await _audit(current_user, "user.update", "user", user_id, target.get("email"), target.get("client_id"), changes or None)
     return User(**updated)
 
 
@@ -2143,6 +2827,8 @@ async def delete_user(user_id: str, current_user: User = Depends(require_manager
     if current_user.role == Role.ADMIN and target.get("role") not in ADMIN_MANAGEABLE_ROLES:
         raise HTTPException(status_code=403, detail="Admins can only manage operators and warehouse users")
     await db.users.delete_one({"id": user_id})
+    if current_user.role == Role.SUPERADMIN:
+        await _audit(current_user, "user.delete", "user", user_id, target.get("email"), target.get("client_id"))
     return {"ok": True}
 
 

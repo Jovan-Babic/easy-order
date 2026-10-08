@@ -4,17 +4,20 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { StatCard } from "@/components/StatCard";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
+import { money } from "@/lib/payments";
 
 type Overview = {
   clients: { total: number; active: number; inactive: number; locked: number };
   users: { total: number; by_role: Record<string, number> };
   subscriptions: { active: number; ending_30d: number; grace: number; locked: number; none: number };
+  payments: { currency: string; received_month: number; received_year: number; expected_total: number; overdue_total: number; overdue_count: number };
   attention: Array<{ client_id: string; client_name: string; reason: string; date: string | null; plan_name: string | null }>;
 };
 
 const REASON_KEYS: Record<string, TranslationKey> = {
   locked: "attentionLocked",
   purge_soon: "attentionPurgeSoon",
+  payment_overdue: "attentionPaymentOverdue",
   grace: "attentionGrace",
   ending_soon: "attentionEndingSoon",
 };
@@ -22,9 +25,63 @@ const REASON_KEYS: Record<string, TranslationKey> = {
 const REASON_STYLES: Record<string, string> = {
   locked: "bg-red-100 text-error",
   purge_soon: "bg-red-100 text-error",
+  payment_overdue: "bg-red-100 text-error",
   grace: "bg-amber-100 text-warning",
   ending_soon: "bg-amber-100 text-warning",
 };
+
+type SystemStatus = {
+  environment: string;
+  smtp_configured: boolean;
+  cloudinary_configured: boolean;
+  auto_purge_enabled: boolean;
+  app_version: string | null;
+  cron: { configured: boolean; status: "ok" | "late" | "never" | "disabled"; last_run_at: string | null; live: boolean | null };
+};
+
+const CRON_KEYS: Record<SystemStatus["cron"]["status"], TranslationKey> = {
+  ok: "cronOk",
+  late: "cronLate",
+  never: "cronNever",
+  disabled: "cronDisabled",
+};
+
+function Row({ label, value, bad }: { label: string; value: string; bad?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-border px-4 py-3 last:border-0">
+      <span className="text-sm text-onSurfaceSecondary">{label}</span>
+      <span className={`text-sm font-semibold ${bad ? "text-error" : "text-onSurface"}`}>{value}</span>
+    </div>
+  );
+}
+
+// Is the daily job running, is mail/image storage set up.
+function SystemCard() {
+  const { t } = useLanguage();
+  const [sys, setSys] = useState<SystemStatus | null>(null);
+  useEffect(() => {
+    fetch("/api/superadmin/system")
+      .then((res) => (res.ok ? res.json() : null))
+      .then(setSys)
+      .catch(() => {});
+  }, []);
+  if (!sys) return null;
+  const set = (on: boolean) => (on ? t("sysConfigured") : t("sysNotConfigured"));
+  return (
+    <section className="mb-8">
+      <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-muted">{t("systemStatus")}</h2>
+      <div className="max-w-xl overflow-hidden rounded-lg bg-surfaceSecondary shadow-sm">
+        <Row label={t("sysCron")} value={t(CRON_KEYS[sys.cron.status])} bad={sys.cron.status !== "ok"} />
+        <Row label={t("lastRun")} value={sys.cron.last_run_at ? new Date(sys.cron.last_run_at).toLocaleString() : t("never")} />
+        <Row label={t("sysAutoPurge")} value={sys.auto_purge_enabled ? t("sysOn") : t("sysOff")} />
+        <Row label={t("sysSmtp")} value={set(sys.smtp_configured)} bad={!sys.smtp_configured} />
+        <Row label={t("sysCloudinary")} value={set(sys.cloudinary_configured)} bad={!sys.cloudinary_configured} />
+        <Row label={t("sysAppVersion")} value={sys.app_version ?? "-"} />
+        <Row label={t("sysEnvironment")} value={sys.environment} />
+      </div>
+    </section>
+  );
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -50,7 +107,8 @@ export function SuperadminDashboard() {
 
   if (error) return <p className="text-error">{t("loadFailed")}</p>;
   if (!data) return <p className="text-muted">{t("loading")}</p>;
-  const { clients, users, subscriptions, attention } = data;
+  const { clients, users, subscriptions, payments, attention } = data;
+  const rsd = (v: number) => money(v, payments.currency);
 
   return (
     <div>
@@ -77,6 +135,15 @@ export function SuperadminDashboard() {
         <StatCard label={t("subLocked")} value={subscriptions.locked} />
         <StatCard label={t("subNone")} value={subscriptions.none} />
       </Section>
+
+      <Section title={t("payments")}>
+        <StatCard label={t("overviewReceivedMonth")} value={rsd(payments.received_month)} />
+        <StatCard label={t("overviewReceivedYear")} value={rsd(payments.received_year)} />
+        <StatCard label={t("overviewDebt")} value={rsd(payments.expected_total)} />
+        <StatCard label={t("overviewOverdue")} value={`${rsd(payments.overdue_total)} (${payments.overdue_count})`} />
+      </Section>
+
+      <SystemCard />
 
       <section>
         <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-muted">{t("needsAttention")}</h2>
