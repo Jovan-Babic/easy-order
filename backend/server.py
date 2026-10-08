@@ -314,6 +314,7 @@ class Client(BaseModel):
     # starts_at, ends_at, note, source, canceled_at, purge_paused, purged_at.
     subscription: Optional[Dict[str, Any]] = None
     subscription_state: Optional[Dict[str, Any]] = None  # computed
+    user_count: Optional[int] = None  # computed in GET /clients: active users of the client
     # Read-only: the number the next shipped order will get (auto numbering).
     invoice_next_seq: Optional[int] = None
     active: bool = True
@@ -365,6 +366,11 @@ class User(BaseModel):
     # Set per request from the user's client (see get_authenticated_user); not stored.
     _modules: Optional[List[str]] = PrivateAttr(default=None)
     _subscription: Optional[dict] = PrivateAttr(default=None)
+
+
+class UserRow(User):
+    """Row of GET /users: the user plus the name of their client (superadmin list)."""
+    client_name: Optional[str] = None
 
 
 class UserOut(User):
@@ -1457,7 +1463,19 @@ async def _raise_invoice_counter(client_id: str, next_seq: Optional[int]) -> Non
 @api_router.get("/clients", response_model=List[Client])
 async def list_clients(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
     docs = await db.clients.find({}, {"_id": 0}).sort("name", 1).to_list(None)
-    return [await _client_out(v) for v in docs]
+    counts = {
+        row["_id"]: row["n"]
+        async for row in db.users.aggregate([
+            {"$match": {"client_id": {"$ne": None}, "active": {"$ne": False}}},
+            {"$group": {"_id": "$client_id", "n": {"$sum": 1}}},
+        ])
+    }
+    out = []
+    for doc in docs:
+        client = await _client_out(doc)
+        client.user_count = counts.get(doc["id"], 0)
+        out.append(client)
+    return out
 
 
 @api_router.post("/clients", response_model=ClientCreateResponse)
@@ -1488,7 +1506,7 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
         }
     )
     await db.clients.insert_one(
-        {**client_obj.dict(exclude={"invoice_next_seq", "subscription_state"}), "_id": client_obj.id}
+        {**client_obj.dict(exclude={"invoice_next_seq", "subscription_state", "user_count"}), "_id": client_obj.id}
     )
     await _raise_invoice_counter(client_obj.id, inp.invoice_next_seq)
 
@@ -2028,14 +2046,19 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
 
 
 # ---------------- Users ----------------
-@api_router.get("/users", response_model=List[User])
+@api_router.get("/users", response_model=List[UserRow])
 async def list_users(client_id: Optional[str] = None, current_user: User = Depends(require_manager)):
     if current_user.role == Role.SUPERADMIN:
         query = {"client_id": client_id} if client_id else {}
     else:
         query = {"client_id": current_user.client_id}
     docs = await db.users.find(query, {"_id": 0}).sort("name", 1).to_list(None)
-    return [User(**v) for v in docs]
+    names: Dict[str, str] = {}
+    if current_user.role == Role.SUPERADMIN:
+        ids = list({d["client_id"] for d in docs if d.get("client_id")})
+        if ids:
+            names = {c["id"]: c["name"] async for c in db.clients.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1})}
+    return [UserRow(**{**v, "client_name": names.get(v.get("client_id"))}) for v in docs]
 
 
 @api_router.post("/users", response_model=UserInviteResponse)

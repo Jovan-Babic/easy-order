@@ -19,7 +19,7 @@ Cilj: superadmin je vlasnik sistema, ne korisnik poslovnih podataka klijenata. V
 - Dashboard: za superadmina nove kartice + lista; za admina postojeći grafikoni.
 - Testovi: brojevi na kartama za poznat skup klijenata.
 
-## Faza B — Klijenti i Korisnici (srednja)
+## Faza B — Klijenti i Korisnici (srednja) — ✅ urađeno
 
 - Stranica klijenta (`clients/[clientId]`) dobija tabove: **Pregled** (današnji sadržaj), **Korisnici** (samo njegovi), **Pretplata** (stanje + akcije dodeli / produži / otkaži / istorija, iste kao u Pretplatama). Tabovi Uplate, Beleške i Aktivnost se dodaju u kasnijim fazama.
 - `GET /users` za superadmina vraća i naziv klijenta; stranica Korisnici dobija kolonu Klijent (link na klijenta) i filter po klijentu.

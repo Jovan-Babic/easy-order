@@ -79,3 +79,26 @@ def test_counts_and_attention(superadmin_client):
     # most urgent first: locked, purge_soon, grace, ending_soon
     order = [a["reason"] for a in after["attention"]]
     assert order == sorted(order, key=lambda r: {"locked": 0, "purge_soon": 1, "grace": 2, "ending_soon": 3}[r])
+
+
+def test_users_list_has_client_names_and_clients_have_user_counts(superadmin_client):
+    client = _client(superadmin_client)
+    other = _client(superadmin_client)
+    users = superadmin_client.get(f"{API}/users").json()
+    mine = [u for u in users if u["client_id"] == client["id"]]
+    assert len(mine) == 1 and mine[0]["client_name"] == client["name"]
+    assert any(u["role"] == "superadmin" and u["client_name"] is None for u in users)
+    filtered = superadmin_client.get(f"{API}/users", params={"client_id": other["id"]}).json()
+    assert [u["client_id"] for u in filtered] == [other["id"]]
+
+    rows = {c["id"]: c for c in superadmin_client.get(f"{API}/clients").json()}
+    assert rows[client["id"]]["user_count"] == 1
+    # a second user in the client
+    r = superadmin_client.post(
+        f"{API}/users",
+        json={"email": f"test-ov-op-{uuid.uuid4().hex[:6]}@easyorder.dev", "name": "TEST Ov Op", "role": "operator", "client_id": client["id"]},
+    )
+    assert r.status_code == 200, r.text
+    assert {c["id"]: c for c in superadmin_client.get(f"{API}/clients").json()}[client["id"]]["user_count"] == 2
+    # the detail endpoint doesn't carry the count (it is a list-only figure)
+    assert superadmin_client.get(f"{API}/clients/{client['id']}").json()["user_count"] is None

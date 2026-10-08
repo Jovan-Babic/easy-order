@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
@@ -14,6 +15,7 @@ type User = {
   phone?: string;
   role: Role;
   client_id: string | null;
+  client_name?: string | null;
   active: boolean;
 };
 
@@ -151,6 +153,8 @@ export default function UsersPage() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<CreateUserForm>(emptyCreateForm);
+  // Superadmin: show one client's users (null = not read from the URL yet, "" = all).
+  const [clientFilter, setClientFilter] = useState<string | null>(null);
 
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [showEditForm, setShowEditForm] = useState(false);
@@ -190,7 +194,7 @@ export default function UsersPage() {
     setLoading(true);
     try {
       const [uRes, cRes] = await Promise.all([
-        fetch("/api/users"),
+        fetch(clientFilter ? `/api/users?client_id=${encodeURIComponent(clientFilter)}` : "/api/users"),
         isSuperAdmin ? fetch("/api/clients") : Promise.resolve(null),
       ]);
       if (!uRes.ok) throw new Error();
@@ -204,9 +208,16 @@ export default function UsersPage() {
   };
 
   useEffect(() => {
+    setClientFilter(isSuperAdmin ? new URLSearchParams(window.location.search).get("client") ?? "" : "");
+  }, [isSuperAdmin]);
+
+  useEffect(() => {
+    if (clientFilter === null) return;
     load();
+    // New users go to the client being looked at.
+    if (clientFilter) setForm((f) => ({ ...f, client_id: clientFilter }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [clientFilter]);
 
   const closeCreateForm = () => {
     setShowForm(false);
@@ -551,6 +562,21 @@ export default function UsersPage() {
 
       {listError && <p className="mb-4 text-sm text-error">{listError}</p>}
 
+      {isSuperAdmin && (
+        <select
+          value={clientFilter ?? ""}
+          onChange={(e) => setClientFilter(e.target.value)}
+          className="mb-4 rounded-md border border-border px-3 py-2 text-sm"
+        >
+          <option value="">{t("allClientsFilter")}</option>
+          {clients.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      )}
+
       {loading ? (
         <p className="text-muted">{t("loading")}</p>
       ) : (
@@ -562,6 +588,7 @@ export default function UsersPage() {
                 <th className="px-4 py-3">{t("email")}</th>
                 <th className="px-4 py-3">{t("phone")}</th>
                 <th className="px-4 py-3">{t("role")}</th>
+                {isSuperAdmin && <th className="px-4 py-3">{t("client")}</th>}
                 <th className="px-4 py-3">{t("status")}</th>
                 <th className="px-4 py-3" />
               </tr>
@@ -573,6 +600,17 @@ export default function UsersPage() {
                   <td className="px-4 py-3 text-onSurfaceSecondary">{u.email}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{u.phone || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{roleLabel(u.role)}</td>
+                  {isSuperAdmin && (
+                    <td className="px-4 py-3 text-onSurfaceSecondary">
+                      {u.client_id ? (
+                        <Link href={`/clients/${u.client_id}`} className="font-semibold text-brand hover:underline">
+                          {u.client_name ?? u.client_id}
+                        </Link>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
+                  )}
                   <td className="px-4 py-3">
                     <span className={u.active ? "text-success" : "text-error"}>
                       {u.active ? t("active") : t("inactive")}
