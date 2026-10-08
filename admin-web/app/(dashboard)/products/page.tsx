@@ -85,6 +85,9 @@ const toInteger = (value: string) => {
 export default function ProductsPage() {
   const session = useSession();
   const isSuperAdmin = session.role === "superadmin";
+  // Fields of modules the client doesn't have are hidden (the backend ignores them too).
+  const hasWarehouse = session.modules.includes("warehouse");
+  const hasExpiry = session.modules.includes("expiry");
   const { t } = useLanguage();
 
   const [products, setProducts] = useState<Product[]>([]);
@@ -496,19 +499,25 @@ export default function ProductsPage() {
                   error={fieldErrors.pieces_per_package}
                   onChange={(value) => setField("pieces_per_package", numeric(value))}
                 />
-                <FormField
-                  label={t("barcode")}
-                  value={form.barcode}
-                  error={fieldErrors.barcode}
-                  onChange={(value) => setField("barcode", value.replace(/[^A-Za-z0-9-]/g, ""))}
-                />
-                <FormField
-                  label={t("packageBarcode")}
-                  value={form.package_barcode}
-                  error={fieldErrors.package_barcode}
-                  onChange={(value) => setField("package_barcode", value.replace(/[^A-Za-z0-9-]/g, ""))}
-                />
-                <p className="-mt-2 text-xs text-muted sm:col-span-2">{t("packageBarcodeHint")}</p>
+                {hasWarehouse && (
+                  <FormField
+                    label={t("barcode")}
+                    value={form.barcode}
+                    error={fieldErrors.barcode}
+                    onChange={(value) => setField("barcode", value.replace(/[^A-Za-z0-9-]/g, ""))}
+                  />
+                )}
+                {hasWarehouse && (
+                  <>
+                    <FormField
+                      label={t("packageBarcode")}
+                      value={form.package_barcode}
+                      error={fieldErrors.package_barcode}
+                      onChange={(value) => setField("package_barcode", value.replace(/[^A-Za-z0-9-]/g, ""))}
+                    />
+                    <p className="-mt-2 text-xs text-muted sm:col-span-2">{t("packageBarcodeHint")}</p>
+                  </>
+                )}
                 <FormField
                   label={t("boxesPerTransport")}
                   value={form.boxes_per_transport}
@@ -528,15 +537,19 @@ export default function ProductsPage() {
               </label>
               <p className="-mt-2 text-xs text-muted">{t("productActiveHelp")}</p>
 
-              <label className="flex items-center gap-2 text-sm font-semibold text-onSurface">
-                <input
-                  type="checkbox"
-                  checked={form.track_expiry}
-                  onChange={(e) => setField("track_expiry", e.target.checked)}
-                />
-                {t("productTrackExpiry")}
-              </label>
-              <p className="-mt-2 text-xs text-muted">{t("productTrackExpiryHelp")}</p>
+              {hasExpiry && (
+                <>
+                  <label className="flex items-center gap-2 text-sm font-semibold text-onSurface">
+                    <input
+                      type="checkbox"
+                      checked={form.track_expiry}
+                      onChange={(e) => setField("track_expiry", e.target.checked)}
+                    />
+                    {t("productTrackExpiry")}
+                  </label>
+                  <p className="-mt-2 text-xs text-muted">{t("productTrackExpiryHelp")}</p>
+                </>
+              )}
 
               {isSuperAdmin && (
                 <div>
@@ -591,8 +604,8 @@ export default function ProductsPage() {
                 <th className="px-4 py-3">{t("image")}</th>
                 <th className="px-4 py-3">{t("name")}</th>
                 <th className="px-4 py-3">{t("manufacturer")}</th>
-                <th className="px-4 py-3">{t("barcode")}</th>
-                <th className="px-4 py-3">{t("packageBarcode")}</th>
+                {hasWarehouse && <th className="px-4 py-3">{t("barcode")}</th>}
+                {hasWarehouse && <th className="px-4 py-3">{t("packageBarcode")}</th>}
                 <th className="px-4 py-3">{t("productPrice")}</th>
                 <th className="px-4 py-3">{t("defaultDiscount")}</th>
                 <th className="px-4 py-3">{t("additionalDiscountOptions")}</th>
@@ -622,8 +635,8 @@ export default function ProductsPage() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.manufacturer || "-"}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{p.barcode || "-"}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{p.package_barcode || "-"}</td>
+                  {hasWarehouse && <td className="px-4 py-3 text-onSurfaceSecondary">{p.barcode || "-"}</td>}
+                  {hasWarehouse && <td className="px-4 py-3 text-onSurfaceSecondary">{p.package_barcode || "-"}</td>}
                   <td className="px-4 py-3 text-onSurfaceSecondary">{(p.price_no_vat ?? 0).toFixed(2)}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.discount ?? 0}%</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{(p.additional_discounts && p.additional_discounts.length ? p.additional_discounts : [0]).map((d) => `${d}%`).join(", ")}</td>

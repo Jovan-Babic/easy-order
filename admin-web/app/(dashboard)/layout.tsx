@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { backendFetch } from "@/lib/backend";
 import { Sidebar } from "@/components/Sidebar";
 import { SessionProvider } from "@/lib/session-provider";
+import { SubscriptionBanner } from "@/components/SubscriptionBanner";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const res = await backendFetch("/auth/me");
@@ -22,7 +23,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
     <SessionProvider user={user}>
       <div className="flex">
         <Sidebar user={user} />
-        <main className="min-h-screen flex-1 bg-surface p-8">{children}</main>
+        <main className="min-h-screen flex-1 bg-surface p-8">
+          <SubscriptionBanner />
+          {children}
+        </main>
       </div>
     </SessionProvider>
   );

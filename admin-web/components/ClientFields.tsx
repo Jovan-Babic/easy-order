@@ -2,6 +2,7 @@
 
 import { useLanguage } from "@/lib/i18n";
 import { ClientFormFields } from "@/lib/clientForm";
+import { MODULES, toggleModule } from "@/lib/modules";
 
 const input = "rounded-md border border-border px-3 py-2";
 
@@ -13,6 +14,7 @@ export function ClientFields({
   onPickLogo,
   onRemoveLogo,
   nextSeqHint,
+  hideModules,
 }: {
   form: ClientFormFields;
   setForm: (f: ClientFormFields) => void;
@@ -20,6 +22,8 @@ export function ClientFields({
   onPickLogo: (file: File) => void;
   onRemoveLogo: () => void;
   nextSeqHint?: number | null;
+  // The modules come from the client's plan, so they aren't edited here.
+  hideModules?: boolean;
 }) {
   const { t } = useLanguage();
   const set = (patch: Partial<ClientFormFields>) => setForm({ ...form, ...patch });
@@ -31,6 +35,23 @@ export function ClientFields({
       <input placeholder={t("companyEmail")} value={form.email} onChange={(e) => set({ email: e.target.value })} className={input} />
       <input placeholder={t("companyPhone")} value={form.phone} onChange={(e) => set({ phone: e.target.value })} className={input} />
       <input placeholder={t("taxIdPib")} value={form.pib} onChange={(e) => set({ pib: e.target.value })} className={input} />
+
+      {!hideModules && <h2 className="mt-2 font-bold text-onSurface">{t("modules")}</h2>}
+      {!hideModules && <p className="-mt-2 text-xs text-muted">{t("modulesHint")}</p>}
+      {!hideModules && MODULES.map((m) => (
+        <label key={m.key} className="flex items-start gap-3 text-sm">
+          <input
+            type="checkbox"
+            checked={form.modules.includes(m.key)}
+            onChange={(e) => set({ modules: toggleModule(form.modules, m.key, e.target.checked) })}
+            className="mt-1"
+          />
+          <span>
+            <span className="font-semibold text-onSurface">{t(m.labelKey)}</span>
+            <span className="block text-xs text-muted">{t(m.descKey)}</span>
+          </span>
+        </label>
+      ))}
 
       <h2 className="mt-2 font-bold text-onSurface">{t("invoiceSettings")}</h2>
       <input placeholder={t("registrationNumber")} value={form.registration_number} onChange={(e) => set({ registration_number: e.target.value })} className={input} />

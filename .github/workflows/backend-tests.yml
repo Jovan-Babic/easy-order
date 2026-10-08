@@ -29,6 +29,10 @@ jobs:
       # No SMTP_* vars: invites then return the temporary password in the
       # response, which the tests rely on (and no real email is ever sent).
       EXPO_PUBLIC_BACKEND_URL: http://127.0.0.1:8000
+      # Subscription cron (tests/test_subscriptions.py): the secret the tests send,
+      # and real purging switched on - this database is throwaway.
+      CRON_SECRET: ci-cron-secret
+      AUTO_PURGE_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
         with:

@@ -21,6 +21,7 @@ export function OrderPrintModal({
   const { t } = useLanguage();
   const session = useSession();
   const isSuperAdmin = session.role === "superadmin";
+  const hasWarehouse = session.modules.includes("warehouse");
   const [mode, setMode] = useState<"invoice" | "delivery">(initialMode);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [client, setClient] = useState<ClientInfo | null>(null);
@@ -55,7 +56,7 @@ export function OrderPrintModal({
       <div className="print-modal mx-auto max-w-4xl rounded-lg bg-white shadow-xl">
         <div className="no-print flex items-center justify-between border-b border-border px-6 py-4">
           <div className="flex gap-2">
-            {(["invoice", "delivery"] as const).map((m) => (
+            {(hasWarehouse ? (["invoice", "delivery"] as const) : (["invoice"] as const)).map((m) => (
               <button
                 key={m}
                 type="button"

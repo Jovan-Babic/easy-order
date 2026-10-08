@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
+import { hasModule } from "@/src/utils/modules";
 import { api } from "@/src/api";
 import { LangToggle } from "@/src/components/LangToggle";
 import { LOGOUT } from "@/constants/testIds";
@@ -28,7 +29,7 @@ export default function HomeScreen() {
     try {
       const [orders, alerts] = await Promise.all([
         api.listOrders({ status: ["new", "in_progress"] }),
-        api.stockExpiring().catch(() => null),
+        hasModule(user, "expiry") ? api.stockExpiring().catch(() => null) : Promise.resolve(null),
       ]);
       setCounts({
         newOrders: orders.filter((o) => (o.status ?? "new") === "new").length,
@@ -40,7 +41,7 @@ export default function HomeScreen() {
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [user]);
 
   useFocusEffect(
     useCallback(() => {
@@ -90,6 +91,7 @@ export default function HomeScreen() {
               <Ionicons name="chevron-forward" size={22} color={colors.muted} />
             </Pressable>
 
+            {hasModule(user, "expiry") && (
             <Pressable testID="card-expiry" style={styles.card} onPress={() => open("expiry")}>
               <Ionicons
                 name="time-outline"
@@ -102,6 +104,7 @@ export default function HomeScreen() {
               </View>
               <Ionicons name="chevron-forward" size={22} color={colors.muted} />
             </Pressable>
+            )}
           </>
         )}
       </ScrollView>

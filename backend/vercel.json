@@ -4,5 +4,11 @@
     "server.py": {
       "includeFiles": "public/app/**"
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/internal/cron/subscriptions",
+      "schedule": "0 3 * * *"
+    }
+  ]
 }

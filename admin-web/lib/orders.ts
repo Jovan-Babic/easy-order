@@ -65,6 +65,8 @@ export type ClientInfo = {
   logo?: string;
   invoice_prefix?: string;
   expiry_alert_days?: number[];
+  modules?: string[];
+  subscription?: { plan_id?: string | null; plan_name?: string | null; ends_at?: string } | null;
   invoice_numbering: "auto" | "manual";
   invoice_next_seq?: number | null;
 };

@@ -4,7 +4,12 @@ import { useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 
 type Row = { row: number; name: string; barcode?: string | null; pib?: string | null; action: "create" | "update" | "error"; errors: string[] };
-type Result = { dry_run: boolean; summary: { create: number; update: number; error: number }; rows: Row[] };
+type Result = {
+  dry_run: boolean;
+  summary: { create: number; update: number; error: number };
+  rows: Row[];
+  ignored_columns?: string[]; // columns skipped because the client lacks that module
+};
 
 type Props = {
   kind?: "products" | "customers";
@@ -112,6 +117,11 @@ export function ImportModal({ kind = "products", clients, isSuperAdmin, onClose,
               {done ? t("importDone") : t("importPreview")}: {t("importCreate")} {result.summary.create} · {t("importUpdate")}{" "}
               {result.summary.update} · {t("importError")} {result.summary.error}
             </p>
+            {!!result.ignored_columns?.length && (
+              <p className="mb-2 text-xs text-muted">
+                {t("importIgnoredColumns")}: {result.ignored_columns.join(", ")}
+              </p>
+            )}
             <div className="max-h-80 overflow-y-auto rounded-md border border-border">
               <table className="w-full text-left text-sm">
                 <thead className="sticky top-0 bg-surfaceSecondary text-xs uppercase text-muted">

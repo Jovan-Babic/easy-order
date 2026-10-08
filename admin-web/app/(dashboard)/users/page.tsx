@@ -141,6 +141,7 @@ const emptyEditForm: EditUserForm = {
 export default function UsersPage() {
   const session = useSession();
   const isSuperAdmin = session.role === "superadmin";
+  const hasWarehouse = session.modules.includes("warehouse");
   const { t } = useLanguage();
 
   const [users, setUsers] = useState<User[]>([]);
@@ -376,7 +377,7 @@ export default function UsersPage() {
                 className="rounded-md border border-border px-3 py-2"
               >
                 <option value="operator">{t("userRoleOperator")}</option>
-                <option value="warehouse">{t("userRoleWarehouse")}</option>
+                {hasWarehouse && <option value="warehouse">{t("userRoleWarehouse")}</option>}
                 <option value="admin">{t("userRoleAdmin")}</option>
                 <option value="superadmin">{t("userRoleSuperAdmin")}</option>
               </select>
@@ -404,7 +405,7 @@ export default function UsersPage() {
                 className="rounded-md border border-border px-3 py-2"
               >
                 <option value="operator">{t("userRoleOperator")}</option>
-                <option value="warehouse">{t("userRoleWarehouse")}</option>
+                {hasWarehouse && <option value="warehouse">{t("userRoleWarehouse")}</option>}
               </select>
               <p className="text-sm text-muted">{t("accountScope")}</p>
             </>
@@ -485,7 +486,7 @@ export default function UsersPage() {
                   className="rounded-md border border-border px-3 py-2"
                 >
                   <option value="operator">{t("userRoleOperator")}</option>
-                  <option value="warehouse">{t("userRoleWarehouse")}</option>
+                  {hasWarehouse && <option value="warehouse">{t("userRoleWarehouse")}</option>}
                   {isSuperAdmin && <option value="admin">{t("userRoleAdmin")}</option>}
                   {isSuperAdmin && <option value="superadmin">{t("userRoleSuperAdmin")}</option>}
                 </select>

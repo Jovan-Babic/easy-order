@@ -14,6 +14,15 @@ export type User = {
   // backend rejects every business call until then (see RouteGuard).
   must_change_password?: boolean;
   created_at: string;
+  // Modules the client has (login / me); superadmin gets all.
+  modules?: string[];
+  // Only when the client has a subscription that is ending (active) or over (grace).
+  subscription?: {
+    status: "active" | "grace";
+    ends_at: string;
+    days_left: number;
+    grace_ends_at: string;
+  } | null;
 };
 
 export type TokenResponse = {

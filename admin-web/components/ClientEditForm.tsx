@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useLanguage } from "@/lib/i18n";
 import { ClientFields } from "@/components/ClientFields";
 import { ClientInfo } from "@/lib/orders";
+import { ALL_MODULES } from "@/lib/modules";
 import { ClientFormFields, clientPayload, deleteUploadedLogo, uploadLogo } from "@/lib/clientForm";
 
 // Superadmin-only editor for a client's company data and invoice settings.
@@ -24,6 +25,7 @@ export function ClientEditForm({ client }: { client: ClientInfo }) {
     invoice_numbering: client.invoice_numbering ?? "auto",
     invoice_next_seq: "", // only sent when the superadmin types one
     expiry_alert_days: (client.expiry_alert_days ?? [30, 15, 5]).slice().sort((a, b) => b - a).join(", "),
+    modules: client.modules ?? [...ALL_MODULES],
   });
   const [pendingLogo, setPendingLogo] = useState<File | null>(null);
   const [preview, setPreview] = useState(client.logo ?? "");
@@ -41,7 +43,7 @@ export function ClientEditForm({ client }: { client: ClientInfo }) {
         uploaded = await uploadLogo(pendingLogo);
         logo = uploaded;
       }
-      const res = await fetch(`/api/clients/${client.id}`, { method: "PUT", body: JSON.stringify(clientPayload(form, logo)) });
+      const res = await fetch(`/api/clients/${client.id}`, { method: "PUT", body: JSON.stringify(clientPayload(form, logo, !client.subscription?.plan_id)) });
       if (!res.ok) {
         if (uploaded) await deleteUploadedLogo(uploaded);
         const body = await res.json().catch(() => ({}));
@@ -62,7 +64,13 @@ export function ClientEditForm({ client }: { client: ClientInfo }) {
 
   return (
     <form onSubmit={submit} className="mt-8 grid max-w-xl gap-3 rounded-lg bg-surfaceSecondary p-6 shadow-sm">
+      {client.subscription?.plan_id && (
+        <p className="rounded-md bg-surface p-3 text-sm text-onSurfaceSecondary">
+          {t("onPlan")} <strong>{client.subscription.plan_name}</strong>. {t("modulesFromPlan")}
+        </p>
+      )}
       <ClientFields
+        hideModules={!!client.subscription?.plan_id}
         form={form}
         setForm={setForm}
         logoPreview={preview}

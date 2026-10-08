@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, File, Query, UploadFile
+from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, File, Query, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
@@ -12,12 +12,13 @@ import hashlib
 import json
 import os
 import re
+import hmac
 import secrets
 import smtplib
 import logging
 import mimetypes
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, PrivateAttr
 from typing import List, Literal, Optional, Dict, Any
 from enum import Enum
 import uuid
@@ -157,6 +158,10 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("Could not create unique index on products.package_barcode: %s", exc)
     try:
+        await db.subscription_events.create_index([("client_id", 1), ("created_at", -1)])
+    except Exception as exc:
+        logger.error("Could not create index on subscription_events: %s", exc)
+    try:
         # One batch per product and expiry date (expiry_date null = undated stock).
         await db.stock_batches.create_index([("product_id", 1), ("expiry_date", 1)], unique=True)
         await db.stock_batches.create_index([("client_id", 1), ("expiry_date", 1)])
@@ -198,6 +203,96 @@ class Role(str, Enum):
 ADMIN_MANAGEABLE_ROLES = {Role.OPERATOR, Role.WAREHOUSE}
 
 
+# ---------------- Modules (PLAN_MODULI.md) ----------------
+# What a client may use is a list of modules the superadmin turns on per
+# client. Everything not listed here is the always-on base: catalog,
+# customers, orders (create/edit/cancel), invoice from the phone, Excel import
+# of products/customers.
+class Module(str, Enum):
+    WAREHOUSE = "warehouse"  # warehouse role, order flow, packing, barcode + scanner, delivery note
+    STOCK = "stock"  # stock levels, receipts, counts, movements, deduction on shipping
+    EXPIRY = "expiry"  # expiry dates, batches, FEFO, alerts
+    REPORTS = "reports"  # order reports
+
+
+ALL_MODULES = [m.value for m in Module]
+# A module can only be on when the ones it builds on are on too.
+MODULE_REQUIRES: Dict[Module, List[Module]] = {Module.STOCK: [Module.WAREHOUSE], Module.EXPIRY: [Module.STOCK]}
+
+
+def effective_modules(client_doc: Optional[dict]) -> List[str]:
+    """Clients created before modules existed (no field) keep everything."""
+    stored = (client_doc or {}).get("modules")
+    return list(ALL_MODULES) if stored is None else [m for m in ALL_MODULES if m in stored]
+
+
+def validated_modules(values: List[Module]) -> List[str]:
+    chosen = {Module(v) for v in values}
+    for module in Module:
+        for needed in MODULE_REQUIRES.get(module, []):
+            if module in chosen and needed not in chosen:
+                raise HTTPException(
+                    status_code=400, detail=f"Module '{module.value}' requires module '{needed.value}'"
+                )
+    return [m for m in ALL_MODULES if Module(m) in chosen]
+
+
+# ---------------- Subscriptions (PLAN_PRETPLATE.md) ----------------
+# A client may have a subscription: a package (plan) valid until a date. No
+# subscription = no expiry (older clients, internal/free accounts).
+#   active -> (ends_at passes) grace -> locked -> (90 days locked) data purge
+SUBSCRIPTION_GRACE_DAYS = int(os.environ.get("SUBSCRIPTION_GRACE_DAYS", "14"))
+SUBSCRIPTION_PURGE_AFTER_DAYS = int(os.environ.get("SUBSCRIPTION_PURGE_AFTER_DAYS", "90"))
+SUBSCRIPTION_REMINDER_DAYS = int(os.environ.get("SUBSCRIPTION_REMINDER_DAYS", "14"))
+CRON_SECRET = os.environ.get("CRON_SECRET", "")
+# The purge really deletes only when this is "true"; otherwise the daily job
+# just reports what it would delete (a dry run).
+AUTO_PURGE_ENABLED = os.environ.get("AUTO_PURGE_ENABLED", "false").lower() == "true"
+
+
+def subscription_state(sub: Optional[dict], today: Optional[date] = None) -> dict:
+    """Where a subscription stands today. status: none | active | grace | locked."""
+    if not sub:
+        return {"status": "none"}
+    today = today or datetime.now(timezone.utc).date()
+    ends = date.fromisoformat(sub["ends_at"])
+    grace_ends = ends + timedelta(days=SUBSCRIPTION_GRACE_DAYS)
+    state = {
+        "status": "active",
+        "ends_at": ends.isoformat(),
+        "days_left": (ends - today).days,
+        "grace_ends_at": grace_ends.isoformat(),
+        "locked_since": None,
+        "purge_at": None,
+    }
+    locked_since = None
+    if sub.get("canceled_at"):
+        locked_since = date.fromisoformat(str(sub["canceled_at"])[:10])
+    elif today > grace_ends:
+        locked_since = grace_ends + timedelta(days=1)
+    elif today > ends:
+        state["status"] = "grace"
+    if locked_since is not None and locked_since <= today:
+        state["status"] = "locked"
+        state["locked_since"] = locked_since.isoformat()
+        state["purge_at"] = (locked_since + timedelta(days=SUBSCRIPTION_PURGE_AFTER_DAYS)).isoformat()
+    return state
+
+
+def _add_months(day: date, months: int) -> date:
+    month_index = day.month - 1 + months
+    year, month = day.year + month_index // 12, month_index % 12 + 1
+    last = [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+    return date(year, month, min(day.day, last))
+
+
+async def client_has_module(client_id: Optional[str], module: Module) -> bool:
+    if not client_id:  # superadmin: not tied to a client
+        return True
+    doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "modules": 1})
+    return module.value in effective_modules(doc)
+
+
 class Client(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
@@ -213,6 +308,12 @@ class Client(BaseModel):
     invoice_numbering: str = "auto"  # "auto" | "manual"
     # Days before expiry at which batches show up as warnings (warehouse/admin).
     expiry_alert_days: List[int] = Field(default_factory=lambda: list(DEFAULT_EXPIRY_ALERT_DAYS))
+    # Enabled modules (Module values); a stored client without the field has all.
+    modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
+    # Subscription (superadmin manages it in /subscriptions): plan_id, plan_name,
+    # starts_at, ends_at, note, source, canceled_at, purge_paused, purged_at.
+    subscription: Optional[Dict[str, Any]] = None
+    subscription_state: Optional[Dict[str, Any]] = None  # computed
     # Read-only: the number the next shipped order will get (auto numbering).
     invoice_next_seq: Optional[int] = None
     active: bool = True
@@ -232,6 +333,8 @@ class ClientInput(BaseModel):
     invoice_numbering: str = "auto"
     # None = keep the stored thresholds (default 30/15/5 days).
     expiry_alert_days: Optional[List[int]] = None
+    # Superadmin only. None = keep (new client: all modules).
+    modules: Optional[List[Module]] = None
     # Only ever raises the counter (to continue a series from an old system).
     invoice_next_seq: Optional[int] = Field(default=None, ge=1)
 
@@ -242,6 +345,9 @@ class ClientCreateInput(ClientInput):
     # is ignored.
     admin_name: str
     admin_email: EmailStr
+    # Optional: start the client on a package. Then `modules` comes from the plan.
+    plan_id: Optional[str] = None
+    subscription_ends_at: Optional[str] = None  # YYYY-MM-DD, required with plan_id
 
 
 class User(BaseModel):
@@ -256,6 +362,17 @@ class User(BaseModel):
     # set, only /auth/me, /auth/change-password and /auth/logout work.
     must_change_password: bool = False
     created_at: str = Field(default_factory=now_iso)
+    # Set per request from the user's client (see get_authenticated_user); not stored.
+    _modules: Optional[List[str]] = PrivateAttr(default=None)
+    _subscription: Optional[dict] = PrivateAttr(default=None)
+
+
+class UserOut(User):
+    """/auth/me and login: the user plus the modules their client has
+    (superadmin: all)."""
+    modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
+    # Only when the client has a subscription: status active|grace, ends_at, days_left, grace_ends_at.
+    subscription: Optional[Dict[str, Any]] = None
 
 
 class InviteResult(BaseModel):
@@ -339,7 +456,7 @@ class GenericOkResponse(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    user: User
+    user: UserOut
 
 
 # ---------------- Domain models ----------------
@@ -953,13 +1070,32 @@ async def _migrate_user_emails_to_lowercase() -> None:
 async def client_is_active(client_id: Optional[str]) -> bool:
     """Superadmins have no client. For everyone else, a soft-deleted
     (active=False) or missing client locks out all of its users."""
+    return (await _client_gate(client_id))["active"]
+
+
+async def _client_gate(client_id: Optional[str]) -> dict:
+    """active flag, modules and subscription state of a client in one lookup.
+    Superadmins have no client: always active, every module, no subscription."""
     if not client_id:
-        return True
-    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "active": 1})
-    return bool(client and client.get("active", True))
+        return {"active": True, "modules": list(ALL_MODULES), "subscription": {"status": "none"}}
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "active": 1, "modules": 1, "subscription": 1})
+    if not client:
+        return {"active": False, "modules": [], "subscription": {"status": "none"}}
+    return {
+        "active": client.get("active", True),
+        "modules": effective_modules(client),
+        "subscription": subscription_state(client.get("subscription")),
+    }
 
 
 security = HTTPBearer(auto_error=False)
+
+
+async def user_out(raw: dict) -> UserOut:
+    """User + the modules of their client (login / me responses)."""
+    gate = await _client_gate(raw.get("client_id"))
+    sub = gate["subscription"] if gate["subscription"]["status"] != "none" else None
+    return UserOut(**{k: v for k, v in raw.items() if k not in ("modules", "subscription")}, modules=gate["modules"], subscription=sub)
 
 
 async def get_authenticated_user(
@@ -981,9 +1117,15 @@ async def get_authenticated_user(
         raise HTTPException(status_code=401, detail="Session expired, please log in again")
     # Checked on every request (not only at login) so deactivating a client
     # also cuts off tokens that were issued before the deactivation.
-    if not await client_is_active(raw.get("client_id")):
+    gate = await _client_gate(raw.get("client_id"))
+    if not gate["active"]:
         raise HTTPException(status_code=401, detail="Client account is disabled")
-    return User(**raw)
+    if gate["subscription"]["status"] == "locked":
+        raise HTTPException(status_code=401, detail="Subscription expired")
+    user = User(**raw)
+    user._modules = gate["modules"]
+    user._subscription = gate["subscription"]
+    return user
 
 
 async def get_current_user(user: User = Depends(get_authenticated_user)) -> User:
@@ -993,6 +1135,21 @@ async def get_current_user(user: User = Depends(get_authenticated_user)) -> User
         # the change-password screen instead of logging them out.
         raise HTTPException(status_code=403, detail="Password change required")
     return user
+
+
+def has_module(user: User, module: Module) -> bool:
+    return user.role == Role.SUPERADMIN or module.value in (user._modules or [])
+
+
+def require_module(module: Module, *roles: Role):
+    """Role check (if roles are given) plus: the caller's client must have the module."""
+    base = require_roles(*roles) if roles else get_current_user
+
+    async def _dep(user: User = Depends(base)) -> User:
+        if not has_module(user, module):
+            raise HTTPException(status_code=403, detail=f"Module not enabled: {module.value}")
+        return user
+    return _dep
 
 
 def require_roles(*roles: Role):
@@ -1078,10 +1235,13 @@ async def login(inp: LoginInput):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     await db.auth_attempts.delete_many({"key": key})
     # After the password check, so this can't be used to probe which emails exist.
-    if not await client_is_active(raw.get("client_id")):
+    gate = await _client_gate(raw.get("client_id"))
+    if not gate["active"]:
         raise HTTPException(status_code=403, detail="Client account is disabled")
+    if gate["subscription"]["status"] == "locked":
+        raise HTTPException(status_code=403, detail="Subscription expired")
     token = create_access_token(raw)
-    return TokenResponse(access_token=token, user=User(**raw))
+    return TokenResponse(access_token=token, user=await user_out(raw))
 
 
 @api_router.post("/auth/forgot-password", response_model=ForgotPasswordResponse)
@@ -1169,12 +1329,14 @@ async def change_password(inp: ChangePasswordInput, current_user: User = Depends
     updated = await _set_password(current_user.id, inp.new_password)
     # The old token is now invalid (token_version bumped) - hand back a fresh
     # one so the user stays logged in on this device.
-    return TokenResponse(access_token=create_access_token(updated), user=User(**updated))
+    return TokenResponse(access_token=create_access_token(updated), user=await user_out(updated))
 
 
-@api_router.get("/auth/me", response_model=User)
+@api_router.get("/auth/me", response_model=UserOut)
 async def me(current_user: User = Depends(get_authenticated_user)):
-    return current_user
+    modules = list(ALL_MODULES) if current_user.role == Role.SUPERADMIN else (current_user._modules or [])
+    sub = current_user._subscription if (current_user._subscription or {}).get("status") not in (None, "none") else None
+    return UserOut(**current_user.dict(), modules=modules, subscription=sub)
 
 
 @api_router.post("/auth/logout")
@@ -1251,7 +1413,14 @@ def _invoice_counter_id(client_id: str) -> str:
 
 async def _client_out(doc: dict) -> Client:
     counter = await db.counters.find_one({"_id": _invoice_counter_id(doc["id"])})
-    return Client(**{**doc, "invoice_next_seq": (counter or {}).get("seq", 0) + 1})
+    state = subscription_state(doc.get("subscription"))
+    return Client(
+        **{
+            **doc,
+            "invoice_next_seq": (counter or {}).get("seq", 0) + 1,
+            "subscription_state": None if state["status"] == "none" else state,
+        }
+    )
 
 
 def _validated_invoice_settings(inp: ClientInput) -> dict:
@@ -1299,13 +1468,32 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
     alert_days = _validated_alert_days(inp.expiry_alert_days)
     if alert_days:
         settings["expiry_alert_days"] = alert_days
+    plan = None
+    if inp.plan_id:
+        plan = await _get_plan_or_400(inp.plan_id)
+        settings["modules"] = list(plan["modules"])
+        settings["subscription"] = _new_subscription(plan, inp.subscription_ends_at, None, "manual")
+    else:
+        settings["modules"] = validated_modules(inp.modules if inp.modules is not None else list(Module))
 
     client_obj = Client(
-        **{**inp.dict(exclude={"admin_name", "admin_email", "invoice_next_seq", "expiry_alert_days"}), **settings}
+        **{
+            **inp.dict(
+                exclude={
+                    "admin_name", "admin_email", "invoice_next_seq", "expiry_alert_days", "modules",
+                    "plan_id", "subscription_ends_at",
+                }
+            ),
+            **settings,
+        }
     )
-    await db.clients.insert_one({**client_obj.dict(exclude={"invoice_next_seq"}), "_id": client_obj.id})
+    await db.clients.insert_one(
+        {**client_obj.dict(exclude={"invoice_next_seq", "subscription_state"}), "_id": client_obj.id}
+    )
     await _raise_invoice_counter(client_obj.id, inp.invoice_next_seq)
 
+    if plan:
+        await _log_subscription_event(client_obj.id, "assigned", current_user, plan_name=plan["name"], ends_at=inp.subscription_ends_at)
     admin_obj = User(
         email=normalize_email(inp.admin_email), name=inp.admin_name, role=Role.ADMIN, client_id=client_obj.id
     )
@@ -1343,7 +1531,11 @@ async def update_client(client_id: str, inp: ClientInput, current_user: User = D
     alert_days = _validated_alert_days(inp.expiry_alert_days)
     if alert_days:
         settings["expiry_alert_days"] = alert_days
-    updated = {**existing, **inp.dict(exclude={"invoice_next_seq", "expiry_alert_days"}), **settings}
+    if inp.modules is not None:
+        if (existing.get("subscription") or {}).get("plan_id"):
+            raise HTTPException(status_code=400, detail="Modules come from the client's plan - change the plan instead")
+        settings["modules"] = validated_modules(inp.modules)
+    updated = {**existing, **inp.dict(exclude={"invoice_next_seq", "expiry_alert_days", "modules"}), **settings}
     await db.clients.replace_one({"id": client_id}, {**updated, "_id": client_id})
     if existing.get("logo") != updated.get("logo"):
         await _delete_product_image(existing.get("logo"))
@@ -1366,6 +1558,384 @@ async def activate_client(client_id: str, current_user: User = Depends(require_r
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Client not found")
     return {"ok": True}
+
+
+# ---------------- Plans & subscriptions (PLAN_PRETPLATE.md) ----------------
+class Plan(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    description: Optional[str] = ""
+    modules: List[str] = Field(default_factory=list)
+    active: bool = True  # inactive plans can't be assigned any more
+    created_at: str = Field(default_factory=now_iso)
+
+
+class PlanInput(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: Optional[str] = Field(default="", max_length=500)
+    modules: List[Module] = Field(default_factory=list)
+    active: bool = True
+    # On update: also rewrite the modules of every client currently on this plan.
+    apply_to_clients: bool = False
+
+
+class SubscriptionAssignInput(BaseModel):
+    plan_id: str
+    ends_at: str  # YYYY-MM-DD, last day of validity (inclusive)
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class SubscriptionExtendInput(BaseModel):
+    months: Optional[int] = Field(default=None, ge=1, le=60)
+    ends_at: Optional[str] = None
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class SubscriptionNoteInput(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class PurgePauseInput(BaseModel):
+    paused: bool
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class SubscriptionRow(BaseModel):
+    client_id: str
+    client_name: str
+    client_active: bool
+    plan_id: Optional[str] = None
+    plan_name: Optional[str] = None
+    modules: List[str] = Field(default_factory=list)
+    note: Optional[str] = None
+    purge_paused: bool = False
+    purged_at: Optional[str] = None
+    state: Dict[str, Any] = Field(default_factory=lambda: {"status": "none"})
+
+
+class SubscriptionEvent(BaseModel):
+    id: str
+    client_id: str
+    type: str  # assigned | extended | canceled | purge_paused | purge_resumed | purged
+    plan_name: Optional[str] = None
+    ends_at: Optional[str] = None
+    note: Optional[str] = None
+    actor_name: Optional[str] = None
+    source: str = "manual"  # later e.g. a billing provider
+    data: Optional[Dict[str, Any]] = None
+    created_at: str
+
+
+class SubscriptionDetail(BaseModel):
+    row: SubscriptionRow
+    events: List[SubscriptionEvent]
+
+
+def _valid_day(value: Optional[str], name: str) -> str:
+    try:
+        parsed = datetime.strptime((value or "").strip(), "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{name} must be YYYY-MM-DD")
+    if parsed.year < 2000 or parsed.year > _today().year + 20:
+        raise HTTPException(status_code=400, detail=f"{name} is out of range")
+    return parsed.isoformat()
+
+
+async def _get_plan_or_400(plan_id: str, must_be_active: bool = True) -> dict:
+    plan = await db.plans.find_one({"id": plan_id}, {"_id": 0})
+    if not plan:
+        raise HTTPException(status_code=400, detail="Plan not found")
+    if must_be_active and not plan.get("active", True):
+        raise HTTPException(status_code=400, detail="Plan is not active")
+    return plan
+
+
+def _new_subscription(plan: dict, ends_at: Optional[str], note: Optional[str], source: str) -> dict:
+    return {
+        "plan_id": plan["id"],
+        "plan_name": plan["name"],
+        "starts_at": _today().isoformat(),
+        "ends_at": _valid_day(ends_at, "ends_at"),
+        "note": note,
+        "source": source,
+        "canceled_at": None,
+        "purge_paused": False,
+        "purged_at": None,
+    }
+
+
+async def _log_subscription_event(
+    client_id: str, type_: str, user: Optional[User], note: Optional[str] = None,
+    plan_name: Optional[str] = None, ends_at: Optional[str] = None, data: Optional[dict] = None,
+    source: str = "manual",
+) -> None:
+    await db.subscription_events.insert_one({
+        "_id": str(uuid.uuid4()), "id": str(uuid.uuid4()), "client_id": client_id, "type": type_,
+        "plan_name": plan_name, "ends_at": ends_at, "note": note,
+        "actor_name": user.name if user else "system", "source": source, "data": data, "created_at": now_iso(),
+    })
+
+
+async def _subscription_row(client: dict) -> SubscriptionRow:
+    sub = client.get("subscription") or {}
+    return SubscriptionRow(
+        client_id=client["id"],
+        client_name=client["name"],
+        client_active=client.get("active", True),
+        plan_id=sub.get("plan_id"),
+        plan_name=sub.get("plan_name"),
+        modules=effective_modules(client),
+        note=sub.get("note"),
+        purge_paused=bool(sub.get("purge_paused")),
+        purged_at=sub.get("purged_at"),
+        state=subscription_state(client.get("subscription")),
+    )
+
+
+async def _client_or_404(client_id: str) -> dict:
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return client
+
+
+@api_router.get("/plans", response_model=List[Plan])
+async def list_plans(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    return [Plan(**p) for p in await db.plans.find({}, {"_id": 0}).sort("name", 1).to_list(None)]
+
+
+@api_router.post("/plans", response_model=Plan)
+async def create_plan(inp: PlanInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    if await db.plans.find_one({"name": inp.name.strip()}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="A plan with that name already exists")
+    plan = Plan(
+        name=inp.name.strip(), description=inp.description or "", modules=validated_modules(inp.modules), active=inp.active
+    )
+    await db.plans.insert_one({**plan.dict(), "_id": plan.id})
+    return plan
+
+
+@api_router.put("/plans/{plan_id}", response_model=Plan)
+async def update_plan(plan_id: str, inp: PlanInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    existing = await db.plans.find_one({"id": plan_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    clash = await db.plans.find_one({"name": inp.name.strip(), "id": {"$ne": plan_id}}, {"_id": 1})
+    if clash:
+        raise HTTPException(status_code=409, detail="A plan with that name already exists")
+    updated = {
+        **existing, "name": inp.name.strip(), "description": inp.description or "",
+        "modules": validated_modules(inp.modules), "active": inp.active,
+    }
+    await db.plans.replace_one({"id": plan_id}, {**updated, "_id": plan_id})
+    # Clients keep their own copy of the plan name; refresh it, and optionally the modules.
+    await db.clients.update_many({"subscription.plan_id": plan_id}, {"$set": {"subscription.plan_name": updated["name"]}})
+    if inp.apply_to_clients:
+        async for client in db.clients.find({"subscription.plan_id": plan_id}, {"_id": 0, "id": 1}):
+            await db.clients.update_one({"id": client["id"]}, {"$set": {"modules": updated["modules"]}})
+    return Plan(**updated)
+
+
+@api_router.delete("/plans/{plan_id}")
+async def delete_plan(plan_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    if not await db.plans.find_one({"id": plan_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if await db.clients.find_one({"subscription.plan_id": plan_id}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Clients are on this plan - deactivate it instead")
+    await db.plans.delete_one({"id": plan_id})
+    return {"ok": True}
+
+
+@api_router.get("/subscriptions", response_model=List[SubscriptionRow])
+async def list_subscriptions(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    clients = await db.clients.find({}, {"_id": 0}).sort("name", 1).to_list(None)
+    return [await _subscription_row(c) for c in clients]
+
+
+@api_router.get("/subscriptions/{client_id}", response_model=SubscriptionDetail)
+async def get_subscription(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    client = await _client_or_404(client_id)
+    events = await db.subscription_events.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return SubscriptionDetail(row=await _subscription_row(client), events=[SubscriptionEvent(**e) for e in events])
+
+
+@api_router.post("/subscriptions/{client_id}/assign", response_model=SubscriptionRow)
+async def assign_subscription(
+    client_id: str, inp: SubscriptionAssignInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """Gives the client a package until `ends_at` (replaces any earlier subscription,
+    unlocks a locked client) and sets its modules to the plan's."""
+    await _client_or_404(client_id)
+    plan = await _get_plan_or_400(inp.plan_id)
+    subscription = _new_subscription(plan, inp.ends_at, inp.note, "manual")
+    await db.clients.update_one({"id": client_id}, {"$set": {"subscription": subscription, "modules": plan["modules"]}})
+    await _log_subscription_event(
+        client_id, "assigned", current_user, note=inp.note, plan_name=plan["name"], ends_at=subscription["ends_at"]
+    )
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+@api_router.post("/subscriptions/{client_id}/extend", response_model=SubscriptionRow)
+async def extend_subscription(
+    client_id: str, inp: SubscriptionExtendInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """Pushes `ends_at` forward by whole months (from the later of today and the
+    current end) or to an exact date. Also lifts a lock and a cancel."""
+    client = await _client_or_404(client_id)
+    sub = client.get("subscription")
+    if not sub:
+        raise HTTPException(status_code=400, detail="Client has no subscription - assign a plan first")
+    if (inp.months is None) == (inp.ends_at is None):
+        raise HTTPException(status_code=400, detail="Send either months or ends_at")
+    if inp.months is not None:
+        base = max(date.fromisoformat(sub["ends_at"]), _today())
+        new_end = _add_months(base, inp.months).isoformat()
+    else:
+        new_end = _valid_day(inp.ends_at, "ends_at")
+    sub = {
+        **sub, "ends_at": new_end, "canceled_at": None, "purge_paused": False, "reminder_for": None, "purge_warned_for": None,
+    }
+    if inp.note:
+        sub["note"] = inp.note
+    await db.clients.update_one({"id": client_id}, {"$set": {"subscription": sub}})
+    await _log_subscription_event(client_id, "extended", current_user, note=inp.note, plan_name=sub.get("plan_name"), ends_at=new_end)
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+@api_router.post("/subscriptions/{client_id}/cancel", response_model=SubscriptionRow)
+async def cancel_subscription(
+    client_id: str, inp: SubscriptionNoteInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """Locks the client right away (no grace period); data stays until the purge."""
+    client = await _client_or_404(client_id)
+    sub = client.get("subscription")
+    if not sub:
+        raise HTTPException(status_code=400, detail="Client has no subscription")
+    sub = {**sub, "canceled_at": now_iso()}
+    await db.clients.update_one({"id": client_id}, {"$set": {"subscription": sub}})
+    await _log_subscription_event(client_id, "canceled", current_user, note=inp.note, plan_name=sub.get("plan_name"), ends_at=sub["ends_at"])
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+@api_router.post("/subscriptions/{client_id}/purge-pause", response_model=SubscriptionRow)
+async def pause_purge(
+    client_id: str, inp: PurgePauseInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
+):
+    """Stops (or resumes) the scheduled deletion of this client's module data."""
+    client = await _client_or_404(client_id)
+    sub = client.get("subscription")
+    if not sub:
+        raise HTTPException(status_code=400, detail="Client has no subscription")
+    await db.clients.update_one({"id": client_id}, {"$set": {"subscription.purge_paused": inp.paused}})
+    await _log_subscription_event(
+        client_id, "purge_paused" if inp.paused else "purge_resumed", current_user, note=inp.note, plan_name=sub.get("plan_name")
+    )
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+@api_router.get("/subscriptions/{client_id}/export")
+async def export_purgeable_data(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Everything the purge would delete, as JSON - to hand over before it runs."""
+    client = await _client_or_404(client_id)
+    products = await db.products.find({"client_id": client_id}, {"_id": 0}).to_list(None)
+    return {
+        "exported_at": now_iso(),
+        "client": {"id": client_id, "name": client["name"]},
+        "products_stock": [
+            {"id": p["id"], "name": p["name"], "barcode": p.get("barcode"), "stock_qty": p.get("stock_qty"),
+             "track_expiry": bool(p.get("track_expiry"))}
+            for p in products
+        ],
+        "stock_batches": await db.stock_batches.find({"client_id": client_id}, {"_id": 0}).to_list(None),
+        "stock_movements": await db.stock_movements.find({"client_id": client_id}, {"_id": 0}).to_list(None),
+    }
+
+
+async def _purge_module_data(client_id: str) -> Dict[str, int]:
+    """What the scheduled purge deletes for a client that stayed locked: the data
+    of the optional modules (stock levels, movements, batches). Orders,
+    customers, products and users are never touched."""
+    movements = await db.stock_movements.delete_many({"client_id": client_id})
+    batches = await db.stock_batches.delete_many({"client_id": client_id})
+    products = await db.products.update_many(
+        {"client_id": client_id}, {"$unset": {"stock_qty": ""}, "$set": {"track_expiry": False}}
+    )
+    return {
+        "stock_movements": movements.deleted_count,
+        "stock_batches": batches.deleted_count,
+        "products_reset": products.modified_count,
+    }
+
+
+async def _count_purgeable(client_id: str) -> Dict[str, int]:
+    return {
+        "stock_movements": await db.stock_movements.count_documents({"client_id": client_id}),
+        "stock_batches": await db.stock_batches.count_documents({"client_id": client_id}),
+        "products_reset": await db.products.count_documents({"client_id": client_id, "stock_qty": {"$exists": True}}),
+    }
+
+
+async def _email_client_admins(client_id: str, subject: str, body: str) -> int:
+    """Best effort: skipped (0) when SMTP isn't configured."""
+    if not _smtp_is_configured():
+        return 0
+    sent = 0
+    async for admin in db.users.find({"client_id": client_id, "role": Role.ADMIN.value, "active": {"$ne": False}}, {"email": 1}):
+        try:
+            await asyncio.to_thread(_send_smtp_email_sync, admin["email"], subject, body)
+            sent += 1
+        except Exception as exc:
+            logger.warning("Subscription email to %s failed: %s", admin.get("email"), exc)
+    return sent
+
+
+@api_router.get("/internal/cron/subscriptions")
+async def cron_subscriptions(dry_run: bool = Query(False), authorization: Optional[str] = Header(None)):
+    """Daily job (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`):
+    expiry reminders, purge warnings and the purge itself. The purge deletes
+    only when AUTO_PURGE_ENABLED=true and dry_run is not set; otherwise it
+    reports what it would delete."""
+    if not CRON_SECRET:
+        raise HTTPException(status_code=503, detail="CRON_SECRET is not configured")
+    if not hmac.compare_digest(authorization or "", f"Bearer {CRON_SECRET}"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    live = AUTO_PURGE_ENABLED and not dry_run
+    today = _today()
+    result: Dict[str, Any] = {"live": live, "reminders": [], "purge_warnings": [], "purged": [], "would_purge": []}
+    async for client in db.clients.find({"subscription": {"$ne": None}}, {"_id": 0}):
+        sub, cid = client["subscription"], client["id"]
+        state = subscription_state(sub, today)
+        if state["status"] == "active" and state["days_left"] <= SUBSCRIPTION_REMINDER_DAYS and sub.get("reminder_for") != sub["ends_at"]:
+            await _email_client_admins(
+                cid, "Easy Order - pretplata uskoro ističe / subscription ends soon",
+                f"Pretplata za {client['name']} ističe {sub['ends_at']} (za {state['days_left']} dana).\n\n"
+                f"Your subscription for {client['name']} ends on {sub['ends_at']}.",
+            )
+            await db.clients.update_one({"id": cid}, {"$set": {"subscription.reminder_for": sub["ends_at"]}})
+            result["reminders"].append(client["name"])
+        if state["status"] != "locked" or sub.get("purged_at") or sub.get("purge_paused"):
+            continue
+        purge_at = date.fromisoformat(state["purge_at"])
+        if purge_at > today:
+            if (purge_at - today).days <= SUBSCRIPTION_REMINDER_DAYS and sub.get("purge_warned_for") != state["purge_at"]:
+                await _email_client_admins(
+                    cid, "Easy Order - podaci će biti obrisani / data will be deleted",
+                    f"Nalog {client['name']} je zaključan. Podaci o zalihama biće obrisani {state['purge_at']}. "
+                    f"Obratite se podršci ako želite da produžite pretplatu.\n\n"
+                    f"The account {client['name']} is locked. Stock data will be deleted on {state['purge_at']}.",
+                )
+                await db.clients.update_one({"id": cid}, {"$set": {"subscription.purge_warned_for": state["purge_at"]}})
+                result["purge_warnings"].append(client["name"])
+            continue
+        if live:
+            counts = await _purge_module_data(cid)
+            await db.clients.update_one({"id": cid}, {"$set": {"subscription.purged_at": now_iso()}})
+            await _log_subscription_event(cid, "purged", None, plan_name=sub.get("plan_name"), data=counts, source="cron")
+            result["purged"].append({"client": client["name"], **counts})
+        else:
+            counts = await _count_purgeable(cid)
+            result["would_purge"].append({"client": client["name"], **counts})
+    return result
 
 
 # ---------------- Users ----------------
@@ -1400,6 +1970,8 @@ async def create_user(inp: UserInput, current_user: User = Depends(require_manag
                 raise HTTPException(status_code=400, detail="Valid client_id is required for this role")
             client_id = inp.client_id
 
+    if role == Role.WAREHOUSE and not await client_has_module(client_id, Module.WAREHOUSE):
+        raise HTTPException(status_code=403, detail=f"Module not enabled: {Module.WAREHOUSE.value}")
     obj = User(email=normalize_email(inp.email), name=inp.name, phone=inp.phone, role=role, client_id=client_id)
     invite = await _invite_user(obj)
     return UserInviteResponse(**obj.dict(), **invite.dict())
@@ -1432,6 +2004,10 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
     if inp.active is not None:
         updated["active"] = inp.active
     role_changed = inp.role is not None and inp.role != target.get("role")
+    if role_changed and inp.role == Role.WAREHOUSE and not await client_has_module(
+        target.get("client_id"), Module.WAREHOUSE
+    ):
+        raise HTTPException(status_code=403, detail=f"Module not enabled: {Module.WAREHOUSE.value}")
     if inp.role is not None:
         updated["role"] = inp.role
     if inp.password:
@@ -1660,14 +2236,22 @@ async def _reserved_by_product(scope: dict) -> Dict[str, int]:
 def _product_out(doc: dict, reserved: int, expiry: Optional[dict], user: User) -> ProductOut:
     """Stock fields for one product. Expired pieces don't count as available.
     Sales reps get no expiry information at all (only the lower availability)."""
+    # A client without a module sees none of its data (it stays stored).
+    has_stock = has_module(user, Module.STOCK)
+    has_expiry = has_module(user, Module.EXPIRY)
+    if not has_module(user, Module.WAREHOUSE):
+        doc = {**doc, "barcode": None, "package_barcode": None}
+    if not has_stock:
+        doc = {**doc, "stock_qty": None}
+        reserved = 0
     stock = doc.get("stock_qty")
-    expired = (expiry or {}).get("expired_qty", 0)
+    expired = (expiry or {}).get("expired_qty", 0) if has_expiry else 0
     out = ProductOut(
-        **{**doc, "track_expiry": bool(doc.get("track_expiry"))},
+        **{**doc, "track_expiry": bool(doc.get("track_expiry")) and has_expiry},
         reserved_qty=reserved,
         available_qty=None if stock is None else stock - reserved - expired,
     )
-    if user.role != Role.OPERATOR:
+    if user.role != Role.OPERATOR and has_expiry:
         out.expired_qty = expired
         out.next_expiry = (expiry or {}).get("next_expiry")
     else:
@@ -1694,11 +2278,16 @@ async def create_product(inp: ProductInput, current_user: User = Depends(require
     payload["discount"] = max(0.0, min(100.0, float(payload.get("discount") or 0)))
     payload["discounts"] = normalize_discounts(inp.discounts, payload["discount"])
     payload["additional_discounts"] = normalize_additional_discounts(inp.additional_discounts)
-    payload["barcode"] = await _checked_barcode(client_id, inp.barcode)
-    payload["package_barcode"] = await _checked_barcode(client_id, inp.package_barcode, other=payload["barcode"])
-    _require_package_size(payload["package_barcode"], payload.get("pieces_per_package"))
+    # Fields of modules the client doesn't have are ignored, not rejected: the
+    # forms of such a client simply don't show them.
+    if await client_has_module(client_id, Module.WAREHOUSE):
+        payload["barcode"] = await _checked_barcode(client_id, inp.barcode)
+        payload["package_barcode"] = await _checked_barcode(client_id, inp.package_barcode, other=payload["barcode"])
+        _require_package_size(payload["package_barcode"], payload.get("pieces_per_package"))
+    else:
+        payload["barcode"] = payload["package_barcode"] = None
     payload["active"] = True if inp.active is None else inp.active
-    payload["track_expiry"] = bool(inp.track_expiry)
+    payload["track_expiry"] = bool(inp.track_expiry) and await client_has_module(client_id, Module.EXPIRY)
     obj = Product(**payload, client_id=client_id)
     await db.products.insert_one({**obj.dict(), "_id": obj.id})
     return obj
@@ -1724,21 +2313,28 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
         "discounts": normalize_discounts(discounts, discount_value),
         "additional_discounts": normalize_additional_discounts(additional),
     }
+    # Fields of modules the client doesn't have are ignored (stored values stay).
+    in_barcode, in_package = inp.barcode, inp.package_barcode
+    in_track = inp.track_expiry
+    if not await client_has_module(existing["client_id"], Module.WAREHOUSE):
+        in_barcode = in_package = None
+    if not await client_has_module(existing["client_id"], Module.EXPIRY):
+        in_track = None
     was_active = existing.get("active", True)
     updated["active"] = was_active if inp.active is None else inp.active
     was_tracking = bool(existing.get("track_expiry"))
-    updated["track_expiry"] = was_tracking if inp.track_expiry is None else inp.track_expiry
+    updated["track_expiry"] = was_tracking if in_track is None else in_track
     if updated["active"] and not was_active and not (updated.get("price_no_vat") or 0) > 0:
         raise HTTPException(status_code=400, detail="Set a price before activating the product")
-    if inp.barcode is None:
+    if in_barcode is None:
         updated["barcode"] = existing.get("barcode")
     else:
-        updated["barcode"] = await _checked_barcode(existing["client_id"], inp.barcode, exclude_id=product_id)
-    if inp.package_barcode is None:
+        updated["barcode"] = await _checked_barcode(existing["client_id"], in_barcode, exclude_id=product_id)
+    if in_package is None:
         updated["package_barcode"] = existing.get("package_barcode")
     else:
         updated["package_barcode"] = await _checked_barcode(
-            existing["client_id"], inp.package_barcode, exclude_id=product_id, other=updated["barcode"]
+            existing["client_id"], in_package, exclude_id=product_id, other=updated["barcode"]
         )
     _require_package_size(updated["package_barcode"], updated.get("pieces_per_package"))
     if updated["barcode"] and updated["barcode"] == updated["package_barcode"]:
@@ -1811,7 +2407,7 @@ class BarcodeInput(BaseModel):
 
 
 @api_router.get("/products/by-barcode/{code}", response_model=ProductOut)
-async def product_by_barcode(code: str, current_user: User = Depends(get_current_user)):
+async def product_by_barcode(code: str, current_user: User = Depends(require_module(Module.WAREHOUSE))):
     try:
         normalized = normalize_barcode(code)
     except ValueError:
@@ -1838,7 +2434,7 @@ async def product_by_barcode(code: str, current_user: User = Depends(get_current
 
 @api_router.post("/products/{product_id}/barcode", response_model=Product)
 async def set_product_barcode(
-    product_id: str, inp: BarcodeInput, current_user: User = Depends(require_stock_writer)
+    product_id: str, inp: BarcodeInput, current_user: User = Depends(require_module(Module.WAREHOUSE, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))
 ):
     """Links a scanned code to a product (warehouse staff can't edit products)."""
     existing = await get_scoped_or_404("products", product_id, current_user)
@@ -1867,7 +2463,9 @@ class QuickProductInput(BaseModel):
 
 
 @api_router.post("/products/quick", response_model=Product)
-async def quick_add_product(inp: QuickProductInput, current_user: User = Depends(require_stock_writer)):
+async def quick_add_product(
+    inp: QuickProductInput, current_user: User = Depends(require_module(Module.WAREHOUSE, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))
+):
     """Warehouse adds a product that has just arrived but isn't in the system.
     It is created inactive with no price: an admin sets price/VAT and activates
     it before sales reps can see or order it."""
@@ -1933,8 +2531,25 @@ _IMPORT_EXAMPLE_ROWS = [
 ]
 
 
+# Import columns that belong to a module: dropped for clients without it.
+_IMPORT_FIELD_MODULE = {
+    "barcode": Module.WAREHOUSE,
+    "package_barcode": Module.WAREHOUSE,
+    "stock_qty": Module.STOCK,
+    "track_expiry": Module.EXPIRY,
+}
+
+
+async def _import_disabled_fields(client_id: Optional[str]) -> set:
+    doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "modules": 1}) if client_id else None
+    enabled = set(effective_modules(doc))
+    return {f for f, m in _IMPORT_FIELD_MODULE.items() if m.value not in enabled}
+
+
 def _import_header_key(value: Any) -> str:
-    text = str(value or "").lower()
+    # "Stanje (komada)" and "Prati rok (da/ne)" from the downloadable example
+    # must match the plain names: drop the bracketed hint.
+    text = re.sub(r"\(.*?\)", "", str(value or "").lower())
     for src, dst in (("đ", "dj"), ("č", "c"), ("ć", "c"), ("š", "s"), ("ž", "z")):
         text = text.replace(src, dst)
     return re.sub(r"[^a-z0-9]", "", text)
@@ -1960,24 +2575,28 @@ def _import_number(value: Any, label: str, integer: bool = False, maximum: Optio
 
 
 @api_router.get("/products/import-template")
-async def product_import_template(current_user: User = Depends(require_manager)):
+async def product_import_template(
+    client_id: Optional[str] = Query(None), current_user: User = Depends(require_manager)
+):
     from openpyxl import Workbook
     from fastapi.responses import Response
     import io
 
+    # Only the columns the client's modules allow (superadmin: pass client_id, else all).
+    disabled = await _import_disabled_fields(current_user.client_id or client_id)
+    keep = [i for i, (field, _) in enumerate(_IMPORT_TEMPLATE_HEADERS) if field not in disabled]
     wb = Workbook()
     ws = wb.active
     ws.title = "Artikli"
-    ws.append([label for _, label in _IMPORT_TEMPLATE_HEADERS])
-    # name, barcode, manufacturer, price, vat, pieces/pack, pieces/transport, stock
+    ws.append([_IMPORT_TEMPLATE_HEADERS[i][1] for i in keep])
     for row in _IMPORT_EXAMPLE_ROWS:
-        ws.append(list(row))
-    for cell in ws["B"][1:]:  # barcodes as text keep leading zeros
-        cell.number_format = "@"
-    for cell in ws["J"][1:]:
-        cell.number_format = "@"
-    for col, width in zip("ABCDEFGHIJ", (32, 18, 22, 14, 8, 20, 30, 16, 18, 18)):
-        ws.column_dimensions[col].width = width
+        ws.append([row[i] for i in keep])
+    for pos, i in enumerate(keep, start=1):
+        letter = ws.cell(row=1, column=pos).column_letter
+        if _IMPORT_TEMPLATE_HEADERS[i][0] in ("barcode", "package_barcode"):  # text keeps leading zeros
+            for cell in ws[letter][1:]:
+                cell.number_format = "@"
+        ws.column_dimensions[letter].width = (32, 18, 22, 14, 8, 20, 30, 16, 18, 18)[i]
     buf = io.BytesIO()
     wb.save(buf)
     return Response(
@@ -2016,6 +2635,10 @@ async def import_products(
         field = _IMPORT_HEADERS.get(_import_header_key(head))
         if field and field not in columns.values():
             columns[idx] = field
+    # Columns of modules this client doesn't have are skipped (and reported).
+    disabled = await _import_disabled_fields(target_client)
+    ignored_columns = sorted({f for f in columns.values() if f in disabled})
+    columns = {idx: f for idx, f in columns.items() if f not in disabled}
     if "name" not in columns.values() and "barcode" not in columns.values():
         raise HTTPException(status_code=400, detail="Missing a 'Naziv' (name) or 'Barkod' (barcode) column")
     body = [(i + 2, r) for i, r in enumerate(raw_rows[1:]) if any(c not in (None, "") for c in r)]
@@ -2167,7 +2790,7 @@ async def import_products(
         entry.pop("_product", None)
         entry.pop("_values", None)
     summary = {k: sum(1 for r in rows_out if r["action"] == k) for k in ("create", "update", "error")}
-    return {"dry_run": dry_run, "summary": summary, "rows": rows_out}
+    return {"dry_run": dry_run, "summary": summary, "rows": rows_out, "ignored_columns": ignored_columns}
 
 
 # ---------------- Orders ----------------
@@ -2481,9 +3104,13 @@ async def change_order_status(
     target = inp.status.value
     note = (inp.note or "").strip() or None
 
-    override = current_user.role in _MANAGER_ROLES
     if current == target:
         raise HTTPException(status_code=400, detail="Order already has that status")
+    base_flow = {OrderStatus.NEW.value, OrderStatus.CANCELED.value}
+    if (current not in base_flow or target not in base_flow) and not has_module(current_user, Module.WAREHOUSE):
+        # Without the warehouse module an order is only new or canceled.
+        raise HTTPException(status_code=403, detail=f"Module not enabled: {Module.WAREHOUSE.value}")
+    override = current_user.role in _MANAGER_ROLES
     if override:
         # Anything -> anything, but only with a reason, except the normal flow.
         if (current, target) not in _WAREHOUSE_FLOW and not note:
@@ -2529,11 +3156,12 @@ async def change_order_status(
     if result.matched_count == 0:
         raise HTTPException(status_code=409, detail="Order was changed in the meantime")
     updated_doc = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if target == OrderStatus.SHIPPED.value:
-        await _move_stock_for_order(updated_doc, -1, "shipment", current_user)
-    elif current == OrderStatus.SHIPPED.value:
-        # An admin took a shipped order back: the goods return to stock.
-        await _move_stock_for_order(updated_doc, +1, "reversal", current_user)
+    if await client_has_module(updated_doc["client_id"], Module.STOCK):
+        if target == OrderStatus.SHIPPED.value:
+            await _move_stock_for_order(updated_doc, -1, "shipment", current_user)
+        elif current == OrderStatus.SHIPPED.value:
+            # An admin took a shipped order back: the goods return to stock.
+            await _move_stock_for_order(updated_doc, +1, "reversal", current_user)
     if target in (OrderStatus.SHIPPED.value, OrderStatus.REJECTED.value):
         await _send_order_status_email(updated_doc, target, note, current_user)
     return _order_out(updated_doc)
@@ -2566,7 +3194,7 @@ async def _validated_picked_batches(item: dict, line: PickedItemInput) -> List[d
 async def update_picked_items(
     order_id: str,
     inp: PickedItemsInput,
-    current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)),
+    current_user: User = Depends(require_module(Module.WAREHOUSE, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)),
 ):
     order = await get_scoped_or_404("orders", order_id, current_user)
     current = _status_value(order)
@@ -2922,7 +3550,7 @@ async def _move_stock_for_order(order: dict, direction: int, kind: str, user: Us
 
 
 @api_router.post("/stock/receipts")
-async def stock_receipt(inp: StockReceiptInput, current_user: User = Depends(require_stock_writer)):
+async def stock_receipt(inp: StockReceiptInput, current_user: User = Depends(require_module(Module.STOCK, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     products = []
     expiries = []
     for line in inp.items:
@@ -2983,7 +3611,7 @@ async def _apply_count(product: dict, count, user: Optional[User], note: Optiona
 
 
 @api_router.post("/stock/adjustments")
-async def stock_adjustment(inp: StockAdjustmentInput, current_user: User = Depends(require_stock_writer)):
+async def stock_adjustment(inp: StockAdjustmentInput, current_user: User = Depends(require_module(Module.STOCK, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     product = await get_scoped_or_404("products", inp.product_id, current_user)
     count = _validated_count(product, inp.counted_qty, inp.batches)
     delta = await _apply_count(product, count, current_user, inp.note)
@@ -3002,7 +3630,7 @@ class StockBatchAdjustmentInput(BaseModel):
 
 
 @api_router.post("/stock/adjustments/batch")
-async def stock_adjustment_batch(inp: StockBatchAdjustmentInput, current_user: User = Depends(require_stock_writer)):
+async def stock_adjustment_batch(inp: StockBatchAdjustmentInput, current_user: User = Depends(require_module(Module.STOCK, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     """A whole stocktake in one request; every product is checked first so a
     bad id doesn't leave the count half applied."""
     seen = set()
@@ -3022,7 +3650,7 @@ async def stock_adjustment_batch(inp: StockBatchAdjustmentInput, current_user: U
 
 
 @api_router.get("/products/{product_id}/batches", response_model=List[StockBatch])
-async def product_batches(product_id: str, current_user: User = Depends(require_stock_writer)):
+async def product_batches(product_id: str, current_user: User = Depends(require_module(Module.EXPIRY, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     """Batches of one product with pieces in stock, earliest expiry first
     (undated stock first). Warehouse/admin/superadmin only."""
     await get_scoped_or_404("products", product_id, current_user)
@@ -3035,7 +3663,7 @@ class WriteOffInput(BaseModel):
 
 
 @api_router.post("/stock/batches/{batch_id}/writeoff")
-async def writeoff_batch(batch_id: str, inp: WriteOffInput, current_user: User = Depends(require_stock_writer)):
+async def writeoff_batch(batch_id: str, inp: WriteOffInput, current_user: User = Depends(require_module(Module.EXPIRY, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     """Writes the pieces of a batch off the stock (e.g. expired goods)."""
     batch = await get_scoped_or_404("stock_batches", batch_id, current_user)
     if batch["qty"] <= 0:
@@ -3067,7 +3695,7 @@ class ExpiringResponse(BaseModel):
 
 
 @api_router.get("/stock/expiring", response_model=ExpiringResponse)
-async def stock_expiring(current_user: User = Depends(require_roles(Role.ADMIN, Role.WAREHOUSE))):
+async def stock_expiring(current_user: User = Depends(require_module(Module.EXPIRY, Role.ADMIN, Role.WAREHOUSE))):
     """Batches that are expired or reach one of the client's alert thresholds
     (default 30/15/5 days). For the client's admin and warehouse only: no
     superadmin (not tied to a warehouse), no sales reps."""
@@ -3112,7 +3740,7 @@ async def stock_expiring(current_user: User = Depends(require_roles(Role.ADMIN, 
 async def stock_movements(
     product_id: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
-    current_user: User = Depends(require_stock_writer),
+    current_user: User = Depends(require_module(Module.STOCK, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)),
 ):
     query = _scope_query(current_user)
     if product_id:
@@ -3158,7 +3786,7 @@ async def orders_report(
     from_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive (by created_at)"),
     to_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     client_id: Optional[str] = None,
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_module(Module.REPORTS, Role.SUPERADMIN, Role.ADMIN)),
 ):
     """Order counts per status, per sales rep and per warehouse handler for a
     period. Admin: own client. Superadmin: all clients, or one via client_id."""

@@ -8,17 +8,19 @@ type NavUser = {
   name: string;
   email: string;
   role: "superadmin" | "admin" | "warehouse";
+  modules?: string[];
 };
 
-const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly string[] }> = [
+const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly string[]; module?: string }> = [
   { href: "/dashboard", labelKey: "dashboard", roles: ["superadmin", "admin"] },
   { href: "/clients", labelKey: "clients", roles: ["superadmin"] },
+  { href: "/subscriptions", labelKey: "subscriptions", roles: ["superadmin"] },
   { href: "/users", labelKey: "users", roles: ["superadmin", "admin"] },
   { href: "/products", labelKey: "products", roles: ["superadmin", "admin"] },
   { href: "/customers", labelKey: "customers", roles: ["superadmin", "admin"] },
-  { href: "/warehouse", labelKey: "warehouse", roles: ["superadmin", "admin", "warehouse"] },
-  { href: "/reports", labelKey: "reports", roles: ["superadmin", "admin"] },
-  { href: "/stock", labelKey: "stock", roles: ["superadmin", "admin", "warehouse"] },
+  { href: "/warehouse", labelKey: "warehouse", roles: ["superadmin", "admin", "warehouse"], module: "warehouse" },
+  { href: "/reports", labelKey: "reports", roles: ["superadmin", "admin"], module: "reports" },
+  { href: "/stock", labelKey: "stock", roles: ["superadmin", "admin", "warehouse"], module: "stock" },
   { href: "/orders", labelKey: "orders", roles: ["superadmin", "admin", "warehouse"] },
   { href: "/app", labelKey: "app", roles: ["superadmin", "admin", "warehouse"] },
 ];
@@ -45,6 +47,9 @@ export function Sidebar({ user }: { user: NavUser }) {
       <nav className="flex-1 px-3">
         {NAV_ITEMS.filter((item) => {
           if (item.href === "/app" && !showAppMenu) {
+            return false;
+          }
+          if (item.module && user.role !== "superadmin" && !(user.modules ?? []).includes(item.module)) {
             return false;
           }
           return item.roles.includes(user.role);
