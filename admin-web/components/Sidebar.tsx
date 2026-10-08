@@ -16,12 +16,15 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/clients", labelKey: "clients", roles: ["superadmin"] },
   { href: "/subscriptions", labelKey: "subscriptions", roles: ["superadmin"] },
   { href: "/users", labelKey: "users", roles: ["superadmin", "admin"] },
-  { href: "/products", labelKey: "products", roles: ["superadmin", "admin"] },
-  { href: "/customers", labelKey: "customers", roles: ["superadmin", "admin"] },
-  { href: "/warehouse", labelKey: "warehouse", roles: ["superadmin", "admin", "warehouse"], module: "warehouse" },
-  { href: "/reports", labelKey: "reports", roles: ["superadmin", "admin"], module: "reports" },
-  { href: "/stock", labelKey: "stock", roles: ["superadmin", "admin", "warehouse"], module: "stock" },
-  { href: "/orders", labelKey: "orders", roles: ["superadmin", "admin", "warehouse"] },
+  // The system owner doesn't work with a client's business data (products,
+  // customers, orders, warehouse, stock, reports): those pages stay reachable
+  // by URL, they just aren't in the menu.
+  { href: "/products", labelKey: "products", roles: ["admin"] },
+  { href: "/customers", labelKey: "customers", roles: ["admin"] },
+  { href: "/warehouse", labelKey: "warehouse", roles: ["admin", "warehouse"], module: "warehouse" },
+  { href: "/reports", labelKey: "reports", roles: ["admin"], module: "reports" },
+  { href: "/stock", labelKey: "stock", roles: ["admin", "warehouse"], module: "stock" },
+  { href: "/orders", labelKey: "orders", roles: ["admin", "warehouse"] },
   { href: "/app", labelKey: "app", roles: ["superadmin", "admin", "warehouse"] },
 ];
 
@@ -46,7 +49,7 @@ export function Sidebar({ user }: { user: NavUser }) {
       </div>
       <nav className="flex-1 px-3">
         {NAV_ITEMS.filter((item) => {
-          if (item.href === "/app" && !showAppMenu) {
+          if (item.href === "/app" && !showAppMenu && user.role !== "superadmin") {
             return false;
           }
           if (item.module && user.role !== "superadmin" && !(user.modules ?? []).includes(item.module)) {

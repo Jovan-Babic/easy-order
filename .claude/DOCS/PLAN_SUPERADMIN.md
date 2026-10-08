@@ -12,7 +12,7 @@ Cilj: superadmin je vlasnik sistema, ne korisnik poslovnih podataka klijenata. V
 - Uplate i dugovi se vode ručno; kasnije automatska naplata piše iste zapise sa drugim izvorom.
 - Preusmeravanje na korisnika (impersonate) ide poslednje, kao poseban korak zbog bezbednosti.
 
-## Faza A — Meni i Dashboard (mala)
+## Faza A — Meni i Dashboard (mala) — ✅ urađeno
 
 - Sidebar: stavke po ulozi; superadmin dobija gornji meni. Uplate se pojavljuju tek kad stigne faza C.
 - `GET /superadmin/overview` (samo superadmin): klijenti (ukupno / aktivni / deaktivirani / zaključani), korisnici (ukupno i po ulozi), pretplate (aktivne / ističu za 30 dana / grejs / zaključane / bez pretplate), lista „Treba pažnju“ (grejs, zaključani, zakazano brisanje u narednih 14 dana).
@@ -28,9 +28,9 @@ Cilj: superadmin je vlasnik sistema, ne korisnik poslovnih podataka klijenata. V
 ## Faza C — Cene, uplate i dugovi (velika)
 
 - **Cene:** `plans.prices` = mapa meseci → iznos (npr. `{"1": 1500, "12": 15000}`), `currency` = `RSD`. Polje je opciono; paket bez cene radi kao do sada.
-- **Uplate** (`payments`): `client_id`, `amount`, `currency`, `status` (`expected` = dug, `received` = primljeno, `canceled`), `due_date` (za dug), `paid_at` (za primljeno), `method` (uplata na račun / kartica / gotovina / ostalo), `reference`, `note`, `plan_name`, `period_months`, `discount_percent` (opciono; za akcije), `created_by`, `source` (`manual`).
+- **Uplate** (`payments`): `client_id`, `amount`, `currency`, `status` (`expected` = dug, `received` = primljeno, `canceled`), `due_date` (za dug), `paid_at` (za primljeno), `method` (uplata na račun / kartica / gotovina / ostalo), `note` (slobodan tekst; poziv na broj se ne vodi), `plan_name`, `period_months`, `created_by`, `source` (`manual`).
 - **Akcije u portalu:**
-  - „Evidentiraj uplatu i produži“: u jednom koraku beleži primljenu uplatu i produžava pretplatu za izabrani broj meseci; iznos se predpopuni iz cene paketa za taj period, može da se menja (popust / akcija).
+  - „Evidentiraj uplatu i produži“: u jednom koraku beleži primljenu uplatu i produžava pretplatu za izabrani broj meseci; iznos se predpopuni iz cene paketa za taj period i može ručno da se promeni (popust / akcija se ne vodi posebno — razlog ide u napomenu).
   - „Zaduži“: pravi očekivanu uplatu sa rokom; kasnije se „Evidentiraj“ pretvara u primljenu.
   - Otkazivanje pogrešnog zapisa (ne briše se, ide u `canceled`).
 - **Pregled:** stranica Uplate (filter po klijentu / mesecu / statusu, zbir za izabrani period, kasne uplate istaknute, izvoz CSV) + tab Uplate na stranici klijenta.
@@ -59,8 +59,9 @@ Cilj: superadmin je vlasnik sistema, ne korisnik poslovnih podataka klijenata. V
 
 A → B → C → D → E. Svaka faza je zaokružena i može da se pusti zasebno. A i B ne traže nove podatke u bazi; C uvodi `payments` i `plans.prices`; D uvodi `client_notes`, `audit_log`, `announcements`, `system_runs`; E koristi `audit_log` iz D (zato je poslednja).
 
-## Otvoreno
+## Odlučeno
 
-- Da li uplate treba da imaju i broj računa/profakture koji izdaješ klijentu (`reference` pokriva ručni unos)?
-- Rok isteka za kasne uplate: samo vizuelno isticanje, ili i email tebi? (Predlog: samo isticanje + lista „Treba pažnju“.)
+- Poziv na broj / broj računa se ne evidentira; uplata je samo evidentirana (datum, iznos, način, napomena).
+- Kasne uplate: samo isticanje i lista „Treba pažnju“, bez emaila.
+- Popust za određeni period (akcija) se ne vodi kao zaseban podatak; iznos se menja ručno uz napomenu.
 - Valuta EUR kasnije: polje `currency` već postoji, pa je to proširenje, ne migracija.
