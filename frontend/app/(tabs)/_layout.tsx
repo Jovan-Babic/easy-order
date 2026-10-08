@@ -1,11 +1,12 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { Platform } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Platform, View } from "react-native";
+import { SafeAreaInsetsContext, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
 import { colors } from "@/src/theme";
 import { hasModule } from "@/src/utils/modules";
+import { SubscriptionBanner, useSubscriptionNotice } from "@/src/components/SubscriptionBanner";
 
 export default function TabsLayout() {
   const { t } = useApp();
@@ -21,9 +22,15 @@ export default function TabsLayout() {
   // Without the Magacin module there is no such tab at all.
   const showWarehouseTab = (isWarehouse || user?.role === "admin") && hasModule(user, "warehouse");
   const hideAdminTab = user?.role === "operator" || isWarehouse;
+  // With the banner on top it takes the status bar inset, so the screens below
+  // (which pad themselves by insets.top) must not add it a second time.
+  const bannerShown = useSubscriptionNotice() !== null;
   const safeBottomPadding = Math.max(insets.bottom, Platform.OS === "ios" ? 18 : 8);
 
   return (
+    <View style={{ flex: 1 }}>
+    <SubscriptionBanner />
+    <SafeAreaInsetsContext.Provider value={bannerShown ? { ...insets, top: 0 } : insets}>
     <Tabs
       initialRouteName={isWarehouse ? "home" : "index"}
       screenOptions={{
@@ -90,5 +97,7 @@ export default function TabsLayout() {
         }}
       />
     </Tabs>
+    </SafeAreaInsetsContext.Provider>
+    </View>
   );
 }

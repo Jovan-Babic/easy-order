@@ -42,9 +42,12 @@ Podešavanja (env, backend): `CRON_SECRET`, `AUTO_PURGE_ENABLED` (default `false
 
 Sekcija **Pretplate**: tab Pretplate (klijent, paket, status, važi do, preostalo dana, moduli; akcije dodeli/promeni paket, produži, otkaži, istorija sa zaustavljanjem brisanja i izvozom) i tab Paketi. Forma novog klijenta ima izbor paketa i datuma; za klijenta na paketu forma ne nudi module. Admin klijenta vidi baner u grejsu i poslednjih 14 dana.
 
+## Mobilna
+
+Isti baner (`src/components/SubscriptionBanner.tsx`, u `app/(tabs)/_layout.tsx`) za sve uloge klijenta; uzima status bara od `user.subscription`, pa ekrani ispod ne dodaju gornji inset drugi put. `AuthContext` ponovo čita `/auth/me` kad se aplikacija vrati u prvi plan, pa se broj dana i moduli osvežavaju i bez ponovnog pokretanja. Zaključan nalog vidi poruku pri prijavi. Samo JavaScript: OTA, bez novog APK-a.
+
 ## Nije urađeno
 
 - Automatska naplata (kasnije piše iste `subscription_events` sa drugim `source`).
 - Ograničenja (broj korisnika, porudžbina) — `limits` uz paket kad se dogovore.
-- Baner u mobilnoj aplikaciji (zaključan nalog tamo vidi poruku pri prijavi).
 - Vercel Cron radi samo u produkcionom deploy-u; `CRON_SECRET` treba postaviti u Vercel okruženju backenda.

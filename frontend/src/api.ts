@@ -16,6 +16,13 @@ export type User = {
   created_at: string;
   // Modules the client has (login / me); superadmin gets all.
   modules?: string[];
+  // Only when the client has a subscription that is ending (active) or over (grace).
+  subscription?: {
+    status: "active" | "grace";
+    ends_at: string;
+    days_left: number;
+    grace_ends_at: string;
+  } | null;
 };
 
 export type TokenResponse = {

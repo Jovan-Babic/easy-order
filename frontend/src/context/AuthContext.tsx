@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { AppState } from "react-native";
 import { storage } from "@/src/utils/storage";
 import { api, setAuthToken, setPasswordChangeRequiredHandler, setUnauthorizedHandler, User } from "@/src/api";
 
@@ -78,6 +79,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     })();
   }, [clearSession]);
+
+  // A session can stay open for days: when the app comes back to the
+  // foreground, re-read the user so the subscription banner and the modules
+  // are current (a lock shows up as the usual 401 -> logged out).
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    const sub = AppState.addEventListener("change", async (state) => {
+      if (state !== "active") return;
+      try {
+        setUser(await api.me());
+      } catch {
+        // offline or a transient error: keep what we have (a 401 logs out via the handler)
+      }
+    });
+    return () => sub.remove();
+  }, [status]);
 
   const login = useCallback(async (email: string, password: string) => {
     const res = await api.login(email, password);
