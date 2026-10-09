@@ -2447,6 +2447,7 @@ class ChargeMonthPreview(BaseModel):
 class ChargeMonthInput(BaseModel):
     month: str  # YYYY-MM
     due_date: str  # YYYY-MM-DD
+    amount: Optional[float] = Field(default=None, gt=0, le=1_000_000_000)  # None = the calculated total
     note: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -2496,11 +2497,13 @@ async def charge_month(client_id: str, inp: ChargeMonthInput, current_user: User
     charge = await _month_charge(client_id, inp.month)
     if charge.already_charged:
         raise HTTPException(status_code=409, detail="This month is already charged")
+    amount = round(inp.amount, 2) if inp.amount is not None else charge.total
+    breakdown = charge.breakdown if amount == charge.total else {**charge.breakdown, "calculated_total": charge.total}
     doc = {
-        "id": str(uuid.uuid4()), "client_id": client_id, "status": "expected", "amount": charge.total,
+        "id": str(uuid.uuid4()), "client_id": client_id, "status": "expected", "amount": amount,
         "currency": PAYMENT_CURRENCY, "due_date": _valid_day(inp.due_date, "due_date"), "paid_at": None, "method": None,
         "note": inp.note, "plan_name": (client.get("subscription") or {}).get("plan_name"), "period_months": 1,
-        "kind": "subscription", "period": charge.month, "breakdown": charge.breakdown,
+        "kind": "subscription", "period": charge.month, "breakdown": breakdown,
         "created_by": current_user.name, "source": "manual", "created_at": now_iso(), "canceled_at": None,
     }
     await db.payments.insert_one({**doc, "_id": doc["id"]})
