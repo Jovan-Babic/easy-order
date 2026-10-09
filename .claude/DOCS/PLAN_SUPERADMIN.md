@@ -66,3 +66,43 @@ A → B → C → D → E. Svaka faza je zaokružena i može da se pusti zasebno
 - Kasne uplate: samo isticanje i lista „Treba pažnju“, bez emaila.
 - Popust za određeni period (akcija) se ne vodi kao zaseban podatak; iznos se menja ručno uz napomenu.
 - Valuta EUR kasnije: polje `currency` već postoji, pa je to proširenje, ne migracija.
+
+---
+
+# Izmena modela naplate: godišnji paket + nalozi po korišćenju
+
+Zamenjuje deo faze C (cena po 1/3/6/12 meseci). Odluke:
+
+- **Godišnji paket** (unapred): jedna cena po paketu (RSD), moduli kao do sada. Plaća se jednom godišnje preko „Uplata i produženje“ (podrazumevano 12 meseci).
+- **Nalozi** (po korišćenju, **unazad**): cena po tipu naloga u paketu (admin, magacin, komercijalista). Klijent otvara koliko naloga treba; broj se ne upisuje unapred.
+- **Obračun na kraju meseca:** plaća se **najveći broj istovremeno aktivnih naloga po ulozi u tom mesecu**. Nalog otvoren pa obrisan u istom mesecu se naplaćuje; deaktivacija smanjuje račun od sledećeg meseca. Deaktivirani i obrisani nalozi se ne broje u trenutku.
+- **Prvi mesec je u ceni paketa:** naplata naloga počinje od meseca posle početka paketa (`seats_billed_from`, može da se promeni po klijentu).
+- **Zaduženje** nastaje od 1. u mesecu za prethodni mesec (jednim klikom, prvo pregled), rok plaćanja je **broj dana po klijentu** (`due_days`, podrazumevano 5). Popust po klijentu u procentima (`discount_percent`).
+- **Prvi admin** klijenta se broji kao i ostali nalozi.
+- **Opcioni limit** naloga po ulozi kod klijenta (podrazumevano bez ograničenja); magacin nalog nije moguć bez modula Magacin (već važi).
+- **Neplaćeno** ne zaključava automatski; ulazi u „Treba pažnju“.
+- **Admin klijenta** dobija tab **Zaduženja**: korišćenje u tekućem mesecu, procena sledećeg zaduženja i rok, otvoreni računi i istorija, **podaci za uplatu** (tekst koji upisuje superadmin). IPS QR kod kasnije.
+- Promena paketa ostaje samo kod superadmina. Automatsko pravljenje zaduženja (cron) kasnije, ako zatreba.
+
+## Faza F1 — Cene naloga, limiti i praćenje korišćenja
+- `plans.seat_prices` (`admin` / `warehouse` / `operator`, RSD); u dijalogu paketa jedno polje za godišnju cenu (podaci ostaju u `prices["12"]`) i tri polja za naloge; magacin cena samo ako paket ima modul Magacin.
+- `clients.subscription`: `due_days`, `discount_percent`, `seats_billed_from` (mesec `YYYY-MM`), `seat_limits` (po ulozi, prazno = bez ograničenja); podešavaju se pri dodeli paketa i u tabu Pretplata.
+- `account_usage` (klijent, mesec → najveći broj aktivnih po ulozi): ažurira se pri pravljenju, aktiviranju i promeni uloge naloga; osnova meseca je broj aktivnih na početku (iz prethodnog obračuna ili trenutnog stanja).
+- Limit: pravljenje/aktiviranje naloga preko limita → 403 „Dostignut broj naloga za ovu ulogu“.
+- Stranica klijenta (tab Korisnici): „aktivnih / limit“ po ulozi i najveći broj u tekućem mesecu.
+
+## Faza F2 — Obračun naloga
+- Zaduženje dobija `kind` (`plan` | `seats` | `other`), `period` (`YYYY-MM`) i `breakdown` (po ulozi: broj, cena, iznos; popust); jedinstveno po (klijent, `seats`, mesec) bez poništenih.
+- `GET /billing/seats?month=YYYY-MM`: pregled za sve klijente (broj po ulozi, iznos, već zaduženo / ne obračunava se: razlog). `POST /billing/seats`: pravi zaduženja za izabrane klijente ili sve. Mesec koji nije završen se ne obračunava. Iznos 0 se preskače. Zaključani klijenti se obračunavaju za mesece u kojima su koristili sistem.
+- Stranica Uplate: dugme „Obračun naloga“ (izbor meseca, pregled, potvrda) i dugme „Zaduži naloge“ na stranici klijenta; razlaganje iznosa se vidi u zapisu.
+
+## Faza F3 — Tab „Zaduženja“ za admina klijenta
+- `GET /billing/me` (samo uloga admin, samo svoj klijent): korišćenje ovog meseca (najveći broj po ulozi), procena iznosa (sa popustom), datum zaduženja i rok plaćanja, otvoreni računi i istorija (bez internih beleški i poništenih zapisa), podaci za uplatu.
+- Portal: stavka „Zaduženja“ u meniju admina. Pri pravljenju naloga poruka „Ovaj nalog povećava mesečni račun za X RSD“ uz potvrdu.
+
+## Faza F4 — Podešavanja i podsetnici
+- `app_settings`: podaci za uplatu (sr/en tekst) i podrazumevani rok plaćanja; stranica ili tab „Podešavanja“ kod superadmina.
+- Dashboard i „Treba pažnju“: „nije obračunato za prošli mesec“ od 1. u mesecu.
+
+## Kasnije
+IPS QR kod, automatsko pravljenje zaduženja (cron, `AUTO_CHARGE_ENABLED`), automatska naplata.
