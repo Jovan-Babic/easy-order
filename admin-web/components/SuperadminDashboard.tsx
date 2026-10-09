@@ -19,6 +19,8 @@ const REASON_KEYS: Record<string, TranslationKey> = {
   purge_soon: "attentionPurgeSoon",
   payment_overdue: "attentionPaymentOverdue",
   grace: "attentionGrace",
+  setup_unpaid: "attentionSetupUnpaid",
+  month_not_charged: "attentionMonthNotCharged",
   ending_soon: "attentionEndingSoon",
 };
 
@@ -27,6 +29,8 @@ const REASON_STYLES: Record<string, string> = {
   purge_soon: "bg-red-100 text-error",
   payment_overdue: "bg-red-100 text-error",
   grace: "bg-amber-100 text-warning",
+  setup_unpaid: "bg-amber-100 text-warning",
+  month_not_charged: "bg-amber-100 text-warning",
   ending_soon: "bg-amber-100 text-warning",
 };
 

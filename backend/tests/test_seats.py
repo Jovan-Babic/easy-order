@@ -228,3 +228,38 @@ class TestCharges:
         assert superadmin_client.post(
             f"{API}/clients/{bare['id']}/charge-month", json={"month": MONTH, "due_date": DUE}
         ).status_code == 400
+
+
+class TestAttention:
+    def _items(self, sa, client_id):
+        return [a for a in sa.get(f"{API}/superadmin/overview").json()["attention"] if a["client_id"] == client_id]
+
+    def test_unpaid_setup_is_listed_until_paid(self, superadmin_client):
+        plan = _plan(superadmin_client, prices={"1": 5000})
+        client, _ = _client(superadmin_client, plan)
+        pay = superadmin_client.post(
+            f"{API}/payments",
+            json={"client_id": client["id"], "status": "expected", "amount": 60000, "due_date": DUE, "kind": "setup"},
+        ).json()
+        assert "setup_unpaid" in [a["reason"] for a in self._items(superadmin_client, client["id"])]
+        superadmin_client.post(f"{API}/payments/{pay['id']}/receive", json={})
+        assert "setup_unpaid" not in [a["reason"] for a in self._items(superadmin_client, client["id"])]
+
+    def test_plain_debt_is_not_a_setup_item(self, superadmin_client):
+        plan = _plan(superadmin_client, prices={"1": 5000})
+        client, _ = _client(superadmin_client, plan)
+        superadmin_client.post(
+            f"{API}/payments", json={"client_id": client["id"], "status": "expected", "amount": 100, "due_date": DUE}
+        )
+        assert "setup_unpaid" not in [a["reason"] for a in self._items(superadmin_client, client["id"])]
+
+    def test_month_not_charged_from_the_25th(self, superadmin_client):
+        plan = _plan(superadmin_client, prices={"1": 5000})
+        client, _ = _client(superadmin_client, plan)
+        today = datetime.now(timezone.utc).date()
+        this_month = today.strftime("%Y-%m")
+        r = superadmin_client.post(f"{API}/clients/{client['id']}/charge-month", json={"month": this_month, "due_date": DUE})
+        assert r.status_code == 200, r.text
+        reasons = [a["reason"] for a in self._items(superadmin_client, client["id"])]
+        # Only from the 25th on, and only for a client already billed month by month.
+        assert ("month_not_charged" in reasons) == (today.day >= 25)

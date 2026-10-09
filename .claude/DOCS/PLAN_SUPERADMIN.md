@@ -95,7 +95,7 @@ Zamenjuje raniji predlog (godišnji paket + obračun naloga po najvećem broju a
 ## Faza G2 — Zaduženja i uvođenje (urađeno)
 - `payments.kind` (`subscription` | `setup` | `seats` | `other`, podrazumevano `subscription`) i `breakdown` (paket, nalozi po ulozi, popust) na zapisu zaduženja.
 - `POST /payments` prihvata `kind = "setup"` (iznos, opis, rok); `POST /clients/{id}/charge-month` pravi zaduženje „paket + dodatni nalozi“ za izabrani mesec (pregled pa potvrda; jedinstveno po klijentu i mesecu bez poništenih).
-- Dashboard: „uvođenje nenaplaćeno“ i „mesečno zaduženje nije napravljeno“ u „Treba pažnju“ - **nije urađeno** (uvođenje koje kasni već ulazi kroz postojeće „plaćanje kasni“).
+- Dashboard: „uvođenje nenaplaćeno“ i „mesečno zaduženje nije napravljeno“ u „Treba pažnju“ - urađeno: `setup_unpaid` i `month_not_charged` (od 25. u mesecu, samo za klijente koji se već zadužuju mesečno).
 - Testovi: setup zaduženje i uplata, mesečno zaduženje sa razlaganjem, duplikat 409, tuđi klijent.
 
 ## Faza G3 — Portal (urađeno)

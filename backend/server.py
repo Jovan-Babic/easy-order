@@ -2868,7 +2868,7 @@ class OverviewSubscriptions(BaseModel):
 class AttentionItem(BaseModel):
     client_id: str
     client_name: str
-    reason: str  # locked | grace | purge_soon | ending_soon
+    reason: str  # locked | grace | purge_soon | ending_soon | payment_overdue | setup_unpaid | month_not_charged
     date: Optional[str] = None  # the date that matters for the reason
     plan_name: Optional[str] = None
 
@@ -2890,7 +2890,12 @@ class SuperadminOverview(BaseModel):
     attention: List[AttentionItem]
 
 
-_ATTENTION_ORDER = {"locked": 0, "purge_soon": 1, "payment_overdue": 2, "grace": 3, "ending_soon": 4}
+_ATTENTION_ORDER = {
+    "locked": 0, "purge_soon": 1, "payment_overdue": 2, "grace": 3, "setup_unpaid": 4, "month_not_charged": 5,
+    "ending_soon": 6,
+}
+# From this day of the month a client that is billed monthly should have next month charged.
+CHARGE_REMINDER_DAY = 25
 
 
 @api_router.get("/superadmin/overview", response_model=SuperadminOverview)
@@ -2938,6 +2943,31 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
                 client_id=client_id, client_name=c["name"], reason="payment_overdue", date=oldest_due,
                 plan_name=(c.get("subscription") or {}).get("plan_name"),
             ))
+    overdue_ids = set(money["overdue_by_client"])
+    async for pay in db.payments.find({"kind": "setup", "status": "expected"}, {"_id": 0}):
+        c = active_clients.get(pay["client_id"])
+        if c and pay["client_id"] not in overdue_ids:  # a late setup debt already shows as payment_overdue
+            attention.append(AttentionItem(
+                client_id=c["id"], client_name=c["name"], reason="setup_unpaid", date=pay.get("due_date"),
+                plan_name=(c.get("subscription") or {}).get("plan_name"),
+            ))
+    if today.day >= CHARGE_REMINDER_DAY:
+        following = (today.replace(day=1) + timedelta(days=32)).strftime("%Y-%m")
+        # Only clients already billed month by month (they have at least one monthly charge).
+        latest: Dict[str, str] = {}
+        async for p in db.payments.find(
+            {"kind": "subscription", "period": {"$ne": None}, "status": {"$ne": "canceled"}}, {"_id": 0, "client_id": 1, "period": 1}
+        ):
+            latest[p["client_id"]] = max(latest.get(p["client_id"], ""), p["period"])
+        for client_id in latest:
+            if client_id not in active_clients:
+                continue
+            c = active_clients[client_id]
+            if latest[client_id] < following and subscription_state(c.get("subscription"), today)["status"] in ("active", "grace"):
+                attention.append(AttentionItem(
+                    client_id=client_id, client_name=c["name"], reason="month_not_charged", date=following,
+                    plan_name=(c.get("subscription") or {}).get("plan_name"),
+                ))
     by_role: Dict[str, int] = {}
     async for row in db.users.aggregate([
         {"$match": {"client_id": {"$in": list(active_ids)}, "active": {"$ne": False}}},

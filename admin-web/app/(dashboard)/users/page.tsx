@@ -1,5 +1,6 @@
 "use client";
 
+import { localizedDetail } from "@/lib/errors";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
@@ -241,7 +242,7 @@ export default function UsersPage() {
       const res = await fetch("/api/users", { method: "POST", body: JSON.stringify(payload) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || t("failedCreateUser"));
+        setError(localizedDetail(body.detail, t, t("failedCreateUser")));
         return;
       }
       const created = await res.json();
@@ -305,7 +306,7 @@ export default function UsersPage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setEditError(body.detail || t("failedUpdateUser"));
+        setEditError(localizedDetail(body.detail, t, t("failedUpdateUser")));
         return;
       }
 
