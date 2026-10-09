@@ -2243,6 +2243,10 @@ class Payment(BaseModel):
     note: Optional[str] = None
     plan_name: Optional[str] = None
     period_months: Optional[int] = None
+    # subscription = package (+ extra accounts) for a period, setup = one-time integration, other.
+    kind: Literal["subscription", "setup", "other"] = "subscription"
+    period: Optional[str] = None  # YYYY-MM of a monthly charge
+    breakdown: Optional[Dict[str, Any]] = None  # package / extra accounts / discount of a monthly charge
     created_by: Optional[str] = None
     source: str = "manual"
     created_at: str = Field(default_factory=now_iso)
@@ -2260,6 +2264,7 @@ class PaymentInput(BaseModel):
     note: Optional[str] = Field(default=None, max_length=500)
     period_months: Optional[int] = Field(default=None, ge=1, le=60)
     plan_name: Optional[str] = Field(default=None, max_length=80)
+    kind: Literal["subscription", "setup", "other"] = "subscription"
 
 
 class PaymentReceiveInput(BaseModel):
@@ -2370,8 +2375,8 @@ async def create_payment(inp: PaymentInput, current_user: User = Depends(require
         "id": str(uuid.uuid4()), "client_id": client["id"], "status": inp.status, "amount": round(inp.amount, 2),
         "currency": PAYMENT_CURRENCY, "due_date": None, "paid_at": None, "method": inp.method, "note": inp.note,
         "plan_name": inp.plan_name or (client.get("subscription") or {}).get("plan_name"),
-        "period_months": inp.period_months, "created_by": current_user.name, "source": "manual",
-        "created_at": now_iso(), "canceled_at": None,
+        "period_months": inp.period_months, "kind": inp.kind, "period": None, "breakdown": None,
+        "created_by": current_user.name, "source": "manual", "created_at": now_iso(), "canceled_at": None,
     }
     if inp.status == "received":
         doc["paid_at"] = _paid_day(inp.paid_at)
@@ -2429,6 +2434,81 @@ async def cancel_payment(
         data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "was": doc["status"]},
     )
     return _payment_out(await _payment_or_404(payment_id), await _client_names())
+
+
+class ChargeMonthPreview(BaseModel):
+    month: str
+    already_charged: bool
+    breakdown: Dict[str, Any]
+    total: float
+    currency: str = PAYMENT_CURRENCY
+
+
+class ChargeMonthInput(BaseModel):
+    month: str  # YYYY-MM
+    due_date: str  # YYYY-MM-DD
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+def _valid_month(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value, "%Y-%m")
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+    if parsed.year < 2000 or parsed.year > _today().year + 5:
+        raise HTTPException(status_code=400, detail="month is out of range")
+    return parsed.strftime("%Y-%m")
+
+
+async def _month_charge(client_id: str, month: str) -> ChargeMonthPreview:
+    """Package + contracted extra accounts - discount, as it would be charged for `month`."""
+    month = _valid_month(month)
+    seats = await _seats_out(client_id)
+    if seats.plan_name is None or seats.monthly_total is None or seats.monthly_total <= 0:
+        raise HTTPException(status_code=400, detail="Nothing to charge: the plan has no monthly price")
+    lines = [
+        {"role": row.role, "extra": row.extra, "price": row.price or 0, "amount": round(row.extra * (row.price or 0), 2)}
+        for row in seats.seats if row.extra
+    ]
+    breakdown = {
+        "package": seats.package_price or 0, "seats": lines, "discount_percent": seats.discount_percent,
+        "total": seats.monthly_total,
+    }
+    taken = await db.payments.find_one(
+        {"client_id": client_id, "kind": "subscription", "period": month, "status": {"$ne": "canceled"}}, {"_id": 1}
+    )
+    return ChargeMonthPreview(month=month, already_charged=bool(taken), breakdown=breakdown, total=seats.monthly_total)
+
+
+@api_router.get("/clients/{client_id}/charge-month", response_model=ChargeMonthPreview)
+async def preview_charge_month(
+    client_id: str, month: str = Query(..., description="YYYY-MM"),
+    current_user: User = Depends(require_roles(Role.SUPERADMIN)),
+):
+    return await _month_charge(client_id, month)
+
+
+@api_router.post("/clients/{client_id}/charge-month", response_model=Payment)
+async def charge_month(client_id: str, inp: ChargeMonthInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Creates the debt (expected payment) for one month: package + extra accounts, with the
+    breakdown stored on it. One per client and month unless the earlier one is canceled."""
+    client = await _client_or_404(client_id)
+    charge = await _month_charge(client_id, inp.month)
+    if charge.already_charged:
+        raise HTTPException(status_code=409, detail="This month is already charged")
+    doc = {
+        "id": str(uuid.uuid4()), "client_id": client_id, "status": "expected", "amount": charge.total,
+        "currency": PAYMENT_CURRENCY, "due_date": _valid_day(inp.due_date, "due_date"), "paid_at": None, "method": None,
+        "note": inp.note, "plan_name": (client.get("subscription") or {}).get("plan_name"), "period_months": 1,
+        "kind": "subscription", "period": charge.month, "breakdown": charge.breakdown,
+        "created_by": current_user.name, "source": "manual", "created_at": now_iso(), "canceled_at": None,
+    }
+    await db.payments.insert_one({**doc, "_id": doc["id"]})
+    await _log_subscription_event(
+        client_id, "charge_created", current_user, note=inp.note, plan_name=doc["plan_name"],
+        data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "period": charge.month},
+    )
+    return _payment_out(doc, {client_id: client["name"]})
 
 
 @api_router.post("/subscriptions/{client_id}/pay", response_model=PayResult)
