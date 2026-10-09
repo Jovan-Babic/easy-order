@@ -3,6 +3,7 @@ import type { TranslationKey } from "@/lib/i18n";
 
 export type PaymentStatus = "expected" | "received" | "canceled";
 export type PaymentMethod = "bank" | "card" | "cash" | "other";
+export type PaymentKind = "subscription" | "setup" | "other";
 
 export type Payment = {
   id: string;
@@ -17,6 +18,8 @@ export type Payment = {
   note: string | null;
   plan_name: string | null;
   period_months: number | null;
+  kind: PaymentKind;
+  period: string | null;
   created_by: string | null;
   created_at: string;
   overdue: boolean;
@@ -29,6 +32,12 @@ export const METHOD_KEYS: Record<PaymentMethod, TranslationKey> = {
   card: "methodCard",
   cash: "methodCash",
   other: "methodOther",
+};
+
+export const KIND_KEYS: Record<PaymentKind, TranslationKey> = {
+  subscription: "kindSubscription",
+  setup: "kindSetup",
+  other: "kindOther",
 };
 
 export const PAYMENT_STATUS_KEYS: Record<PaymentStatus, TranslationKey> = {

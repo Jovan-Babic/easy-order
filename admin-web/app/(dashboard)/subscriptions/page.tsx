@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MODULES, toggleModule } from "@/lib/modules";
+import { ROLE_KEYS } from "@/components/SeatsPanel";
+import { SEAT_ROLES } from "@/lib/seats";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
 import {
   AssignDialog,
@@ -248,6 +250,12 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
   const [prices, setPrices] = useState<Record<string, string>>(
     Object.fromEntries(PRICE_PERIODS.map((m) => [String(m), plan?.prices?.[String(m)] ? String(plan.prices[String(m)]) : ""]))
   );
+  const [included, setIncluded] = useState<Record<string, string>>(
+    Object.fromEntries(SEAT_ROLES.map((r) => [r, plan?.included_seats?.[r] !== undefined ? String(plan.included_seats[r]) : ""]))
+  );
+  const [seatPrices, setSeatPrices] = useState<Record<string, string>>(
+    Object.fromEntries(SEAT_ROLES.map((r) => [r, plan?.seat_prices?.[r] !== undefined ? String(plan.seat_prices[r]) : ""]))
+  );
   const { busy, error, send } = useSubmit(onDone);
   return (
     <Modal title={plan ? t("editPlan") : t("newPlan")} onClose={onClose}>
@@ -261,6 +269,8 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
             modules,
             active,
             apply_to_clients: apply,
+            included_seats: Object.fromEntries(Object.entries(included).filter(([, v]) => v !== "").map(([r, v]) => [r, Math.max(0, Math.floor(Number(v)))])),
+            seat_prices: Object.fromEntries(Object.entries(seatPrices).filter(([, v]) => v !== "").map(([r, v]) => [r, Math.max(0, Number(v))])),
             // Prices of other periods (set elsewhere) are kept by sending them back.
             prices: {
               ...Object.fromEntries(Object.entries(plan?.prices ?? {}).filter(([m]) => !PRICE_PERIODS.includes(Number(m)))),
@@ -303,6 +313,33 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
           ))}
         </div>
         <p className="-mt-2 text-xs text-muted">{t("planPricesHint")}</p>
+        <p className="text-sm font-semibold text-onSurface">{t("planSeatsTitle")}</p>
+        <p className="-mt-2 text-xs text-muted">{t("planSeatsHint")}</p>
+        <div className="grid grid-cols-3 gap-3">
+          {SEAT_ROLES.map((r) => (
+            <div key={r} className="grid gap-1">
+              <span className="text-xs font-semibold text-onSurfaceSecondary">{t(ROLE_KEYS[r])}</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                placeholder={t("planIncluded")}
+                value={included[r]}
+                onChange={(e) => setIncluded({ ...included, [r]: e.target.value })}
+                className={input}
+              />
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder={t("planSeatPrice")}
+                value={seatPrices[r]}
+                onChange={(e) => setSeatPrices({ ...seatPrices, [r]: e.target.value })}
+                className={input}
+              />
+            </div>
+          ))}
+        </div>
         <label className="flex items-center gap-2 text-sm font-semibold text-onSurface">
           <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
           {t("planActive")}

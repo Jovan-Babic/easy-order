@@ -17,6 +17,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/subscriptions", labelKey: "subscriptions", roles: ["superadmin"] },
   { href: "/payments", labelKey: "payments", roles: ["superadmin"] },
   { href: "/users", labelKey: "users", roles: ["superadmin", "admin"] },
+  { href: "/seats", labelKey: "seatsTitle", roles: ["admin"] },
   { href: "/announcements", labelKey: "announcements", roles: ["superadmin"] },
   { href: "/audit", labelKey: "audit", roles: ["superadmin"] },
   // The system owner doesn't work with a client's business data (products,
