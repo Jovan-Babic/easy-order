@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Modal, input, link, primary, secondary, useSubmit } from "@/components/SubscriptionDialogs";
 import { useLanguage } from "@/lib/i18n";
 import { ChargeMonthDialog } from "@/components/SeatsPanel";
+import { SeatsOut } from "@/lib/seats";
 import {
   KIND_KEYS,
   METHOD_KEYS,
@@ -283,7 +284,34 @@ function NewPaymentDialog({
   const [day, setDay] = useState(status === "received" ? todayIso() : "");
   const [method, setMethod] = useState<PaymentMethod>("bank");
   const [note, setNote] = useState("");
-  const [kind, setKind] = useState<PaymentKind>(status === "received" ? "subscription" : "setup");
+  const [kind, setKind] = useState<PaymentKind>("subscription");
+  const [pkg, setPkg] = useState<SeatsOut | null>(null);
+  const [amountTouched, setAmountTouched] = useState(false);
+
+  const touchedRef = useRef(false);
+  const kindRef = useRef<PaymentKind>("subscription");
+  touchedRef.current = amountTouched;
+  kindRef.current = kind;
+
+  // The client's package: its monthly amount fills the field (still editable).
+  useEffect(() => {
+    setPkg(null);
+    if (!client) return;
+    let current = true;
+    fetch(`/api/clients/${client}/seats`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: SeatsOut | null) => {
+        if (!current || !body) return;
+        setPkg(body);
+        if (!touchedRef.current && kindRef.current === "subscription") {
+          setAmount(body.monthly_total !== null ? String(body.monthly_total) : "");
+        }
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [client]);
   const { busy, error, send } = useSubmit(onDone);
   const received = status === "received";
   return (
@@ -305,7 +333,16 @@ function NewPaymentDialog({
         {!received && <p className="text-xs text-muted">{t("chargeHint")}</p>}
         <label className="text-sm font-semibold text-onSurface">
           {t("payKind")}
-          <select value={kind} onChange={(e) => setKind(e.target.value as PaymentKind)} className={`${input} mt-1`}>
+          <select
+            value={kind}
+            onChange={(e) => {
+              const next = e.target.value as PaymentKind;
+              setKind(next);
+              // Package amount only makes sense for a package charge.
+              if (!amountTouched) setAmount(next === "subscription" && pkg?.monthly_total != null ? String(pkg.monthly_total) : "");
+            }}
+            className={`${input} mt-1`}
+          >
             {(["subscription", "setup", "other"] as PaymentKind[]).map((k) => (
               <option key={k} value={k}>
                 {t(KIND_KEYS[k])}
@@ -325,7 +362,15 @@ function NewPaymentDialog({
         )}
         <label className="text-sm font-semibold text-onSurface">
           {t("payAmount")}
-          <input required type="number" min="0.01" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} className={`${input} mt-1`} />
+          <input required type="number" min="0.01" step="0.01" value={amount} onChange={(e) => {
+              setAmount(e.target.value);
+              setAmountTouched(true);
+            }} className={`${input} mt-1`} />
+          {kind === "subscription" && pkg?.plan_name && pkg.monthly_total !== null && (
+            <span className="mt-1 block text-xs font-normal text-muted">
+              {t("chargePackageHint")}: {pkg.plan_name} · {money(pkg.monthly_total, pkg.currency)}
+            </span>
+          )}
         </label>
         <label className="text-sm font-semibold text-onSurface">
           {received ? t("payDate") : t("payDueDate")}

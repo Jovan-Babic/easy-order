@@ -263,3 +263,22 @@ class TestAttention:
         reasons = [a["reason"] for a in self._items(superadmin_client, client["id"])]
         # Only from the 25th on, and only for a client already billed month by month.
         assert ("month_not_charged" in reasons) == (today.day >= 25)
+
+
+class TestChargeAmountOverride:
+    def test_manual_amount_is_kept_with_the_calculated_one(self, superadmin_client):
+        plan = _plan(superadmin_client, prices={"1": 10000})
+        client, _ = _client(superadmin_client, plan)
+        url = f"{API}/clients/{client['id']}/charge-month"
+        assert superadmin_client.post(url, json={"month": MONTH, "due_date": DUE, "amount": 0}).status_code == 422
+        r = superadmin_client.post(url, json={"month": MONTH, "due_date": DUE, "amount": 8000})
+        assert r.status_code == 200, r.text
+        assert r.json()["amount"] == 8000 and r.json()["breakdown"]["calculated_total"] == 10000
+
+    def test_same_amount_has_no_override_mark(self, superadmin_client):
+        plan = _plan(superadmin_client, prices={"1": 10000})
+        client, _ = _client(superadmin_client, plan)
+        r = superadmin_client.post(
+            f"{API}/clients/{client['id']}/charge-month", json={"month": MONTH, "due_date": DUE, "amount": 10000}
+        )
+        assert r.json()["amount"] == 10000 and "calculated_total" not in r.json()["breakdown"]
