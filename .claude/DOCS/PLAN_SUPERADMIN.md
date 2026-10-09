@@ -85,27 +85,27 @@ Zamenjuje raniji predlog (godišnji paket + obračun naloga po najvećem broju a
 - Plan bez `included_seats` (stari paketi) = bez limita. Klijent bez paketa = bez limita.
 - Neplaćeno ne zaključava automatski (kao do sada); ulazi u „Treba pažnju“.
 
-## Faza G1 — Paketi i limiti (backend)
+## Faza G1 — Paketi i limiti (backend) (urađeno)
 - `Plan` / `PlanInput`: `included_seats`, `seat_prices` (validacija: ključevi samo tri uloge, ceo broj ≥ 0 / iznos ≥ 0, prazno = bez limita / bez cene).
 - `clients.subscription.extra_seats` (po ulozi), `discount_percent` (0–100); upisuje se pri dodeli paketa i u tabu Pretplata (`PUT /subscriptions/{client_id}/seats`), zapis u `subscription_events` i `_audit`.
 - `_seat_limit(client, role)`, `_check_seat_limit` pozvan iz pravljenja korisnika (`POST /users`, `POST /clients` za prvog admina), aktivacije i promene uloge. Broje se aktivni nalozi klijenta; superadmin nije deo klijenta.
 - `GET /clients/{id}/seats` i `GET /clients/me/seats` (admin): po ulozi `used` / `included` / `extra` / `limit`, mesečni iznos (paket + nalozi − popust) sa razlaganjem.
 - Testovi: limit po ulozi, dodatni nalozi podižu limit, aktivacija i promena uloge preko limita, stari paket bez limita, popust, tuđi klijent 404.
 
-## Faza G2 — Zaduženja i uvođenje
+## Faza G2 — Zaduženja i uvođenje (urađeno)
 - `payments.kind` (`subscription` | `setup` | `seats` | `other`, podrazumevano `subscription`) i `breakdown` (paket, nalozi po ulozi, popust) na zapisu zaduženja.
 - `POST /payments` prihvata `kind = "setup"` (iznos, opis, rok); `POST /clients/{id}/charge-month` pravi zaduženje „paket + dodatni nalozi“ za izabrani mesec (pregled pa potvrda; jedinstveno po klijentu i mesecu bez poništenih).
-- Dashboard: „uvođenje nenaplaćeno“ i „mesečno zaduženje nije napravljeno“ u „Treba pažnju“.
+- Dashboard: „uvođenje nenaplaćeno“ i „mesečno zaduženje nije napravljeno“ u „Treba pažnju“ - **nije urađeno** (uvođenje koje kasni već ulazi kroz postojeće „plaćanje kasni“).
 - Testovi: setup zaduženje i uplata, mesečno zaduženje sa razlaganjem, duplikat 409, tuđi klijent.
 
-## Faza G3 — Portal
+## Faza G3 — Portal (urađeno)
 - Dijalog paketa: polja uključenih naloga i cena po ulozi (magacin samo uz modul Magacin).
 - Tab Pretplata na klijentu: dodatni nalozi, popust, mesečni iznos sa razlaganjem; tab Uplate: dugmad „Uvođenje“ i „Zaduži mesec“.
 - Tab Korisnici: „iskorišćeno / limit“ po ulozi; pravljenje naloga preko limita ima jasnu poruku.
 - Admin klijenta: pregled „Nalozi i paket“ (iskorišćeno / limit, mesečni iznos) bez internih beleški.
 - i18n (sr, en); mobilna aplikacija samo prikazuje grešku limita.
 
-## Faza G4 — Dokumentacija
+## Faza G4 — Dokumentacija (urađeno)
 - `CLAUDE.md`, ovaj plan i `PREDLOG_NAPLATE.pdf` (verzija za tim) prate odlučene cene kad se usvoje.
 
 ## Kasnije

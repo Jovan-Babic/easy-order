@@ -42,6 +42,8 @@ export type Plan = {
   modules: string[];
   active: boolean;
   prices?: Record<string, number>; // months -> amount
+  included_seats?: Record<string, number>; // role -> accounts in the package
+  seat_prices?: Record<string, number>; // role -> monthly price of an extra account
   currency?: string;
 };
 
@@ -69,6 +71,7 @@ export const EVENT_KEYS: Record<string, TranslationKey> = {
   payment_received: "eventPaymentReceived",
   charge_created: "eventChargeCreated",
   payment_canceled: "eventPaymentCanceled",
+  seats: "eventSeats",
 };
 
 export const detailOf = async (res: Response, fallback: string) => {

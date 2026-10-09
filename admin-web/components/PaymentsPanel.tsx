@@ -4,11 +4,14 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Modal, input, link, primary, secondary, useSubmit } from "@/components/SubscriptionDialogs";
 import { useLanguage } from "@/lib/i18n";
+import { ChargeMonthDialog } from "@/components/SeatsPanel";
 import {
+  KIND_KEYS,
   METHOD_KEYS,
   PAYMENT_STATUS_KEYS,
   PAYMENT_STATUS_STYLES,
   Payment,
+  PaymentKind,
   PaymentMethod,
   PaymentStatus,
   PaymentTotals,
@@ -22,6 +25,7 @@ type ClientOption = { id: string; name: string };
 type Dialog =
   | { kind: "new"; status: "received" | "expected" }
   | { kind: "receive" | "cancel"; payment: Payment }
+  | { kind: "month" }
   | null;
 
 const stat = "rounded-lg bg-surfaceSecondary p-4 shadow-sm";
@@ -133,6 +137,11 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
           <button className={secondary} onClick={exportCsv} disabled={items.length === 0}>
             {t("payExportCsv")}
           </button>
+          {clientId && (
+            <button className={secondary} onClick={() => setDialog({ kind: "month" })}>
+              {t("chargeMonth")}
+            </button>
+          )}
           <button className={secondary} onClick={() => setDialog({ kind: "new", status: "expected" })}>
             {t("newCharge")}
           </button>
@@ -185,8 +194,8 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
                   </td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.method ? t(METHOD_KEYS[p.method as PaymentMethod]) : "-"}</td>
                   <td className="px-4 py-3 text-xs text-onSurfaceSecondary">
-                    {p.plan_name ?? "-"}
-                    {p.period_months ? ` · ${p.period_months} ${t("payPeriodShort")}` : ""}
+                    {p.kind !== "subscription" ? t(KIND_KEYS[p.kind]) : (p.plan_name ?? "-")}
+                    {p.period ? ` · ${p.period}` : p.period_months ? ` · ${p.period_months} ${t("payPeriodShort")}` : ""}
                   </td>
                   <td className="px-4 py-3 text-xs text-onSurfaceSecondary">{p.note ?? ""}</td>
                   <td className="whitespace-nowrap px-4 py-3 text-right">
@@ -218,6 +227,7 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
       {dialog?.kind === "new" && (
         <NewPaymentDialog status={dialog.status} clientId={clientId} clients={clients} onClose={() => setDialog(null)} onDone={done} />
       )}
+      {dialog?.kind === "month" && clientId && <ChargeMonthDialog clientId={clientId} onClose={() => setDialog(null)} onDone={done} />}
       {dialog?.kind === "receive" && <ReceiveDialog payment={dialog.payment} onClose={() => setDialog(null)} onDone={done} />}
       {dialog?.kind === "cancel" && <CancelPaymentDialog payment={dialog.payment} onClose={() => setDialog(null)} onDone={done} />}
     </div>
@@ -273,6 +283,7 @@ function NewPaymentDialog({
   const [day, setDay] = useState(status === "received" ? todayIso() : "");
   const [method, setMethod] = useState<PaymentMethod>("bank");
   const [note, setNote] = useState("");
+  const [kind, setKind] = useState<PaymentKind>(status === "received" ? "subscription" : "setup");
   const { busy, error, send } = useSubmit(onDone);
   const received = status === "received";
   return (
@@ -287,10 +298,21 @@ function NewPaymentDialog({
             amount: Number(amount),
             ...(received ? { paid_at: day, method } : { due_date: day }),
             note: note || null,
+            kind,
           });
         }}
       >
         {!received && <p className="text-xs text-muted">{t("chargeHint")}</p>}
+        <label className="text-sm font-semibold text-onSurface">
+          {t("payKind")}
+          <select value={kind} onChange={(e) => setKind(e.target.value as PaymentKind)} className={`${input} mt-1`}>
+            {(["subscription", "setup", "other"] as PaymentKind[]).map((k) => (
+              <option key={k} value={k}>
+                {t(KIND_KEYS[k])}
+              </option>
+            ))}
+          </select>
+        </label>
         {!clientId && (
           <select required value={client} onChange={(e) => setClient(e.target.value)} className={input}>
             <option value="">{t("selectClient")}</option>

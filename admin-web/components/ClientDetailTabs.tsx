@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ClientEditForm } from "@/components/ClientEditForm";
 import { PaymentsPanel } from "@/components/PaymentsPanel";
+import { ROLE_KEYS, SeatsEditDialog, SeatsSummary } from "@/components/SeatsPanel";
 import { StatCard } from "@/components/StatCard";
 import {
   AssignDialog,
@@ -17,6 +18,7 @@ import {
 import { useLanguage } from "@/lib/i18n";
 import { MODULES } from "@/lib/modules";
 import { ClientInfo } from "@/lib/orders";
+import { SeatsOut } from "@/lib/seats";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
 
 type Stats = { order_count: number; customer_count: number; product_count: number; total_grand: number } | null;
@@ -75,8 +77,13 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
 function ClientUsers({ clientId }: { clientId: string }) {
   const { t } = useLanguage();
   const [users, setUsers] = useState<ClientUser[] | null>(null);
+  const [seats, setSeats] = useState<SeatsOut | null>(null);
   const [error, setError] = useState(false);
   useEffect(() => {
+    fetch(`/api/clients/${clientId}/seats`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then(setSeats)
+      .catch(() => {});
     fetch(`/api/users?client_id=${encodeURIComponent(clientId)}`)
       .then((res) => (res.ok ? res.json() : Promise.reject()))
       .then(setUsers)
@@ -95,6 +102,11 @@ function ClientUsers({ clientId }: { clientId: string }) {
           {t("manageUsers")}
         </Link>
       </div>
+      {seats?.plan_name && (
+        <p className="mb-3 text-sm text-onSurfaceSecondary">
+          {seats.seats.map((r) => `${t(ROLE_KEYS[r.role])}: ${r.used} / ${r.limit ?? t("seatsUnlimited")}`).join(" · ")}
+        </p>
+      )}
       {error ? (
         <p className="text-error">{t("loadFailed")}</p>
       ) : users === null ? (
@@ -131,23 +143,25 @@ function ClientUsers({ clientId }: { clientId: string }) {
   );
 }
 
-type Dialog = "assign" | "extend" | "cancel" | "history" | "pay" | null;
+type Dialog = "assign" | "extend" | "cancel" | "history" | "pay" | "seats" | null;
 
 function ClientSubscription({ clientId }: { clientId: string }) {
   const { t } = useLanguage();
   const [row, setRow] = useState<SubscriptionRow | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [seats, setSeats] = useState<SeatsOut | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
 
   const load = useCallback(async () => {
-    const [s, p] = await Promise.all([fetch(`/api/subscriptions/${clientId}`), fetch("/api/plans")]);
+    const [s, p, a] = await Promise.all([fetch(`/api/subscriptions/${clientId}`), fetch("/api/plans"), fetch(`/api/clients/${clientId}/seats`)]);
     if (!s.ok || !p.ok) {
       setError(await detailOf(s.ok ? p : s, t("loadFailed")));
       return;
     }
     setRow((await s.json()).row);
     setPlans(await p.json());
+    setSeats(a.ok ? await a.json() : null);
   }, [clientId, t]);
 
   useEffect(() => {
@@ -162,6 +176,7 @@ function ClientSubscription({ clientId }: { clientId: string }) {
     await load();
   };
   return (
+    <div className="grid gap-6">
     <div className="max-w-xl rounded-lg bg-surfaceSecondary p-6 shadow-sm">
       <div className="mb-4 flex items-center gap-3">
         <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${STATUS_STYLES[row.state.status]}`}>
@@ -223,6 +238,21 @@ function ClientSubscription({ clientId }: { clientId: string }) {
       {dialog === "extend" && <ExtendDialog row={row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "cancel" && <CancelDialog row={row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "history" && <HistoryDialog row={row} onClose={() => setDialog(null)} onChanged={load} />}
+    </div>
+    {seats && (
+      <div>
+        <div className="mb-3 flex items-center gap-4">
+          <h3 className="text-base font-extrabold text-onSurface">{t("seatsTitle")}</h3>
+          {row.plan_id && (
+            <button className={link} onClick={() => setDialog("seats")}>
+              {t("seatsEdit")}
+            </button>
+          )}
+        </div>
+        <SeatsSummary data={seats} />
+      </div>
+    )}
+    {dialog === "seats" && seats && <SeatsEditDialog clientId={clientId} data={seats} onClose={() => setDialog(null)} onDone={done} />}
     </div>
   );
 }
