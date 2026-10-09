@@ -1647,6 +1647,10 @@ class Plan(BaseModel):
     # List price per period: months ("1", "3", "6", "12", ...) -> amount. Optional.
     prices: Dict[str, float] = Field(default_factory=dict)
     currency: str = "RSD"
+    # Accounts the package includes per role (admin/warehouse/operator); an empty map
+    # or a missing role = no limit. Price per extra account per month.
+    included_seats: Dict[str, int] = Field(default_factory=dict)
+    seat_prices: Dict[str, float] = Field(default_factory=dict)
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -1657,6 +1661,9 @@ class PlanInput(BaseModel):
     active: bool = True
     # months -> amount; None = keep the stored prices (update) / no prices (create).
     prices: Optional[Dict[str, float]] = None
+    # role -> count / monthly price; None = keep (update) / none (create).
+    included_seats: Optional[Dict[str, int]] = None
+    seat_prices: Optional[Dict[str, float]] = None
     # On update: also rewrite the modules of every client currently on this plan.
     apply_to_clients: bool = False
 
@@ -1732,6 +1739,56 @@ def _validated_prices(prices: Optional[Dict[str, float]]) -> Dict[str, float]:
             raise HTTPException(status_code=400, detail="Price must be greater than 0")
         out[str(int(key))] = round(float(amount), 2)
     return dict(sorted(out.items(), key=lambda kv: int(kv[0])))
+
+
+SEAT_ROLES = ("admin", "warehouse", "operator")
+
+
+def _validated_seat_map(values: Optional[Dict[str, float]], name: str, integer: bool) -> dict:
+    out: dict = {}
+    for role, amount in (values or {}).items():
+        if role not in SEAT_ROLES:
+            raise HTTPException(status_code=400, detail=f"{name}: role must be one of {', '.join(SEAT_ROLES)}")
+        if float(amount) < 0 or float(amount) > (10_000 if integer else 1_000_000_000):
+            raise HTTPException(status_code=400, detail=f"{name}: invalid value for {role}")
+        out[role] = int(amount) if integer else round(float(amount), 2)
+    return out
+
+
+def _seat_figures(plan: Optional[dict], sub: Optional[dict]) -> dict:
+    """Per role: included (plan) + extra (contract) = limit; None = unlimited."""
+    included = (plan or {}).get("included_seats") or {}
+    extra = (sub or {}).get("extra_seats") or {}
+    out = {}
+    for role in SEAT_ROLES:
+        inc = included.get(role)
+        ext = int(extra.get(role, 0) or 0)
+        out[role] = {
+            "included": inc, "extra": ext,
+            "limit": None if inc is None else int(inc) + ext,
+            "price": ((plan or {}).get("seat_prices") or {}).get(role),
+        }
+    return out
+
+
+async def _check_seat_limit(client_id: Optional[str], role, exclude_user_id: Optional[str] = None) -> None:
+    """403 when one more active account of this role would exceed the client's limit."""
+    role_v = getattr(role, "value", role)
+    if not client_id or role_v not in SEAT_ROLES:
+        return
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "subscription": 1})
+    sub = (client or {}).get("subscription")
+    if not sub or not sub.get("plan_id"):
+        return
+    plan = await db.plans.find_one({"id": sub["plan_id"]}, {"_id": 0})
+    limit = _seat_figures(plan, sub)[role_v]["limit"]
+    if limit is None:
+        return
+    query: dict = {"client_id": client_id, "role": role_v, "active": {"$ne": False}}
+    if exclude_user_id:
+        query["id"] = {"$ne": exclude_user_id}
+    if await db.users.count_documents(query) >= limit:
+        raise HTTPException(status_code=403, detail="Seat limit reached for this role")
 
 
 async def _get_plan_or_400(plan_id: str, must_be_active: bool = True) -> dict:
@@ -1826,6 +1883,8 @@ async def create_plan(inp: PlanInput, current_user: User = Depends(require_roles
     plan = Plan(
         name=inp.name.strip(), description=inp.description or "", modules=validated_modules(inp.modules), active=inp.active,
         prices=_validated_prices(inp.prices),
+        included_seats=_validated_seat_map(inp.included_seats, "included_seats", integer=True),
+        seat_prices=_validated_seat_map(inp.seat_prices, "seat_prices", integer=False),
     )
     await db.plans.insert_one({**plan.dict(), "_id": plan.id})
     await _audit(current_user, "plan.create", "plan", plan.id, plan.name)
@@ -1846,6 +1905,10 @@ async def update_plan(plan_id: str, inp: PlanInput, current_user: User = Depends
     }
     if inp.prices is not None:
         updated["prices"] = _validated_prices(inp.prices)
+    if inp.included_seats is not None:
+        updated["included_seats"] = _validated_seat_map(inp.included_seats, "included_seats", integer=True)
+    if inp.seat_prices is not None:
+        updated["seat_prices"] = _validated_seat_map(inp.seat_prices, "seat_prices", integer=False)
     await db.plans.replace_one({"id": plan_id}, {**updated, "_id": plan_id})
     await _audit(current_user, "plan.update", "plan", plan_id, updated["name"], data={"apply_to_clients": inp.apply_to_clients})
     # Clients keep their own copy of the plan name; refresh it, and optionally the modules.
@@ -1887,14 +1950,101 @@ async def assign_subscription(
 ):
     """Gives the client a package until `ends_at` (replaces any earlier subscription,
     unlocks a locked client) and sets its modules to the plan's."""
-    await _client_or_404(client_id)
+    client = await _client_or_404(client_id)
     plan = await _get_plan_or_400(inp.plan_id)
     subscription = _new_subscription(plan, inp.ends_at, inp.note, "manual")
+    for kept in ("extra_seats", "discount_percent"):
+        if (client.get("subscription") or {}).get(kept) is not None:
+            subscription[kept] = client["subscription"][kept]
     await db.clients.update_one({"id": client_id}, {"$set": {"subscription": subscription, "modules": plan["modules"]}})
     await _log_subscription_event(
         client_id, "assigned", current_user, note=inp.note, plan_name=plan["name"], ends_at=subscription["ends_at"]
     )
     return await _subscription_row(await _client_or_404(client_id))
+
+
+class SeatsInput(BaseModel):
+    # Contracted accounts on top of the package, per role. None = keep.
+    extra_seats: Optional[Dict[str, int]] = None
+    # Percent off the monthly total (package + extra accounts). None = keep.
+    discount_percent: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+class SeatRow(BaseModel):
+    role: str
+    used: int
+    included: Optional[int] = None
+    extra: int = 0
+    limit: Optional[int] = None  # None = unlimited
+    price: Optional[float] = None  # monthly price of one extra account
+
+
+class SeatsOut(BaseModel):
+    plan_name: Optional[str] = None
+    currency: str = "RSD"
+    seats: List[SeatRow]
+    package_price: Optional[float] = None  # monthly list price of the package
+    extra_amount: float = 0
+    discount_percent: float = 0
+    monthly_total: Optional[float] = None
+
+
+async def _seats_out(client_id: str, include_prices: bool = True) -> SeatsOut:
+    client = await _client_or_404(client_id)
+    sub = client.get("subscription")
+    plan = await db.plans.find_one({"id": sub["plan_id"]}, {"_id": 0}) if sub and sub.get("plan_id") else None
+    figures = _seat_figures(plan, sub)
+    modules = effective_modules(client)
+    rows, extra_amount = [], 0.0
+    for role in SEAT_ROLES:
+        if role == "warehouse" and Module.WAREHOUSE.value not in modules:
+            continue
+        used = await db.users.count_documents({"client_id": client_id, "role": role, "active": {"$ne": False}})
+        f = figures[role]
+        rows.append(SeatRow(role=role, used=used, included=f["included"], extra=f["extra"], limit=f["limit"], price=f["price"]))
+        extra_amount += f["extra"] * (f["price"] or 0)
+    package_price = ((plan or {}).get("prices") or {}).get("1")
+    discount = float((sub or {}).get("discount_percent") or 0)
+    total = None
+    if plan and (package_price is not None or extra_amount):
+        total = round(((package_price or 0) + extra_amount) * (1 - discount / 100), 2)
+    return SeatsOut(
+        plan_name=(sub or {}).get("plan_name"), currency=(plan or {}).get("currency", "RSD"), seats=rows,
+        package_price=package_price, extra_amount=round(extra_amount, 2), discount_percent=discount, monthly_total=total,
+    )
+
+
+@api_router.get("/clients/me/seats", response_model=SeatsOut)
+async def my_seats(current_user: User = Depends(require_roles(Role.ADMIN))):
+    """The admin's own client: accounts used / allowed and the monthly amount."""
+    return await _seats_out(current_user.client_id)
+
+
+@api_router.get("/clients/{client_id}/seats", response_model=SeatsOut)
+async def client_seats(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    return await _seats_out(client_id)
+
+
+@api_router.put("/subscriptions/{client_id}/seats", response_model=SeatsOut)
+async def set_client_seats(client_id: str, inp: SeatsInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Sets the contracted extra accounts / discount. Takes effect at once (limit);
+    billed with the next charge. Lowering below the accounts in use is allowed -
+    existing accounts keep working, new ones are refused."""
+    client = await _client_or_404(client_id)
+    sub = client.get("subscription")
+    if not sub or not sub.get("plan_id"):
+        raise HTTPException(status_code=400, detail="Client has no subscription - assign a plan first")
+    changes = {}
+    if inp.extra_seats is not None:
+        changes["subscription.extra_seats"] = _validated_seat_map(inp.extra_seats, "extra_seats", integer=True)
+    if inp.discount_percent is not None:
+        changes["subscription.discount_percent"] = round(inp.discount_percent, 2)
+    if changes:
+        await db.clients.update_one({"id": client_id}, {"$set": changes})
+        await _log_subscription_event(
+            client_id, "seats", current_user, data={k.split(".")[1]: v for k, v in changes.items()}
+        )
+    return await _seats_out(client_id)
 
 
 async def _extend_subscription(
@@ -2763,6 +2913,7 @@ async def create_user(inp: UserInput, current_user: User = Depends(require_manag
 
     if role == Role.WAREHOUSE and not await client_has_module(client_id, Module.WAREHOUSE):
         raise HTTPException(status_code=403, detail=f"Module not enabled: {Module.WAREHOUSE.value}")
+    await _check_seat_limit(client_id, role)
     obj = User(email=normalize_email(inp.email), name=inp.name, phone=inp.phone, role=role, client_id=client_id)
     invite = await _invite_user(obj)
     if current_user.role == Role.SUPERADMIN:
@@ -2801,6 +2952,10 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
         target.get("client_id"), Module.WAREHOUSE
     ):
         raise HTTPException(status_code=403, detail=f"Module not enabled: {Module.WAREHOUSE.value}")
+    # Becoming (or staying) an active account of a role that is full is refused.
+    becomes_active = inp.active is True and target.get("active", True) is False
+    if (role_changed and updated.get("active", True)) or becomes_active:
+        await _check_seat_limit(target.get("client_id"), inp.role or target.get("role"), exclude_user_id=user_id)
     if inp.role is not None:
         updated["role"] = inp.role
     if inp.password:
