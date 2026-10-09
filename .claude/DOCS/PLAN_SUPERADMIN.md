@@ -69,40 +69,44 @@ A → B → C → D → E. Svaka faza je zaokružena i može da se pusti zasebno
 
 ---
 
-# Izmena modela naplate: godišnji paket + nalozi po korišćenju
+# Model naplate: uvođenje + paket + nalozi
 
-Zamenjuje deo faze C (cena po 1/3/6/12 meseci). Odluke:
+Zamenjuje raniji predlog (godišnji paket + obračun naloga po najvećem broju aktivnih). Obrazloženje i poređenje sa konkurencijom: `PREDLOG_NAPLATE.pdf`. Sve se unosi **ručno**, bez automatike; cene definiše superadmin u portalu (primer cena u predlogu je samo početna tačka).
 
-- **Godišnji paket** (unapred): jedna cena po paketu (RSD), moduli kao do sada. Plaća se jednom godišnje preko „Uplata i produženje“ (podrazumevano 12 meseci).
-- **Nalozi** (po korišćenju, **unazad**): cena po tipu naloga u paketu (admin, magacin, komercijalista). Klijent otvara koliko naloga treba; broj se ne upisuje unapred.
-- **Obračun na kraju meseca:** plaća se **najveći broj istovremeno aktivnih naloga po ulozi u tom mesecu**. Nalog otvoren pa obrisan u istom mesecu se naplaćuje; deaktivacija smanjuje račun od sledećeg meseca. Deaktivirani i obrisani nalozi se ne broje u trenutku.
-- **Prvi mesec je u ceni paketa:** naplata naloga počinje od meseca posle početka paketa (`seats_billed_from`, može da se promeni po klijentu).
-- **Zaduženje** nastaje od 1. u mesecu za prethodni mesec (jednim klikom, prvo pregled), rok plaćanja je **broj dana po klijentu** (`due_days`, podrazumevano 5). Popust po klijentu u procentima (`discount_percent`).
-- **Prvi admin** klijenta se broji kao i ostali nalozi.
-- **Opcioni limit** naloga po ulozi kod klijenta (podrazumevano bez ograničenja); magacin nalog nije moguć bez modula Magacin (već važi).
-- **Neplaćeno** ne zaključava automatski; ulazi u „Treba pažnju“.
-- **Admin klijenta** dobija tab **Zaduženja**: korišćenje u tekućem mesecu, procena sledećeg zaduženja i rok, otvoreni računi i istorija, **podaci za uplatu** (tekst koji upisuje superadmin). IPS QR kod kasnije.
-- Promena paketa ostaje samo kod superadmina. Automatsko pravljenje zaduženja (cron) kasnije, ako zatreba.
+## Odluke
 
-## Faza F1 — Cene naloga, limiti i praćenje korišćenja
-- `plans.seat_prices` (`admin` / `warehouse` / `operator`, RSD); u dijalogu paketa jedno polje za godišnju cenu (podaci ostaju u `prices["12"]`) i tri polja za naloge; magacin cena samo ako paket ima modul Magacin.
-- `clients.subscription`: `due_days`, `discount_percent`, `seats_billed_from` (mesec `YYYY-MM`), `seat_limits` (po ulozi, prazno = bez ograničenja); podešavaju se pri dodeli paketa i u tabu Pretplata.
-- `account_usage` (klijent, mesec → najveći broj aktivnih po ulozi): ažurira se pri pravljenju, aktiviranju i promeni uloge naloga; osnova meseca je broj aktivnih na početku (iz prethodnog obračuna ili trenutnog stanja).
-- Limit: pravljenje/aktiviranje naloga preko limita → 403 „Dostignut broj naloga za ovu ulogu“.
-- Stranica klijenta (tab Korisnici): „aktivnih / limit“ po ulozi i najveći broj u tekućem mesecu.
+- **Uvođenje (jednokratno):** po klijentu, superadmin upisuje iznos, opis (Standard / Napredna / po dogovoru) i rok; vodi se kao zaduženje (`payments.kind = "setup"`), plaća se unapred. Nije vezano za paket.
+- **Mesečni paket:** postojeći `plans` (naziv, moduli, `prices`), proširen uključenim nalozima. Mesečna cena je `prices["1"]`; godišnja uplata unapred (`prices["12"]`, predlog 10 × mesečna) koristi postojeće „Uplata i produženje“.
+- **Nalozi:** `plans.included_seats` (`admin` / `warehouse` / `operator`, broj uključenih) i `plans.seat_prices` (RSD mesečno po dodatnom nalogu). Nema merenja korišćenja: dodatni nalozi su **ugovoreni broj** koji superadmin ručno upisuje.
+- **Limit** = uključeni + dodatni nalozi po ulozi. Pravljenje, aktiviranje ili promena uloge naloga preko limita → 403 „Dostignut broj naloga za ovu ulogu“. Limit važi i za superadmina; povećava se izmenom ugovorenih dodatnih naloga. Ručno promenjena (viša) vrednost ne briše postojeće naloge.
+- **Mesečni iznos klijenta** = cena paketa + zbir (dodatni nalozi × cena naloga) − popust (`discount_percent`, po klijentu, ručno). Volume popust (predlog 10% preko 10 dodatnih naloga) je običan popust koji superadmin upisuje, ne pravilo u kodu.
+- Smanjenje broja naloga važi od sledećeg obnavljanja; povećanje odmah (pravilo ugovora, ne kod).
+- Magacin nalog bez modula Magacin ostaje nemoguć (već važi). Paket bez magacin modula ignoriše uključene/cenu za magacin.
+- Plan bez `included_seats` (stari paketi) = bez limita. Klijent bez paketa = bez limita.
+- Neplaćeno ne zaključava automatski (kao do sada); ulazi u „Treba pažnju“.
 
-## Faza F2 — Obračun naloga
-- Zaduženje dobija `kind` (`plan` | `seats` | `other`), `period` (`YYYY-MM`) i `breakdown` (po ulozi: broj, cena, iznos; popust); jedinstveno po (klijent, `seats`, mesec) bez poništenih.
-- `GET /billing/seats?month=YYYY-MM`: pregled za sve klijente (broj po ulozi, iznos, već zaduženo / ne obračunava se: razlog). `POST /billing/seats`: pravi zaduženja za izabrane klijente ili sve. Mesec koji nije završen se ne obračunava. Iznos 0 se preskače. Zaključani klijenti se obračunavaju za mesece u kojima su koristili sistem.
-- Stranica Uplate: dugme „Obračun naloga“ (izbor meseca, pregled, potvrda) i dugme „Zaduži naloge“ na stranici klijenta; razlaganje iznosa se vidi u zapisu.
+## Faza G1 — Paketi i limiti (backend)
+- `Plan` / `PlanInput`: `included_seats`, `seat_prices` (validacija: ključevi samo tri uloge, ceo broj ≥ 0 / iznos ≥ 0, prazno = bez limita / bez cene).
+- `clients.subscription.extra_seats` (po ulozi), `discount_percent` (0–100); upisuje se pri dodeli paketa i u tabu Pretplata (`PUT /subscriptions/{client_id}/seats`), zapis u `subscription_events` i `_audit`.
+- `_seat_limit(client, role)`, `_check_seat_limit` pozvan iz pravljenja korisnika (`POST /users`, `POST /clients` za prvog admina), aktivacije i promene uloge. Broje se aktivni nalozi klijenta; superadmin nije deo klijenta.
+- `GET /clients/{id}/seats` i `GET /clients/me/seats` (admin): po ulozi `used` / `included` / `extra` / `limit`, mesečni iznos (paket + nalozi − popust) sa razlaganjem.
+- Testovi: limit po ulozi, dodatni nalozi podižu limit, aktivacija i promena uloge preko limita, stari paket bez limita, popust, tuđi klijent 404.
 
-## Faza F3 — Tab „Zaduženja“ za admina klijenta
-- `GET /billing/me` (samo uloga admin, samo svoj klijent): korišćenje ovog meseca (najveći broj po ulozi), procena iznosa (sa popustom), datum zaduženja i rok plaćanja, otvoreni računi i istorija (bez internih beleški i poništenih zapisa), podaci za uplatu.
-- Portal: stavka „Zaduženja“ u meniju admina. Pri pravljenju naloga poruka „Ovaj nalog povećava mesečni račun za X RSD“ uz potvrdu.
+## Faza G2 — Zaduženja i uvođenje
+- `payments.kind` (`subscription` | `setup` | `seats` | `other`, podrazumevano `subscription`) i `breakdown` (paket, nalozi po ulozi, popust) na zapisu zaduženja.
+- `POST /payments` prihvata `kind = "setup"` (iznos, opis, rok); `POST /clients/{id}/charge-month` pravi zaduženje „paket + dodatni nalozi“ za izabrani mesec (pregled pa potvrda; jedinstveno po klijentu i mesecu bez poništenih).
+- Dashboard: „uvođenje nenaplaćeno“ i „mesečno zaduženje nije napravljeno“ u „Treba pažnju“.
+- Testovi: setup zaduženje i uplata, mesečno zaduženje sa razlaganjem, duplikat 409, tuđi klijent.
 
-## Faza F4 — Podešavanja i podsetnici
-- `app_settings`: podaci za uplatu (sr/en tekst) i podrazumevani rok plaćanja; stranica ili tab „Podešavanja“ kod superadmina.
-- Dashboard i „Treba pažnju“: „nije obračunato za prošli mesec“ od 1. u mesecu.
+## Faza G3 — Portal
+- Dijalog paketa: polja uključenih naloga i cena po ulozi (magacin samo uz modul Magacin).
+- Tab Pretplata na klijentu: dodatni nalozi, popust, mesečni iznos sa razlaganjem; tab Uplate: dugmad „Uvođenje“ i „Zaduži mesec“.
+- Tab Korisnici: „iskorišćeno / limit“ po ulozi; pravljenje naloga preko limita ima jasnu poruku.
+- Admin klijenta: pregled „Nalozi i paket“ (iskorišćeno / limit, mesečni iznos) bez internih beleški.
+- i18n (sr, en); mobilna aplikacija samo prikazuje grešku limita.
+
+## Faza G4 — Dokumentacija
+- `CLAUDE.md`, ovaj plan i `PREDLOG_NAPLATE.pdf` (verzija za tim) prate odlučene cene kad se usvoje.
 
 ## Kasnije
-IPS QR kod, automatsko pravljenje zaduženja (cron, `AUTO_CHARGE_ENABLED`), automatska naplata.
+IPS QR kod, automatsko pravljenje mesečnih zaduženja (cron), cena po zahtevu za velike klijente, automatska naplata.
