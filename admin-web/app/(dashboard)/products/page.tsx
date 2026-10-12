@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
+import { localizedDetail } from "@/lib/errors";
+import { isCountUnit, unitOf, useUnits } from "@/lib/units";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ImportModal } from "@/components/ImportModal";
 
@@ -19,6 +21,7 @@ type Product = {
   additional_discounts?: number[];
   pieces_per_package?: number;
   boxes_per_transport?: number;
+  unit?: string;
   barcode?: string | null;
   package_barcode?: string | null;
   active?: boolean;
@@ -37,6 +40,7 @@ type ProductFormState = {
   additional_discounts: number[];
   pieces_per_package: string;
   boxes_per_transport: string;
+  unit: string;
   barcode: string;
   package_barcode: string;
   active: boolean;
@@ -56,6 +60,7 @@ const emptyForm = (): ProductFormState => ({
   additional_discounts: [0],
   pieces_per_package: "",
   boxes_per_transport: "",
+  unit: "kom",
   barcode: "",
   package_barcode: "",
   active: true,
@@ -88,7 +93,8 @@ export default function ProductsPage() {
   // Fields of modules the client doesn't have are hidden (the backend ignores them too).
   const hasWarehouse = session.modules.includes("warehouse");
   const hasExpiry = session.modules.includes("expiry");
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
+  const units = useUnits();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -98,6 +104,9 @@ export default function ProductsPage() {
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ProductFormState>(emptyForm());
+  const formUnit = unitOf(units, form.unit);
+  // Boxes and transport packaging only make sense for products counted in pieces.
+  const countUnit = isCountUnit(formUnit);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [pendingDelete, setPendingDelete] = useState<Product | null>(null);
   const [showImport, setShowImport] = useState(false);
@@ -174,6 +183,7 @@ export default function ProductsPage() {
         : [0],
       pieces_per_package: String(product.pieces_per_package ?? ""),
       boxes_per_transport: String(product.boxes_per_transport ?? ""),
+      unit: product.unit || "kom",
       barcode: product.barcode || "",
       package_barcode: product.package_barcode || "",
       active: product.active !== false,
@@ -210,7 +220,7 @@ export default function ProductsPage() {
     if (form.boxes_per_transport && toInteger(form.boxes_per_transport) < 0) {
       nextErrors.boxes_per_transport = t("valueNonNegative");
     }
-    if (form.package_barcode.trim() && !(toInteger(form.pieces_per_package) > 0)) {
+    if (countUnit && form.package_barcode.trim() && !(toInteger(form.pieces_per_package) > 0)) {
       nextErrors.package_barcode = t("boxNeedsPieces");
     }
     if (form.package_barcode.trim() && form.package_barcode.trim() === form.barcode.trim()) {
@@ -268,10 +278,11 @@ export default function ProductsPage() {
         additional_discounts: (form.additional_discounts || [0])
           .map((v) => Math.trunc(Number(v)))
           .filter((v) => Number.isInteger(v) && v >= 0 && v <= 15),
-        pieces_per_package: toInteger(form.pieces_per_package),
-        boxes_per_transport: toInteger(form.boxes_per_transport),
+        unit: form.unit,
+        pieces_per_package: countUnit ? toInteger(form.pieces_per_package) : 0,
+        boxes_per_transport: countUnit ? toInteger(form.boxes_per_transport) : 0,
         barcode: form.barcode.trim(),
-        package_barcode: form.package_barcode.trim(),
+        package_barcode: countUnit ? form.package_barcode.trim() : "",
         active: form.active,
         track_expiry: form.track_expiry,
       };
@@ -282,7 +293,7 @@ export default function ProductsPage() {
       if (!res.ok) {
         if (uploadedUrl) await deleteUploadedImage(uploadedUrl);
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || t("productSaveFailed"));
+        setError(localizedDetail(body.detail, t, t("productSaveFailed")));
         return;
       }
       closeForm();
@@ -492,13 +503,32 @@ export default function ProductsPage() {
                     })}
                   </div>
                 </div>
-                <FormField
-                  label={t("piecesPerPackage")}
-                  value={form.pieces_per_package}
-                  inputMode="numeric"
-                  error={fieldErrors.pieces_per_package}
-                  onChange={(value) => setField("pieces_per_package", numeric(value))}
-                />
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-sm font-semibold text-onSurface">{t("productUnit")}</label>
+                  <select
+                    value={form.unit}
+                    onChange={(e) => setField("unit", e.target.value)}
+                    className="w-full rounded-md border border-border px-3 py-2 text-sm"
+                  >
+                    {units
+                      .filter((u) => u.active || u.code === form.unit)
+                      .map((u) => (
+                        <option key={u.code} value={u.code}>
+                          {lang === "en" ? u.name_en : u.name_sr} ({u.symbol})
+                        </option>
+                      ))}
+                  </select>
+                  <p className="mt-1 text-xs text-muted">{t("productUnitHint")}</p>
+                </div>
+                {countUnit && (
+                  <FormField
+                    label={t("piecesPerPackage")}
+                    value={form.pieces_per_package}
+                    inputMode="numeric"
+                    error={fieldErrors.pieces_per_package}
+                    onChange={(value) => setField("pieces_per_package", numeric(value))}
+                  />
+                )}
                 {hasWarehouse && (
                   <FormField
                     label={t("barcode")}
@@ -507,7 +537,7 @@ export default function ProductsPage() {
                     onChange={(value) => setField("barcode", value.replace(/[^A-Za-z0-9-]/g, ""))}
                   />
                 )}
-                {hasWarehouse && (
+                {hasWarehouse && countUnit && (
                   <>
                     <FormField
                       label={t("packageBarcode")}
@@ -518,13 +548,15 @@ export default function ProductsPage() {
                     <p className="-mt-2 text-xs text-muted sm:col-span-2">{t("packageBarcodeHint")}</p>
                   </>
                 )}
-                <FormField
-                  label={t("boxesPerTransport")}
-                  value={form.boxes_per_transport}
-                  inputMode="numeric"
-                  error={fieldErrors.boxes_per_transport}
-                  onChange={(value) => setField("boxes_per_transport", numeric(value))}
-                />
+                {countUnit && (
+                  <FormField
+                    label={t("boxesPerTransport")}
+                    value={form.boxes_per_transport}
+                    inputMode="numeric"
+                    error={fieldErrors.boxes_per_transport}
+                    onChange={(value) => setField("boxes_per_transport", numeric(value))}
+                  />
+                )}
               </div>
 
               <label className="flex items-center gap-2 text-sm font-semibold text-onSurface">
@@ -637,7 +669,10 @@ export default function ProductsPage() {
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.manufacturer || "-"}</td>
                   {hasWarehouse && <td className="px-4 py-3 text-onSurfaceSecondary">{p.barcode || "-"}</td>}
                   {hasWarehouse && <td className="px-4 py-3 text-onSurfaceSecondary">{p.package_barcode || "-"}</td>}
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{(p.price_no_vat ?? 0).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-onSurfaceSecondary">
+                    {(p.price_no_vat ?? 0).toFixed(2)}
+                    {p.unit && p.unit !== "kom" && ` / ${unitOf(units, p.unit).symbol}`}
+                  </td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.discount ?? 0}%</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{(p.additional_discounts && p.additional_discounts.length ? p.additional_discounts : [0]).map((d) => `${d}%`).join(", ")}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{p.vat_rate ?? 0}%</td>

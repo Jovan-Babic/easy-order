@@ -1,5 +1,6 @@
 "use client";
 
+import { lineQtyLabel, lineUnit, parseQty, qtyInputValue } from "@/lib/units";
 import { useCallback, useEffect, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { useSession } from "@/lib/session-provider";
@@ -180,19 +181,23 @@ export default function WarehousePage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-2 py-2 text-right">{item.ordered_qty}</td>
+                      <td className="px-2 py-2 text-right">{lineQtyLabel(item.ordered_qty, item)}</td>
                       <td className="px-2 py-2 text-right">
                         <div className="flex items-center justify-end gap-2">
                           <input
                             type="number"
                             min={0}
-                            max={item.ordered_qty}
+                            step="any"
+                            max={qtyInputValue(item.ordered_qty, lineUnit(item))}
                             disabled={busy}
-                            defaultValue={item.picked_qty ?? ""}
+                            defaultValue={qtyInputValue(item.picked_qty, lineUnit(item))}
                             key={`${item.product_id}-${item.picked_qty ?? "x"}`}
                             onBlur={(e) => {
                               const v = e.target.value;
-                              const next = v === "" ? null : Math.max(0, Math.min(item.ordered_qty, Math.trunc(Number(v))));
+                              // Typed in the line's unit (3,5 kg) -> whole base units; too fine a value is ignored.
+                              const typed = v === "" ? null : parseQty(v, lineUnit(item));
+                              if (v !== "" && typed === null) return;
+                              const next = typed === null ? null : Math.min(item.ordered_qty, typed);
                               if (next !== (item.picked_qty ?? null)) setPicked(item.product_id, next);
                             }}
                             className="w-20 rounded-md border border-border px-2 py-1 text-right"

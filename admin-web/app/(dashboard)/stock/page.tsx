@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { errorDetail } from "@/lib/orders";
+import { formatQty, formatQtyWithUnit, isCountUnit, parseQty, qtyInputValue, unitOf, useUnits } from "@/lib/units";
 
 type Product = {
   id: string;
@@ -11,6 +12,7 @@ type Product = {
   barcode?: string | null;
   package_barcode?: string | null;
   boxes_per_transport?: number;
+  unit?: string;
   stock_qty: number | null;
   reserved_qty: number;
   available_qty: number | null;
@@ -56,6 +58,7 @@ type Panel = { kind: "receipt" | "count" | "history"; product: Product };
 
 export default function StockPage() {
   const { t } = useLanguage();
+  const units = useUnits();
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
   const [panel, setPanel] = useState<Panel | null>(null);
@@ -104,7 +107,8 @@ export default function StockPage() {
     if (kind === "count" && product.track_expiry) {
       const res = await fetch(`/api/products/${product.id}/batches`);
       const batches = res.ok ? ((await res.json()) as Batch[]) : [];
-      setCountRows(batches.map((b) => ({ date: b.expiry_date ?? "", qty: String(b.qty), undated: b.expiry_date === null })));
+      const u = unitOf(units, product.unit);
+      setCountRows(batches.map((b) => ({ date: b.expiry_date ?? "", qty: qtyInputValue(b.qty, u), undated: b.expiry_date === null })));
     }
     if (kind === "history") {
       const res = await fetch(`/api/stock/movements?product_id=${product.id}&limit=50`);
@@ -112,12 +116,16 @@ export default function StockPage() {
     }
   };
 
-  const perTransport = panel?.product.boxes_per_transport || 0;
+  // Quantities are typed in the product's unit (kg, l, m) and sent as whole base units (g, ml, mm).
+  const pu = unitOf(units, panel?.product.unit);
+  const countUnit = isCountUnit(pu);
+  const perTransport = countUnit ? panel?.product.boxes_per_transport || 0 : 0;
   const pieces = useMemo(() => {
+    if (!countUnit) return parseQty(qty, pu) ?? 0;
     const n = Math.trunc(Number(qty));
     if (!Number.isFinite(n) || n <= 0) return 0;
     return unit === "transport" ? n * perTransport : n;
-  }, [qty, unit, perTransport]);
+  }, [qty, unit, perTransport, countUnit, pu]);
 
   const submit = async () => {
     if (!panel || busy) return;
@@ -140,10 +148,10 @@ export default function StockPage() {
                 tracked
                   ? {
                       product_id: panel.product.id,
-                      batches: countRows.map((r) => ({ expiry_date: r.date || null, counted_qty: Math.trunc(Number(r.qty)) })),
+                      batches: countRows.map((r) => ({ expiry_date: r.date || null, counted_qty: parseQty(r.qty, pu) ?? 0 })),
                       note: note.trim(),
                     }
-                  : { product_id: panel.product.id, counted_qty: Math.trunc(Number(qty)), note: note.trim() },
+                  : { product_id: panel.product.id, counted_qty: parseQty(qty, pu) ?? 0, note: note.trim() },
               ),
             });
       if (!res.ok) {
@@ -167,13 +175,13 @@ export default function StockPage() {
   const tracked = panel?.product.track_expiry === true;
   const countRowsValid =
     countRows.length > 0 &&
-    countRows.every((r) => r.qty !== "" && Number(r.qty) >= 0) &&
+    countRows.every((r) => parseQty(r.qty, pu) !== null) &&
     new Set(countRows.map((r) => r.date)).size === countRows.length;
   const canSubmit =
     panel?.kind === "receipt"
       ? pieces > 0 && (!tracked || expiryDate !== "")
       : panel?.kind === "count"
-        ? note.trim() !== "" && (tracked ? countRowsValid : qty !== "" && Number(qty) >= 0)
+        ? note.trim() !== "" && (tracked ? countRowsValid : parseQty(qty, pu) !== null)
         : false;
 
   const writeOff = async (item: ExpiringItem) => {
@@ -207,7 +215,7 @@ export default function StockPage() {
               {expiring.items.map((item) => (
                 <tr key={item.batch_id} className="border-t border-border">
                   <td className="py-2 font-semibold text-onSurface">{item.product_name}</td>
-                  <td className="py-2 text-right">{item.qty}</td>
+                  <td className="py-2 text-right">{formatQtyWithUnit(item.qty, unitOf(units, products.find((p) => p.id === item.product_id)?.unit))}</td>
                   <td className="py-2 text-right">{item.expiry_date}</td>
                   <td className="py-2 text-right">
                     <span className={`rounded-full px-2 py-0.5 font-bold ${levelClass(item.level)}`}>
@@ -257,10 +265,10 @@ export default function StockPage() {
                   <td colSpan={3} className="px-4 py-3 text-right text-muted">{t("stockNotTracked")}</td>
                 ) : (
                   <>
-                    <td className="px-4 py-3 text-right">{p.stock_qty}</td>
-                    <td className="px-4 py-3 text-right">{p.reserved_qty}</td>
+                    <td className="px-4 py-3 text-right">{formatQtyWithUnit(p.stock_qty, unitOf(units, p.unit))}</td>
+                    <td className="px-4 py-3 text-right">{formatQty(p.reserved_qty, unitOf(units, p.unit))}</td>
                     <td className={`px-4 py-3 text-right font-bold ${(p.available_qty ?? 0) < 0 ? "text-error" : "text-onSurface"}`}>
-                      {p.available_qty}
+                      {formatQty(p.available_qty, unitOf(units, p.unit))}
                     </td>
                   </>
                 )}
@@ -270,7 +278,7 @@ export default function StockPage() {
                       {p.next_expiry ?? "—"}
                       {(p.expired_qty ?? 0) > 0 && (
                         <span className="ml-2 rounded-full bg-error px-2 py-0.5 font-bold text-white">
-                          {t("stockExpired")}: {p.expired_qty}
+                          {t("stockExpired")}: {formatQty(p.expired_qty, unitOf(units, p.unit))}
                         </span>
                       )}
                     </>
@@ -328,9 +336,9 @@ export default function StockPage() {
                       <td className="px-2 py-2">{new Date(m.created_at).toLocaleString()}</td>
                       <td className="px-2 py-2">{t(TYPE_KEYS[m.type] ?? "stockReceiptType")}</td>
                       <td className={`px-2 py-2 text-right font-semibold ${m.delta < 0 ? "text-error" : "text-success"}`}>
-                        {m.delta > 0 ? `+${m.delta}` : m.delta}
+                        {m.delta > 0 ? `+${formatQty(m.delta, pu)}` : formatQty(m.delta, pu)}
                       </td>
-                      <td className="px-2 py-2 text-right">{m.balance_after ?? "—"}</td>
+                      <td className="px-2 py-2 text-right">{m.balance_after === null ? "—" : formatQty(m.balance_after, pu)}</td>
                       <td className="px-2 py-2">{m.created_by_name ?? "—"}</td>
                       <td className="px-2 py-2">{m.note ?? ""}</td>
                     </tr>
@@ -362,6 +370,7 @@ export default function StockPage() {
                         <input
                           type="number"
                           min={0}
+                          step={countUnit ? 1 : "any"}
                           value={row.qty}
                           onChange={(e) => setCountRows(countRows.map((r, j) => (j === i ? { ...r, qty: e.target.value } : r)))}
                           placeholder={t("stockCounted")}
@@ -382,12 +391,14 @@ export default function StockPage() {
                   <input
                     type="number"
                     min={0}
+                    step={countUnit ? 1 : "any"}
                     value={qty}
                     onChange={(e) => setQty(e.target.value)}
                     placeholder={panel.kind === "count" ? t("stockCounted") : t("stockQty")}
                     className={`${input} flex-1`}
                   />
-                  {panel.kind === "receipt" && (
+                  {!countUnit && <span className="self-center text-sm font-semibold text-onSurface">{pu.symbol}</span>}
+                  {panel.kind === "receipt" && countUnit && (
                     <select value={unit} onChange={(e) => setUnit(e.target.value as "pieces" | "transport")} className={input}>
                       <option value="pieces">{t("stockUnitPieces")}</option>
                       {perTransport > 0 && <option value="transport">{t("stockUnitTransport")}</option>}

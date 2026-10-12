@@ -24,7 +24,7 @@ export type Role = "superadmin" | "admin" | "operator" | "warehouse";
 // Warehouse staff get a slice of the portal: orders (+ the warehouse module
 // from phase 5) and the app download page. Everything else is admin-only.
 // This is a UX gate - FastAPI enforces the same per role.
-const WAREHOUSE_PATHS = ["/orders", "/warehouse", "/app", "/change-password", "/api/orders", "/api/customers", "/api/products", "/api/my-client", "/stock", "/api/stock"];
+const WAREHOUSE_PATHS = ["/orders", "/warehouse", "/app", "/change-password", "/api/orders", "/api/customers", "/api/products", "/api/my-client", "/stock", "/api/stock", "/api/units"];
 
 export function homePath(role: Role): string {
   return role === "warehouse" ? "/warehouse" : "/dashboard";
@@ -35,7 +35,7 @@ export function isPathAllowed(role: Role, pathname: string): boolean {
   if (role === "warehouse") {
     return WAREHOUSE_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
   }
-  const superadminOnly = ["/clients", "/subscriptions", "/payments", "/announcements", "/audit", "/api/clients", "/api/subscriptions", "/api/plans", "/api/payments", "/api/superadmin", "/api/announcements", "/api/audit"];
+  const superadminOnly = ["/units", "/clients", "/subscriptions", "/payments", "/announcements", "/audit", "/api/clients", "/api/subscriptions", "/api/plans", "/api/payments", "/api/superadmin", "/api/announcements", "/api/audit"];
   if (superadminOnly.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return role === "superadmin";
   return true;
 }
