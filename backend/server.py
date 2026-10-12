@@ -30,7 +30,7 @@ from urllib.parse import quote
 import cloudinary
 import cloudinary.uploader
 
-from calc import compute_order_totals, line_net, line_vat
+from calc import compute_order_totals, effective_qty, line_net, line_vat
 
 
 ROOT_DIR = Path(__file__).parent
@@ -720,7 +720,9 @@ class ProductSalesStats(BaseModel):
     product_id: str
     name: str
     manufacturer: Optional[str] = ""
-    ordered_qty: int
+    ordered_qty: int  # sold quantity in whole base units (g, ml, mm, kom); shipped orders count what was packed
+    unit_symbol: str = "kom"  # unit of the latest order line; ordered_qty / unit_factor is the amount in it
+    unit_factor: int = 1
     order_count: int
     total_net: float
     total_vat: float
@@ -4539,10 +4541,16 @@ async def app_update():
 
 
 # ---------------- Statistics ----------------
+_STATS_EXCLUDED_STATUSES = ("canceled", "rejected")
+
+
 async def _compute_client_stats(client_id: str) -> ClientStats:
     client = await db.clients.find_one({"id": client_id}, {"_id": 0})
     client_name = client["name"] if client else "Unknown"
-    orders = await db.orders.find({"client_id": client_id}, {"_id": 0}).to_list(None)
+    # Canceled and rejected orders never became sales.
+    orders = await db.orders.find(
+        {"client_id": client_id, "status": {"$nin": list(_STATS_EXCLUDED_STATUSES)}}, {"_id": 0}
+    ).to_list(None)
     customer_count = await db.customers.count_documents({"client_id": client_id})
     product_count = await db.products.count_documents({"client_id": client_id})
 
@@ -5200,6 +5208,8 @@ async def stats_dashboard(
             continue
         if end and created_at >= end + timedelta(days=1):
             continue
+        if order.get("status") in _STATS_EXCLUDED_STATUSES:
+            continue
         filtered_orders.append(order)
 
     product_rows: Dict[str, Dict[str, Any]] = {}
@@ -5230,21 +5240,26 @@ async def stats_dashboard(
         customer["order_count"] += 1
         customer["total_grand"] += totals["grand"]
 
+        order_shipped = order.get("status") == OrderStatus.SHIPPED.value
         for item in order.get("items", []):
             product_id = item.get("product_id", item.get("name", "unknown"))
             product = product_rows.setdefault(product_id, {
                 "product_id": product_id,
                 "name": item.get("name", "Unknown"),
                 "manufacturer": item.get("manufacturer", ""),
+                # Orders come newest first, so this is the product's current unit.
+                "unit_symbol": item.get("unit_symbol") or "kom",
+                "unit_factor": item.get("unit_factor") or 1,
                 "ordered_qty": 0,
                 "order_count": 0,
                 "total_net": 0.0,
                 "total_vat": 0.0,
             })
-            product["ordered_qty"] += int(item.get("ordered_qty") or 0)
+            # Same basis as the order totals: what was packed once shipped, else what was ordered.
+            product["ordered_qty"] += int(effective_qty(item, order_shipped))
             product["order_count"] += 1
-            product["total_net"] += line_net(item)
-            product["total_vat"] += line_vat(item)
+            product["total_net"] += line_net(item, order_shipped)
+            product["total_vat"] += line_vat(item, order_shipped)
 
     customer_count = await db.customers.count_documents(query)
     summary = DashboardSummary(

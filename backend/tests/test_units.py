@@ -213,3 +213,47 @@ class TestImportUnits:
         assert next(x for x in api_client.get(f"{API}/products").json() if x["id"] == p["id"])["unit"] == "kg"
         swap = self._post(api_client, self._xlsx(("Naziv", "Jedinica"), [(p["name"], "l")]), True).json()
         assert swap["summary"]["error"] == 1
+
+
+class TestDashboardUnits:
+    def _top(self, api_client, product_id):
+        rows = api_client.get(f"{API}/stats/dashboard").json()["top_products"]
+        return next((r for r in rows if r["product_id"] == product_id), None)
+
+    def _order(self, api_client, product, qty):
+        cust = _customer(api_client)
+        r = api_client.post(f"{API}/orders", json={"customer_id": cust["id"], "items": [{"product_id": product["id"], "ordered_qty": qty}]})
+        assert r.status_code == 200, r.text
+        S.orders.append(r.json()["id"])
+        return r.json()
+
+    def test_quantity_and_unit_of_a_kilo_product(self, api_client):
+        p = _product(api_client, unit="kg", price_no_vat=1000, vat_rate=0)
+        self._order(api_client, p, 3500)
+        row = self._top(api_client, p["id"])
+        assert row["ordered_qty"] == 3500 and row["unit_symbol"] == "kg" and row["unit_factor"] == 1000
+        assert row["total_net"] == 3500
+
+    def test_canceled_orders_are_not_sales(self, api_client):
+        p = _product(api_client, unit="kg", price_no_vat=1000, vat_rate=0)
+        keep = self._order(api_client, p, 2000)
+        gone = self._order(api_client, p, 5000)
+        r = api_client.post(f"{API}/orders/{gone['id']}/status", json={"status": "canceled"})
+        assert r.status_code == 200, r.text
+        row = self._top(api_client, p["id"])
+        assert row["ordered_qty"] == 2000 and row["total_net"] == 2000 and keep
+
+    def test_shipped_order_counts_what_was_packed(self, api_client, superadmin_client):
+        # Shipping assigns an invoice number, so the demo client needs a prefix.
+        cid = api_client.get(f"{API}/auth/me").json()["client_id"]
+        cur = superadmin_client.get(f"{API}/clients/{cid}").json()
+        superadmin_client.put(f"{API}/clients/{cid}", json={**cur, "invoice_prefix": "TST", "invoice_numbering": "auto"})
+        p = _product(api_client, unit="kg", price_no_vat=1000, vat_rate=0)
+        order = self._order(api_client, p, 3000)
+        oid = order["id"]
+        assert api_client.post(f"{API}/orders/{oid}/status", json={"status": "in_progress"}).status_code == 200
+        assert api_client.patch(f"{API}/orders/{oid}/items", json={"items": [{"product_id": p["id"], "picked_qty": 2000}]}).status_code == 200
+        r = api_client.post(f"{API}/orders/{oid}/status", json={"status": "shipped"})
+        assert r.status_code == 200, r.text
+        row = self._top(api_client, p["id"])
+        assert row["ordered_qty"] == 2000 and row["total_net"] == 2000

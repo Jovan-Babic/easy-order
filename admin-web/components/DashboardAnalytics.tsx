@@ -1,5 +1,6 @@
 "use client";
 
+import { lineQtyLabel } from "@/lib/units";
 import { useState } from "react";
 import {
   Bar,
@@ -18,7 +19,9 @@ export type DashboardProduct = {
   product_id: string;
   name: string;
   manufacturer?: string;
-  ordered_qty: number;
+  ordered_qty: number; // whole base units (g, ml, mm, kom)
+  unit_symbol?: string;
+  unit_factor?: number;
   order_count: number;
   total_net: number;
   total_vat: number;
@@ -191,7 +194,10 @@ export function DashboardAnalytics({ stats }: { stats: DashboardStats }) {
               <button type="button" onClick={() => setSelectedProduct(null)} className="text-2xl leading-none text-muted hover:text-onSurface" aria-label="Zatvori">&times;</button>
             </div>
             <div className="grid grid-cols-2 gap-3 text-sm">
-              <Metric label="Prodato komada" value={String(selectedProduct.ordered_qty)} />
+              <Metric
+                label={!selectedProduct.unit_symbol || selectedProduct.unit_symbol === "kom" ? "Prodato komada" : "Prodato"}
+                value={lineQtyLabel(selectedProduct.ordered_qty, selectedProduct)}
+              />
               <Metric label="Porudžbine" value={String(selectedProduct.order_count)} />
               <Metric label="Neto promet" value={money(selectedProduct.total_net)} />
               <Metric label="Ukupno sa PDV-om" value={money(selectedProduct.total_grand)} />
