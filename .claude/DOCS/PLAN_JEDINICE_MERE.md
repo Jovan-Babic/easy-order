@@ -32,7 +32,7 @@ Jedan zapis po jedinici (ne po paru), da se ne dupliraju parovi:
 
 ## Faze
 
-### J1 — Backend
+### J1 — Backend (urađeno)
 - `units` (indeks po `code`), seed podrazumevanih, `GET /units`, `POST /units`, `PUT /units/{code}` (superadmin; ograničenja izmene kao gore), audit.
 - `Product.unit` (kod; `ProductInput.unit` None = zadrži / `kom` pri pravljenju); `ProductOut` vraća `unit` objekat (`code`, `symbol`, `base_symbol`, `factor`). Promena jedinice 409 ako artikal ima zalihu, kretanja ili porudžbine, osim u istu grupu; `pieces_per_package`/`package_barcode` > 0 samo za `kom` (400).
 - `OrderItem` snimi `unit_code`, `unit_symbol`, `unit_factor`; stari dokumenti = `kom`/1. `calc.py`: `price × qty / factor`; `effective_qty` ostaje isti. Unos količine ostaje ceo broj (osnovna jedinica).

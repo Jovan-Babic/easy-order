@@ -17,7 +17,9 @@ def line_net(item: Dict[str, Any], shipped: bool = False) -> float:
     discount = item.get("discount") or 0
     additional_discount = item.get("additional_discount") or 0
     total_discount = max(0, min(100, discount + additional_discount))
-    return price * qty * (1 - total_discount / 100)
+    # Quantities are whole base units (g, ml, mm, kom); the price is per unit_factor of them.
+    factor = item.get("unit_factor") or 1
+    return price * qty / factor * (1 - total_discount / 100)
 
 
 def line_vat(item: Dict[str, Any], shipped: bool = False) -> float:

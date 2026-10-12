@@ -176,6 +176,7 @@ async def lifespan(app: FastAPI):
         await db.users.create_index("email", unique=True)
     except Exception as exc:  # e.g. two legacy accounts that only differed by case
         logger.error("Could not create unique index on users.email: %s", exc)
+    await _seed_units()
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at")
     await db.password_reset_tokens.create_index("user_id")
@@ -520,6 +521,10 @@ class Product(BaseModel):
     # Expiry tracking (PLAN_ROK_TRAJANJA.md): stock is then kept in batches
     # (stock_batches: expiry date + pieces) and stock_qty is their sum.
     track_expiry: bool = False
+    # Unit of measure (units.code). Every quantity of this product - stock,
+    # ordered/picked, batches - is a whole number of the unit's BASE unit
+    # (g, ml, mm, kom); the price is per `unit` (PLAN_JEDINICE_MERE.md).
+    unit: str = "kom"
     # Pieces in the warehouse. None = stock is not tracked for this product.
     # Only changed through /stock/* and order shipments, never via ProductInput.
     stock_qty: Optional[int] = None
@@ -559,6 +564,8 @@ class ProductInput(BaseModel):
     active: Optional[bool] = None
     # None = keep. Switching it on turns the current stock into an undated batch.
     track_expiry: Optional[bool] = None
+    # Unit code. None = keep (create: "kom"). Fixed once the product has stock or orders.
+    unit: Optional[str] = None
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
 
 
@@ -580,6 +587,11 @@ class OrderItem(BaseModel):
     boxes_per_transport: Optional[int] = 0
     discount: Optional[float] = 0
     additional_discount: Optional[float] = 0
+    # Snapshot of the product's unit: quantities are whole BASE units, the price
+    # is per `unit` (= unit_factor base units). Older orders: kom / 1.
+    unit: str = "kom"
+    unit_symbol: str = "kom"
+    unit_factor: int = 1
     ordered_qty: int = 0
     # Set by the warehouse while packing; None = not checked yet.
     picked_qty: Optional[int] = None
@@ -3354,6 +3366,9 @@ async def create_product(inp: ProductInput, current_user: User = Depends(require
         payload["barcode"] = payload["package_barcode"] = None
     payload["active"] = True if inp.active is None else inp.active
     payload["track_expiry"] = bool(inp.track_expiry) and await client_has_module(client_id, Module.EXPIRY)
+    unit = await _unit_or_400(inp.unit or "kom")
+    _require_count_unit_for_packaging(unit, payload.get("pieces_per_package"), payload.get("boxes_per_transport"), payload.get("package_barcode"))
+    payload["unit"] = unit["code"]
     obj = Product(**payload, client_id=client_id)
     await db.products.insert_one({**obj.dict(), "_id": obj.id})
     return obj
@@ -3371,10 +3386,12 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
     additional = (
         inp.additional_discounts if inp.additional_discounts is not None else existing.get("additional_discounts")
     )
+    old_unit_code = existing.get("unit") or "kom"
     updated = {
         **existing,
         **incoming,
         "id": product_id,
+        "unit": old_unit_code,
         "discount": discount_value,
         "discounts": normalize_discounts(discounts, discount_value),
         "additional_discounts": normalize_additional_discounts(additional),
@@ -3405,6 +3422,14 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
     _require_package_size(updated["package_barcode"], updated.get("pieces_per_package"))
     if updated["barcode"] and updated["barcode"] == updated["package_barcode"]:
         raise HTTPException(status_code=409, detail="Piece and box barcode must differ")
+    if inp.unit and inp.unit != old_unit_code:
+        new_unit = await _unit_or_400(inp.unit)
+        await _check_unit_change(existing, await _unit_or_400(old_unit_code, must_be_active=False), new_unit)
+        updated["unit"] = new_unit["code"]
+    _require_count_unit_for_packaging(
+        await _unit_or_400(updated["unit"], must_be_active=False),
+        updated.get("pieces_per_package"), updated.get("boxes_per_transport"), updated.get("package_barcode"),
+    )
     if updated["track_expiry"] != was_tracking:
         await _switch_expiry_tracking(existing, updated["track_expiry"])
     # $set instead of replace_one: a concurrent stock change ($inc) must not
@@ -3424,6 +3449,154 @@ async def delete_product(product_id: str, current_user: User = Depends(require_m
     await db.stock_batches.delete_many({"product_id": product_id})
     await _delete_product_image(existing.get("image"))
     return {"ok": True}
+
+
+# ---------------- Units of measure (PLAN_JEDINICE_MERE.md) ----------------
+# (code, name_sr, name_en, symbol, group, base_code, factor)
+DEFAULT_UNITS = [
+    ("kom", "komad", "piece", "kom", "count", "kom", 1),
+    ("g", "gram", "gram", "g", "mass", "g", 1),
+    ("kg", "kilogram", "kilogram", "kg", "mass", "g", 1000),
+    ("t", "tona", "tonne", "t", "mass", "g", 1_000_000),
+    ("ml", "mililitar", "millilitre", "ml", "volume", "ml", 1),
+    ("l", "litar", "litre", "l", "volume", "ml", 1000),
+    ("hl", "hektolitar", "hectolitre", "hl", "volume", "ml", 100_000),
+    ("mm", "milimetar", "millimetre", "mm", "length", "mm", 1),
+    ("cm", "centimetar", "centimetre", "cm", "length", "mm", 10),
+    ("m", "metar", "metre", "m", "length", "mm", 1000),
+]
+
+
+class Unit(BaseModel):
+    code: str  # fixed once created
+    name_sr: str
+    name_en: str
+    symbol: str
+    group: str  # count / mass / volume / length / ...
+    base_code: str  # the unit quantities are stored in (itself for a base unit)
+    factor: int  # base units in one of this unit (kg = 1000 g)
+    active: bool = True
+    created_at: str = Field(default_factory=now_iso)
+
+
+class UnitInput(BaseModel):
+    code: str = Field(pattern=r"^[a-z0-9]{1,10}$")
+    name_sr: str = Field(min_length=1, max_length=40)
+    name_en: str = Field(min_length=1, max_length=40)
+    symbol: str = Field(min_length=1, max_length=10)
+    group: str = Field(pattern=r"^[a-z]{1,20}$")
+    base_code: str = Field(pattern=r"^[a-z0-9]{1,10}$")
+    factor: int = Field(ge=1, le=1_000_000_000)
+    active: bool = True
+
+
+class UnitUpdate(BaseModel):
+    name_sr: Optional[str] = Field(default=None, min_length=1, max_length=40)
+    name_en: Optional[str] = Field(default=None, min_length=1, max_length=40)
+    symbol: Optional[str] = Field(default=None, min_length=1, max_length=10)
+    active: Optional[bool] = None
+    # Only while no product uses the unit.
+    group: Optional[str] = Field(default=None, pattern=r"^[a-z]{1,20}$")
+    base_code: Optional[str] = Field(default=None, pattern=r"^[a-z0-9]{1,10}$")
+    factor: Optional[int] = Field(default=None, ge=1, le=1_000_000_000)
+
+
+async def _seed_units() -> None:
+    """Adds the built-in units that are missing; never touches existing ones."""
+    for code, name_sr, name_en, symbol, group, base_code, factor in DEFAULT_UNITS:
+        await db.units.update_one(
+            {"code": code},
+            {"$setOnInsert": {
+                "_id": code, "code": code, "name_sr": name_sr, "name_en": name_en, "symbol": symbol, "group": group,
+                "base_code": base_code, "factor": factor, "active": True, "created_at": now_iso(),
+            }},
+            upsert=True,
+        )
+
+
+async def _unit_or_400(code: str, must_be_active: bool = True) -> dict:
+    unit = await db.units.find_one({"code": code}, {"_id": 0})
+    if not unit:
+        raise HTTPException(status_code=400, detail=f"Unknown unit: {code}")
+    if must_be_active and not unit.get("active", True):
+        raise HTTPException(status_code=400, detail=f"Unit is not active: {code}")
+    return unit
+
+
+def _require_count_unit_for_packaging(unit: dict, pieces: Optional[int], boxes: Optional[int], package_barcode: Optional[str]) -> None:
+    """Boxes and transport packaging only make sense for products counted in pieces."""
+    if unit.get("group") != "count" and ((pieces or 0) > 0 or (boxes or 0) > 0 or package_barcode):
+        raise HTTPException(status_code=400, detail="Packaging is only for products counted in pieces")
+
+
+async def _check_unit_change(product: dict, old: dict, new: dict) -> None:
+    """A unit with the same base unit (m <-> cm) stores the same numbers, so it is
+    always fine. Any other change would reinterpret stored quantities."""
+    if old["base_code"] == new["base_code"]:
+        return
+    in_use = (
+        (product.get("stock_qty") or 0) != 0
+        or await db.stock_movements.find_one({"product_id": product["id"]}, {"_id": 1})
+        or await db.orders.find_one({"items.product_id": product["id"]}, {"_id": 1})
+    )
+    if in_use:
+        raise HTTPException(status_code=409, detail="Unit cannot be changed: the product has stock or orders")
+
+
+async def _check_unit_structure(code: str, group: str, base_code: str, factor: int) -> None:
+    if base_code == code:
+        if factor != 1:
+            raise HTTPException(status_code=400, detail="A base unit must have factor 1")
+        return
+    base = await db.units.find_one({"code": base_code}, {"_id": 0})
+    if not base or base["base_code"] != base_code:
+        raise HTTPException(status_code=400, detail="base_code must be an existing base unit")
+    if base["group"] != group:
+        raise HTTPException(status_code=400, detail="A unit must be in the same group as its base unit")
+
+
+@api_router.get("/units", response_model=List[Unit])
+async def list_units(current_user: User = Depends(get_current_user)):
+    """All units (inactive ones too, so existing products can still show theirs)."""
+    docs = await db.units.find({}, {"_id": 0}).to_list(None)
+    return sorted((Unit(**d) for d in docs), key=lambda u: (u.group, u.factor, u.code))
+
+
+@api_router.post("/units", response_model=Unit)
+async def create_unit(inp: UnitInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    if await db.units.find_one({"code": inp.code}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="A unit with that code already exists")
+    await _check_unit_structure(inp.code, inp.group, inp.base_code, inp.factor)
+    unit = Unit(**inp.dict())
+    await db.units.insert_one({**unit.dict(), "_id": unit.code})
+    await _audit(current_user, "unit.create", "unit", unit.code, unit.name_sr)
+    return unit
+
+
+@api_router.put("/units/{code}", response_model=Unit)
+async def update_unit(code: str, inp: UnitUpdate, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    existing = await db.units.find_one({"code": code}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Unit not found")
+    updated = {**existing}
+    for field in ("name_sr", "name_en", "symbol", "active"):
+        value = getattr(inp, field)
+        if value is not None:
+            updated[field] = value
+    structural = {f: getattr(inp, f) for f in ("group", "base_code", "factor") if getattr(inp, f) is not None}
+    if any(structural.get(f) not in (None, existing[f]) for f in structural):
+        in_use = (
+            code == "kom"
+            or await db.products.find_one({"unit": code}, {"_id": 1})
+            or await db.units.find_one({"base_code": code, "code": {"$ne": code}}, {"_id": 1})
+        )
+        if in_use:
+            raise HTTPException(status_code=409, detail="Group, base unit and factor cannot change while the unit is in use")
+        updated.update(structural)
+        await _check_unit_structure(code, updated["group"], updated["base_code"], updated["factor"])
+    await db.units.replace_one({"code": code}, {**updated, "_id": code})
+    await _audit(current_user, "unit.update", "unit", code, updated["name_sr"])
+    return Unit(**updated)
 
 
 # ---------------- Barcodes ----------------
@@ -3987,6 +4160,8 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
         {"id": {"$in": product_ids}, "client_id": client_id}, {"_id": 0}
     ).to_list(None)
     products = {p["id"]: p for p in product_docs}
+    unit_codes = list({p.get("unit") or "kom" for p in product_docs})
+    units = {u["code"]: u async for u in db.units.find({"code": {"$in": unit_codes}}, {"_id": 0})}
 
     items: List[OrderItem] = []
     for line in inp.items:
@@ -4008,6 +4183,9 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
             vat_rate=product.get("vat_rate", 20),
             pieces_per_package=product.get("pieces_per_package", 0),
             boxes_per_transport=product.get("boxes_per_transport", 0),
+            unit=product.get("unit") or "kom",
+            unit_symbol=(units.get(product.get("unit") or "kom") or {}).get("symbol") or (product.get("unit") or "kom"),
+            unit_factor=(units.get(product.get("unit") or "kom") or {}).get("factor") or 1,
             discount=_allowed_supplier_discount(product, line.discount),
             additional_discount=_allowed_additional_discount(product, line.additional_discount),
             ordered_qty=line.ordered_qty,

@@ -64,6 +64,8 @@ export type Product = {
   additional_discounts?: number[];
   pieces_per_package?: number;
   boxes_per_transport?: number;
+  // Unit code (see /units); quantities are whole base units of it. Missing = "kom".
+  unit?: string;
   barcode?: string | null;
   // Barcode of one box: a scan stands for pieces_per_package pieces.
   package_barcode?: string | null;
@@ -121,6 +123,10 @@ export type OrderItem = {
   boxes_per_transport?: number;
   discount?: number;
   additional_discount?: number;
+  // Snapshot of the product's unit: the price is per unit_factor base units.
+  unit?: string;
+  unit_symbol?: string;
+  unit_factor?: number;
   ordered_qty: number;
   picked_qty?: number | null; // set by the warehouse while packing
   line_net?: number; // server-computed, only on responses
