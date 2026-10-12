@@ -39,7 +39,7 @@ Jedan zapis po jedinici (ne po paru), da se ne dupliraju parovi:
 - Skeniranje (`scan_qty`) i kutije samo za `kom`. Rezervacije, FEFO, serije, kretanja i uvoz rade nepromenjeno jer su celi brojevi u osnovnoj jedinici artikla.
 - Testovi: seed i izmena jedinice, cena × količina (3,5 kg × 1000), zaključavanje jedinice, pakovanje samo za komad, snimak na porudžbini ne menja se kad se jedinica izmeni, stari artikli bez polja = `kom`, tuđi klijent, uvoz sa jedinicom.
 
-### J2 — Portal, mobilna, uvoz
+### J2 — Portal, mobilna, uvoz (urađeno)
 - Zajednički `units` helper (portal `lib/units.ts`, mobilna `src/utils/units.ts`): `toBase(value, unit)` i `fromBase(qty, unit)` sa proverom celog broja i formatiranjem (decimale do potrebnih mesta).
 - Portal: stranica „Jedinice mere“ (superadmin), select jedinice u formi artikla (zaključan kad je u upotrebi), prikaz količine i cene sa jedinicom u listama, na zalihi, narudžbini, računu i otpremnici.
 - Mobilna: unos količine u prikaznoj jedinici (decimale za kg/l/m), prikaz jedinice u katalogu, korpi, računu i magacinu; `calc.ts` sa faktorom; unos u `StockScanPanel` ostaje u komadima za `kom` (skener se ne menja, pa je OTA dovoljan).
