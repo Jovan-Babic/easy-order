@@ -3747,26 +3747,28 @@ _IMPORT_HEADERS = {
     "stockqty": "stock_qty", "stanje": "stock_qty", "kolicina": "stock_qty", "nastanju": "stock_qty",
     "trackexpiry": "track_expiry", "pratirok": "track_expiry", "pratirokove": "track_expiry",
     "pratirokatrajanja": "track_expiry",
+    "unit": "unit", "unitofmeasure": "unit", "jedinicamere": "unit", "jedinica": "unit", "mera": "unit",
 }
 _IMPORT_TEMPLATE_HEADERS = [
     ("name", "Naziv"), ("barcode", "Barkod"), ("manufacturer", "Proizvođač"), ("price_no_vat", "Cena bez PDV"),
     ("vat_rate", "PDV %"), ("pieces_per_package", "Komada u pakovanju"),
-    ("boxes_per_transport", "Transportno pakovanje (komada)"), ("stock_qty", "Stanje (komada)"),
-    ("track_expiry", "Prati rok (da/ne)"), ("package_barcode", "Barkod kutije"),
+    ("boxes_per_transport", "Transportno pakovanje (komada)"), ("stock_qty", "Stanje (u jedinici mere)"),
+    ("track_expiry", "Prati rok (da/ne)"), ("package_barcode", "Barkod kutije"), ("unit", "Jedinica mere"),
 ]
 
 
 # Downloadable example: includes a product without a barcode (matched by name)
 # and a text price with a comma, both of which the import accepts.
 _IMPORT_EXAMPLE_ROWS = [
-    ("Jaffa keks 150g", "8601000000018", "Jaffa", 46.5, 20, 12, 48, 240, "ne", "8601000100011"),
-    ("Plazma keks 300g", "8601000000025", "Bambi", 189.9, 20, 10, 40, 120, "ne", "8601000100028"),
-    ("Smoki 50g", None, "Bambi", 39, 20, 24, 96, 0, "ne", None),
-    ("Mleko 2.8% 1l", "8601000000049", "Imlek", "124,5", 10, 12, 72, 360, "da", "8601000100042"),
-    ("Jogurt 2.8% 1l", "8601000000056", "Imlek", 118, 10, 12, 72, 300, "da", None),
-    ("Ulje suncokretovo 1l", "8601000000063", "Dijamant", 259, 20, 12, 60, 180, "ne", None),
-    ("Brašno T-500 1kg", "8601000000070", "Mlin", "79,9", 10, 10, 100, 500, "ne", None),
-    ("Kafa Grand 200g", "8601000000087", "Strauss", 299, 20, 12, 48, None, "ne", None),
+    ("Jaffa keks 150g", "8601000000018", "Jaffa", 46.5, 20, 12, 48, 240, "ne", "8601000100011", "kom"),
+    ("Plazma keks 300g", "8601000000025", "Bambi", 189.9, 20, 10, 40, 120, "ne", "8601000100028", "kom"),
+    ("Smoki 50g", None, "Bambi", 39, 20, 24, 96, 0, "ne", None, "kom"),
+    ("Mleko 2.8% 1l", "8601000000049", "Imlek", "124,5", 10, 12, 72, 360, "da", "8601000100042", "kom"),
+    ("Jogurt 2.8% 1l", "8601000000056", "Imlek", 118, 10, 12, 72, 300, "da", None, "kom"),
+    ("Ulje suncokretovo 1l", "8601000000063", "Dijamant", 259, 20, 12, 60, 180, "ne", None, "kom"),
+    ("Brašno T-500 1kg", "8601000000070", "Mlin", "79,9", 10, 10, 100, 500, "ne", None, "kom"),
+    ("Kafa Grand 200g", "8601000000087", "Strauss", 299, 20, 12, 48, None, "ne", None, "kom"),
+    ("Sir kačkavalj (po kg)", "8601000000094", "Mlekara", 1100, 10, 0, 0, "25,5", "ne", None, "kg"),
 ]
 
 
@@ -3835,7 +3837,7 @@ async def product_import_template(
         if _IMPORT_TEMPLATE_HEADERS[i][0] in ("barcode", "package_barcode"):  # text keeps leading zeros
             for cell in ws[letter][1:]:
                 cell.number_format = "@"
-        ws.column_dimensions[letter].width = (32, 18, 22, 14, 8, 20, 30, 16, 18, 18)[i]
+        ws.column_dimensions[letter].width = (32, 18, 22, 14, 8, 20, 30, 22, 18, 18, 16)[i]
     buf = io.BytesIO()
     wb.save(buf)
     return Response(
@@ -3890,6 +3892,12 @@ async def import_products(
     by_name = {p["name"].strip().lower(): p for p in existing if p.get("name")}
     seen_barcodes: Dict[str, int] = {}
     seen_ids: Dict[str, int] = {}
+    units_by_code: Dict[str, dict] = {}
+    unit_lookup: Dict[str, dict] = {}
+    async for u in db.units.find({}, {"_id": 0}):
+        units_by_code[u["code"]] = u
+        for label in (u["code"], u["symbol"], u["name_sr"], u["name_en"]):
+            unit_lookup.setdefault(_import_header_key(label), u)
     rows_out = []
     for row_no, row in body:
         values = {field: (row[idx] if idx < len(row) else None) for idx, field in columns.items()}
@@ -3908,7 +3916,7 @@ async def import_products(
             errors.append(str(exc))
         for field, kwargs in (
             ("price_no_vat", {}), ("vat_rate", {"maximum": 100}), ("pieces_per_package", {"integer": True}),
-            ("boxes_per_transport", {"integer": True}), ("stock_qty", {"integer": True, "maximum": 1_000_000}),
+            ("boxes_per_transport", {"integer": True}),
         ):
             if field in columns.values():
                 try:
@@ -3935,6 +3943,43 @@ async def import_products(
             product = by_package.get(package_code)
         if product is None and name:
             product = by_name.get(name.lower())
+        # Unit of measure: the cell, else the product's own, else pieces. The stock
+        # column is in that unit (25,5 kg) and is stored as whole base units (g).
+        unit_cell = str(values.get("unit") or "").strip()
+        unit_doc = None
+        if unit_cell:
+            unit_doc = unit_lookup.get(_import_header_key(unit_cell))
+            if unit_doc is None or not unit_doc.get("active", True):
+                errors.append(f"Unknown unit: {unit_cell}")
+                unit_doc = None
+        current_unit = units_by_code.get((product or {}).get("unit") or "kom") or units_by_code.get("kom")
+        if unit_doc is not None and product is not None and unit_doc["code"] != current_unit["code"]:
+            try:
+                await _check_unit_change(product, current_unit, unit_doc)
+            except HTTPException as exc:
+                errors.append(str(exc.detail))
+                unit_doc = None
+        final_unit = unit_doc or current_unit
+        if unit_doc is not None:
+            parsed["unit"] = unit_doc["code"]
+        if "stock_qty" in columns.values():
+            try:
+                shown = _import_number(values.get("stock_qty"), "stock_qty", maximum=1_000_000)
+            except ValueError as exc:
+                shown = None
+                errors.append(str(exc))
+            if shown is not None:
+                base = shown * final_unit["factor"]
+                if abs(base - round(base)) > 1e-6:
+                    errors.append(f"stock_qty: too many decimals for {final_unit['symbol']}")
+                else:
+                    parsed["stock_qty"] = int(round(base))
+        if final_unit["group"] != "count" and (
+            (parsed.get("pieces_per_package", (product or {}).get("pieces_per_package")) or 0) > 0
+            or (parsed.get("boxes_per_transport", (product or {}).get("boxes_per_transport")) or 0) > 0
+            or package_code or (product or {}).get("package_barcode")
+        ):
+            errors.append("Packaging is only for products counted in pieces")
         if product is not None and code and product.get("barcode") not in (None, code):
             errors.append("Product already has a different barcode")
         if code and code in seen_barcodes:

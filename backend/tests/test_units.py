@@ -163,3 +163,53 @@ class TestOrderPrice:
         r = api_client.post(f"{API}/orders", json={"customer_id": cust["id"], "items": [{"product_id": p["id"], "ordered_qty": 1}]})
         S.orders.append(r.json()["id"])
         assert api_client.put(f"{API}/products/{p['id']}", json={"name": p["name"], "unit": "l"}).status_code == 409
+
+
+class TestImportUnits:
+    def _xlsx(self, header, rows):
+        import io
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.append(list(header))
+        for r in rows:
+            ws.append(list(r))
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    def _post(self, api_client, content, dry):
+        return api_client.post(
+            f"{API}/products/import", params={"dry_run": str(dry).lower()},
+            files={"file": ("u.xlsx", content, "application/octet-stream")}, headers={"Content-Type": None},
+        )
+
+    def test_unit_column_and_stock_in_display_unit(self, api_client):
+        name = f"TEST_Imp_{uuid.uuid4().hex[:6]}"
+        data = self._xlsx(("Naziv", "Cena bez PDV", "Stanje (u jedinici mere)", "Jedinica mere"), [(name, 1100, "25,5", "kg")])
+        assert self._post(api_client, data, True).json()["summary"]["error"] == 0
+        r = self._post(api_client, data, False)
+        assert r.status_code == 200 and r.json()["summary"]["create"] == 1, r.text
+        prod = next(p for p in api_client.get(f"{API}/products").json() if p["name"] == name)
+        S.products.append(prod["id"])
+        assert prod["unit"] == "kg" and prod["stock_qty"] == 25500
+
+    def test_unit_by_name_and_errors(self, api_client):
+        name = f"TEST_Imp_{uuid.uuid4().hex[:6]}"
+        ok = self._post(api_client, self._xlsx(("Naziv", "Jedinica"), [(name, "Litar")]), True).json()
+        assert ok["summary"]["error"] == 0
+        bad = self._post(api_client, self._xlsx(("Naziv", "Jedinica"), [(name, "funta")]), True).json()
+        assert bad["summary"]["error"] == 1
+        too_fine = self._post(api_client, self._xlsx(("Naziv", "Stanje", "Jedinica"), [(name, "0,0005", "kg")]), True).json()
+        assert too_fine["summary"]["error"] == 1
+        pack = self._post(api_client, self._xlsx(("Naziv", "Jedinica", "Komada u pakovanju"), [(name, "kg", 6)]), True).json()
+        assert pack["summary"]["error"] == 1
+
+    def test_existing_product_keeps_unit_and_blocks_change_with_stock(self, api_client):
+        p = _product(api_client, unit="kg")
+        api_client.post(f"{API}/stock/receipts", json={"items": [{"product_id": p["id"], "qty": 1000}]})
+        keep = self._post(api_client, self._xlsx(("Naziv", "Cena bez PDV"), [(p["name"], 5)]), False).json()
+        assert keep["summary"]["update"] == 1
+        assert next(x for x in api_client.get(f"{API}/products").json() if x["id"] == p["id"])["unit"] == "kg"
+        swap = self._post(api_client, self._xlsx(("Naziv", "Jedinica"), [(p["name"], "l")]), True).json()
+        assert swap["summary"]["error"] == 1
