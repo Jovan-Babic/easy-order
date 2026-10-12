@@ -30,7 +30,7 @@ from urllib.parse import quote
 import cloudinary
 import cloudinary.uploader
 
-from calc import compute_order_totals, line_net, line_vat
+from calc import compute_order_totals, effective_qty, line_net, line_vat
 
 
 ROOT_DIR = Path(__file__).parent
@@ -176,6 +176,7 @@ async def lifespan(app: FastAPI):
         await db.users.create_index("email", unique=True)
     except Exception as exc:  # e.g. two legacy accounts that only differed by case
         logger.error("Could not create unique index on users.email: %s", exc)
+    await _seed_units()
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at")
     await db.password_reset_tokens.create_index("user_id")
@@ -520,6 +521,10 @@ class Product(BaseModel):
     # Expiry tracking (PLAN_ROK_TRAJANJA.md): stock is then kept in batches
     # (stock_batches: expiry date + pieces) and stock_qty is their sum.
     track_expiry: bool = False
+    # Unit of measure (units.code). Every quantity of this product - stock,
+    # ordered/picked, batches - is a whole number of the unit's BASE unit
+    # (g, ml, mm, kom); the price is per `unit` (PLAN_JEDINICE_MERE.md).
+    unit: str = "kom"
     # Pieces in the warehouse. None = stock is not tracked for this product.
     # Only changed through /stock/* and order shipments, never via ProductInput.
     stock_qty: Optional[int] = None
@@ -559,6 +564,8 @@ class ProductInput(BaseModel):
     active: Optional[bool] = None
     # None = keep. Switching it on turns the current stock into an undated batch.
     track_expiry: Optional[bool] = None
+    # Unit code. None = keep (create: "kom"). Fixed once the product has stock or orders.
+    unit: Optional[str] = None
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
 
 
@@ -580,6 +587,11 @@ class OrderItem(BaseModel):
     boxes_per_transport: Optional[int] = 0
     discount: Optional[float] = 0
     additional_discount: Optional[float] = 0
+    # Snapshot of the product's unit: quantities are whole BASE units, the price
+    # is per `unit` (= unit_factor base units). Older orders: kom / 1.
+    unit: str = "kom"
+    unit_symbol: str = "kom"
+    unit_factor: int = 1
     ordered_qty: int = 0
     # Set by the warehouse while packing; None = not checked yet.
     picked_qty: Optional[int] = None
@@ -708,7 +720,9 @@ class ProductSalesStats(BaseModel):
     product_id: str
     name: str
     manufacturer: Optional[str] = ""
-    ordered_qty: int
+    ordered_qty: int  # sold quantity in whole base units (g, ml, mm, kom); shipped orders count what was packed
+    unit_symbol: str = "kom"  # unit of the latest order line; ordered_qty / unit_factor is the amount in it
+    unit_factor: int = 1
     order_count: int
     total_net: float
     total_vat: float
@@ -2447,6 +2461,7 @@ class ChargeMonthPreview(BaseModel):
 class ChargeMonthInput(BaseModel):
     month: str  # YYYY-MM
     due_date: str  # YYYY-MM-DD
+    amount: Optional[float] = Field(default=None, gt=0, le=1_000_000_000)  # None = the calculated total
     note: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -2496,11 +2511,13 @@ async def charge_month(client_id: str, inp: ChargeMonthInput, current_user: User
     charge = await _month_charge(client_id, inp.month)
     if charge.already_charged:
         raise HTTPException(status_code=409, detail="This month is already charged")
+    amount = round(inp.amount, 2) if inp.amount is not None else charge.total
+    breakdown = charge.breakdown if amount == charge.total else {**charge.breakdown, "calculated_total": charge.total}
     doc = {
-        "id": str(uuid.uuid4()), "client_id": client_id, "status": "expected", "amount": charge.total,
+        "id": str(uuid.uuid4()), "client_id": client_id, "status": "expected", "amount": amount,
         "currency": PAYMENT_CURRENCY, "due_date": _valid_day(inp.due_date, "due_date"), "paid_at": None, "method": None,
         "note": inp.note, "plan_name": (client.get("subscription") or {}).get("plan_name"), "period_months": 1,
-        "kind": "subscription", "period": charge.month, "breakdown": charge.breakdown,
+        "kind": "subscription", "period": charge.month, "breakdown": breakdown,
         "created_by": current_user.name, "source": "manual", "created_at": now_iso(), "canceled_at": None,
     }
     await db.payments.insert_one({**doc, "_id": doc["id"]})
@@ -3351,6 +3368,9 @@ async def create_product(inp: ProductInput, current_user: User = Depends(require
         payload["barcode"] = payload["package_barcode"] = None
     payload["active"] = True if inp.active is None else inp.active
     payload["track_expiry"] = bool(inp.track_expiry) and await client_has_module(client_id, Module.EXPIRY)
+    unit = await _unit_or_400(inp.unit or "kom")
+    _require_count_unit_for_packaging(unit, payload.get("pieces_per_package"), payload.get("boxes_per_transport"), payload.get("package_barcode"))
+    payload["unit"] = unit["code"]
     obj = Product(**payload, client_id=client_id)
     await db.products.insert_one({**obj.dict(), "_id": obj.id})
     return obj
@@ -3368,10 +3388,12 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
     additional = (
         inp.additional_discounts if inp.additional_discounts is not None else existing.get("additional_discounts")
     )
+    old_unit_code = existing.get("unit") or "kom"
     updated = {
         **existing,
         **incoming,
         "id": product_id,
+        "unit": old_unit_code,
         "discount": discount_value,
         "discounts": normalize_discounts(discounts, discount_value),
         "additional_discounts": normalize_additional_discounts(additional),
@@ -3402,6 +3424,14 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
     _require_package_size(updated["package_barcode"], updated.get("pieces_per_package"))
     if updated["barcode"] and updated["barcode"] == updated["package_barcode"]:
         raise HTTPException(status_code=409, detail="Piece and box barcode must differ")
+    if inp.unit and inp.unit != old_unit_code:
+        new_unit = await _unit_or_400(inp.unit)
+        await _check_unit_change(existing, await _unit_or_400(old_unit_code, must_be_active=False), new_unit)
+        updated["unit"] = new_unit["code"]
+    _require_count_unit_for_packaging(
+        await _unit_or_400(updated["unit"], must_be_active=False),
+        updated.get("pieces_per_package"), updated.get("boxes_per_transport"), updated.get("package_barcode"),
+    )
     if updated["track_expiry"] != was_tracking:
         await _switch_expiry_tracking(existing, updated["track_expiry"])
     # $set instead of replace_one: a concurrent stock change ($inc) must not
@@ -3421,6 +3451,154 @@ async def delete_product(product_id: str, current_user: User = Depends(require_m
     await db.stock_batches.delete_many({"product_id": product_id})
     await _delete_product_image(existing.get("image"))
     return {"ok": True}
+
+
+# ---------------- Units of measure (PLAN_JEDINICE_MERE.md) ----------------
+# (code, name_sr, name_en, symbol, group, base_code, factor)
+DEFAULT_UNITS = [
+    ("kom", "komad", "piece", "kom", "count", "kom", 1),
+    ("g", "gram", "gram", "g", "mass", "g", 1),
+    ("kg", "kilogram", "kilogram", "kg", "mass", "g", 1000),
+    ("t", "tona", "tonne", "t", "mass", "g", 1_000_000),
+    ("ml", "mililitar", "millilitre", "ml", "volume", "ml", 1),
+    ("l", "litar", "litre", "l", "volume", "ml", 1000),
+    ("hl", "hektolitar", "hectolitre", "hl", "volume", "ml", 100_000),
+    ("mm", "milimetar", "millimetre", "mm", "length", "mm", 1),
+    ("cm", "centimetar", "centimetre", "cm", "length", "mm", 10),
+    ("m", "metar", "metre", "m", "length", "mm", 1000),
+]
+
+
+class Unit(BaseModel):
+    code: str  # fixed once created
+    name_sr: str
+    name_en: str
+    symbol: str
+    group: str  # count / mass / volume / length / ...
+    base_code: str  # the unit quantities are stored in (itself for a base unit)
+    factor: int  # base units in one of this unit (kg = 1000 g)
+    active: bool = True
+    created_at: str = Field(default_factory=now_iso)
+
+
+class UnitInput(BaseModel):
+    code: str = Field(pattern=r"^[a-z0-9]{1,10}$")
+    name_sr: str = Field(min_length=1, max_length=40)
+    name_en: str = Field(min_length=1, max_length=40)
+    symbol: str = Field(min_length=1, max_length=10)
+    group: str = Field(pattern=r"^[a-z]{1,20}$")
+    base_code: str = Field(pattern=r"^[a-z0-9]{1,10}$")
+    factor: int = Field(ge=1, le=1_000_000_000)
+    active: bool = True
+
+
+class UnitUpdate(BaseModel):
+    name_sr: Optional[str] = Field(default=None, min_length=1, max_length=40)
+    name_en: Optional[str] = Field(default=None, min_length=1, max_length=40)
+    symbol: Optional[str] = Field(default=None, min_length=1, max_length=10)
+    active: Optional[bool] = None
+    # Only while no product uses the unit.
+    group: Optional[str] = Field(default=None, pattern=r"^[a-z]{1,20}$")
+    base_code: Optional[str] = Field(default=None, pattern=r"^[a-z0-9]{1,10}$")
+    factor: Optional[int] = Field(default=None, ge=1, le=1_000_000_000)
+
+
+async def _seed_units() -> None:
+    """Adds the built-in units that are missing; never touches existing ones."""
+    for code, name_sr, name_en, symbol, group, base_code, factor in DEFAULT_UNITS:
+        await db.units.update_one(
+            {"code": code},
+            {"$setOnInsert": {
+                "_id": code, "code": code, "name_sr": name_sr, "name_en": name_en, "symbol": symbol, "group": group,
+                "base_code": base_code, "factor": factor, "active": True, "created_at": now_iso(),
+            }},
+            upsert=True,
+        )
+
+
+async def _unit_or_400(code: str, must_be_active: bool = True) -> dict:
+    unit = await db.units.find_one({"code": code}, {"_id": 0})
+    if not unit:
+        raise HTTPException(status_code=400, detail=f"Unknown unit: {code}")
+    if must_be_active and not unit.get("active", True):
+        raise HTTPException(status_code=400, detail=f"Unit is not active: {code}")
+    return unit
+
+
+def _require_count_unit_for_packaging(unit: dict, pieces: Optional[int], boxes: Optional[int], package_barcode: Optional[str]) -> None:
+    """Boxes and transport packaging only make sense for products counted in pieces."""
+    if unit.get("group") != "count" and ((pieces or 0) > 0 or (boxes or 0) > 0 or package_barcode):
+        raise HTTPException(status_code=400, detail="Packaging is only for products counted in pieces")
+
+
+async def _check_unit_change(product: dict, old: dict, new: dict) -> None:
+    """A unit with the same base unit (m <-> cm) stores the same numbers, so it is
+    always fine. Any other change would reinterpret stored quantities."""
+    if old["base_code"] == new["base_code"]:
+        return
+    in_use = (
+        (product.get("stock_qty") or 0) != 0
+        or await db.stock_movements.find_one({"product_id": product["id"]}, {"_id": 1})
+        or await db.orders.find_one({"items.product_id": product["id"]}, {"_id": 1})
+    )
+    if in_use:
+        raise HTTPException(status_code=409, detail="Unit cannot be changed: the product has stock or orders")
+
+
+async def _check_unit_structure(code: str, group: str, base_code: str, factor: int) -> None:
+    if base_code == code:
+        if factor != 1:
+            raise HTTPException(status_code=400, detail="A base unit must have factor 1")
+        return
+    base = await db.units.find_one({"code": base_code}, {"_id": 0})
+    if not base or base["base_code"] != base_code:
+        raise HTTPException(status_code=400, detail="base_code must be an existing base unit")
+    if base["group"] != group:
+        raise HTTPException(status_code=400, detail="A unit must be in the same group as its base unit")
+
+
+@api_router.get("/units", response_model=List[Unit])
+async def list_units(current_user: User = Depends(get_current_user)):
+    """All units (inactive ones too, so existing products can still show theirs)."""
+    docs = await db.units.find({}, {"_id": 0}).to_list(None)
+    return sorted((Unit(**d) for d in docs), key=lambda u: (u.group, u.factor, u.code))
+
+
+@api_router.post("/units", response_model=Unit)
+async def create_unit(inp: UnitInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    if await db.units.find_one({"code": inp.code}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="A unit with that code already exists")
+    await _check_unit_structure(inp.code, inp.group, inp.base_code, inp.factor)
+    unit = Unit(**inp.dict())
+    await db.units.insert_one({**unit.dict(), "_id": unit.code})
+    await _audit(current_user, "unit.create", "unit", unit.code, unit.name_sr)
+    return unit
+
+
+@api_router.put("/units/{code}", response_model=Unit)
+async def update_unit(code: str, inp: UnitUpdate, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    existing = await db.units.find_one({"code": code}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Unit not found")
+    updated = {**existing}
+    for field in ("name_sr", "name_en", "symbol", "active"):
+        value = getattr(inp, field)
+        if value is not None:
+            updated[field] = value
+    structural = {f: getattr(inp, f) for f in ("group", "base_code", "factor") if getattr(inp, f) is not None}
+    if any(structural.get(f) not in (None, existing[f]) for f in structural):
+        in_use = (
+            code == "kom"
+            or await db.products.find_one({"unit": code}, {"_id": 1})
+            or await db.units.find_one({"base_code": code, "code": {"$ne": code}}, {"_id": 1})
+        )
+        if in_use:
+            raise HTTPException(status_code=409, detail="Group, base unit and factor cannot change while the unit is in use")
+        updated.update(structural)
+        await _check_unit_structure(code, updated["group"], updated["base_code"], updated["factor"])
+    await db.units.replace_one({"code": code}, {**updated, "_id": code})
+    await _audit(current_user, "unit.update", "unit", code, updated["name_sr"])
+    return Unit(**updated)
 
 
 # ---------------- Barcodes ----------------
@@ -3571,26 +3749,28 @@ _IMPORT_HEADERS = {
     "stockqty": "stock_qty", "stanje": "stock_qty", "kolicina": "stock_qty", "nastanju": "stock_qty",
     "trackexpiry": "track_expiry", "pratirok": "track_expiry", "pratirokove": "track_expiry",
     "pratirokatrajanja": "track_expiry",
+    "unit": "unit", "unitofmeasure": "unit", "jedinicamere": "unit", "jedinica": "unit", "mera": "unit",
 }
 _IMPORT_TEMPLATE_HEADERS = [
     ("name", "Naziv"), ("barcode", "Barkod"), ("manufacturer", "Proizvođač"), ("price_no_vat", "Cena bez PDV"),
     ("vat_rate", "PDV %"), ("pieces_per_package", "Komada u pakovanju"),
-    ("boxes_per_transport", "Transportno pakovanje (komada)"), ("stock_qty", "Stanje (komada)"),
-    ("track_expiry", "Prati rok (da/ne)"), ("package_barcode", "Barkod kutije"),
+    ("boxes_per_transport", "Transportno pakovanje (komada)"), ("stock_qty", "Stanje (u jedinici mere)"),
+    ("track_expiry", "Prati rok (da/ne)"), ("package_barcode", "Barkod kutije"), ("unit", "Jedinica mere"),
 ]
 
 
 # Downloadable example: includes a product without a barcode (matched by name)
 # and a text price with a comma, both of which the import accepts.
 _IMPORT_EXAMPLE_ROWS = [
-    ("Jaffa keks 150g", "8601000000018", "Jaffa", 46.5, 20, 12, 48, 240, "ne", "8601000100011"),
-    ("Plazma keks 300g", "8601000000025", "Bambi", 189.9, 20, 10, 40, 120, "ne", "8601000100028"),
-    ("Smoki 50g", None, "Bambi", 39, 20, 24, 96, 0, "ne", None),
-    ("Mleko 2.8% 1l", "8601000000049", "Imlek", "124,5", 10, 12, 72, 360, "da", "8601000100042"),
-    ("Jogurt 2.8% 1l", "8601000000056", "Imlek", 118, 10, 12, 72, 300, "da", None),
-    ("Ulje suncokretovo 1l", "8601000000063", "Dijamant", 259, 20, 12, 60, 180, "ne", None),
-    ("Brašno T-500 1kg", "8601000000070", "Mlin", "79,9", 10, 10, 100, 500, "ne", None),
-    ("Kafa Grand 200g", "8601000000087", "Strauss", 299, 20, 12, 48, None, "ne", None),
+    ("Jaffa keks 150g", "8601000000018", "Jaffa", 46.5, 20, 12, 48, 240, "ne", "8601000100011", "kom"),
+    ("Plazma keks 300g", "8601000000025", "Bambi", 189.9, 20, 10, 40, 120, "ne", "8601000100028", "kom"),
+    ("Smoki 50g", None, "Bambi", 39, 20, 24, 96, 0, "ne", None, "kom"),
+    ("Mleko 2.8% 1l", "8601000000049", "Imlek", "124,5", 10, 12, 72, 360, "da", "8601000100042", "kom"),
+    ("Jogurt 2.8% 1l", "8601000000056", "Imlek", 118, 10, 12, 72, 300, "da", None, "kom"),
+    ("Ulje suncokretovo 1l", "8601000000063", "Dijamant", 259, 20, 12, 60, 180, "ne", None, "kom"),
+    ("Brašno T-500 1kg", "8601000000070", "Mlin", "79,9", 10, 10, 100, 500, "ne", None, "kom"),
+    ("Kafa Grand 200g", "8601000000087", "Strauss", 299, 20, 12, 48, None, "ne", None, "kom"),
+    ("Sir kačkavalj (po kg)", "8601000000094", "Mlekara", 1100, 10, 0, 0, "25,5", "ne", None, "kg"),
 ]
 
 
@@ -3659,7 +3839,7 @@ async def product_import_template(
         if _IMPORT_TEMPLATE_HEADERS[i][0] in ("barcode", "package_barcode"):  # text keeps leading zeros
             for cell in ws[letter][1:]:
                 cell.number_format = "@"
-        ws.column_dimensions[letter].width = (32, 18, 22, 14, 8, 20, 30, 16, 18, 18)[i]
+        ws.column_dimensions[letter].width = (32, 18, 22, 14, 8, 20, 30, 22, 18, 18, 16)[i]
     buf = io.BytesIO()
     wb.save(buf)
     return Response(
@@ -3714,6 +3894,12 @@ async def import_products(
     by_name = {p["name"].strip().lower(): p for p in existing if p.get("name")}
     seen_barcodes: Dict[str, int] = {}
     seen_ids: Dict[str, int] = {}
+    units_by_code: Dict[str, dict] = {}
+    unit_lookup: Dict[str, dict] = {}
+    async for u in db.units.find({}, {"_id": 0}):
+        units_by_code[u["code"]] = u
+        for label in (u["code"], u["symbol"], u["name_sr"], u["name_en"]):
+            unit_lookup.setdefault(_import_header_key(label), u)
     rows_out = []
     for row_no, row in body:
         values = {field: (row[idx] if idx < len(row) else None) for idx, field in columns.items()}
@@ -3732,7 +3918,7 @@ async def import_products(
             errors.append(str(exc))
         for field, kwargs in (
             ("price_no_vat", {}), ("vat_rate", {"maximum": 100}), ("pieces_per_package", {"integer": True}),
-            ("boxes_per_transport", {"integer": True}), ("stock_qty", {"integer": True, "maximum": 1_000_000}),
+            ("boxes_per_transport", {"integer": True}),
         ):
             if field in columns.values():
                 try:
@@ -3759,6 +3945,43 @@ async def import_products(
             product = by_package.get(package_code)
         if product is None and name:
             product = by_name.get(name.lower())
+        # Unit of measure: the cell, else the product's own, else pieces. The stock
+        # column is in that unit (25,5 kg) and is stored as whole base units (g).
+        unit_cell = str(values.get("unit") or "").strip()
+        unit_doc = None
+        if unit_cell:
+            unit_doc = unit_lookup.get(_import_header_key(unit_cell))
+            if unit_doc is None or not unit_doc.get("active", True):
+                errors.append(f"Unknown unit: {unit_cell}")
+                unit_doc = None
+        current_unit = units_by_code.get((product or {}).get("unit") or "kom") or units_by_code.get("kom")
+        if unit_doc is not None and product is not None and unit_doc["code"] != current_unit["code"]:
+            try:
+                await _check_unit_change(product, current_unit, unit_doc)
+            except HTTPException as exc:
+                errors.append(str(exc.detail))
+                unit_doc = None
+        final_unit = unit_doc or current_unit
+        if unit_doc is not None:
+            parsed["unit"] = unit_doc["code"]
+        if "stock_qty" in columns.values():
+            try:
+                shown = _import_number(values.get("stock_qty"), "stock_qty", maximum=1_000_000)
+            except ValueError as exc:
+                shown = None
+                errors.append(str(exc))
+            if shown is not None:
+                base = shown * final_unit["factor"]
+                if abs(base - round(base)) > 1e-6:
+                    errors.append(f"stock_qty: too many decimals for {final_unit['symbol']}")
+                else:
+                    parsed["stock_qty"] = int(round(base))
+        if final_unit["group"] != "count" and (
+            (parsed.get("pieces_per_package", (product or {}).get("pieces_per_package")) or 0) > 0
+            or (parsed.get("boxes_per_transport", (product or {}).get("boxes_per_transport")) or 0) > 0
+            or package_code or (product or {}).get("package_barcode")
+        ):
+            errors.append("Packaging is only for products counted in pieces")
         if product is not None and code and product.get("barcode") not in (None, code):
             errors.append("Product already has a different barcode")
         if code and code in seen_barcodes:
@@ -3984,6 +4207,8 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
         {"id": {"$in": product_ids}, "client_id": client_id}, {"_id": 0}
     ).to_list(None)
     products = {p["id"]: p for p in product_docs}
+    unit_codes = list({p.get("unit") or "kom" for p in product_docs})
+    units = {u["code"]: u async for u in db.units.find({"code": {"$in": unit_codes}}, {"_id": 0})}
 
     items: List[OrderItem] = []
     for line in inp.items:
@@ -4005,6 +4230,9 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
             vat_rate=product.get("vat_rate", 20),
             pieces_per_package=product.get("pieces_per_package", 0),
             boxes_per_transport=product.get("boxes_per_transport", 0),
+            unit=product.get("unit") or "kom",
+            unit_symbol=(units.get(product.get("unit") or "kom") or {}).get("symbol") or (product.get("unit") or "kom"),
+            unit_factor=(units.get(product.get("unit") or "kom") or {}).get("factor") or 1,
             discount=_allowed_supplier_discount(product, line.discount),
             additional_discount=_allowed_additional_discount(product, line.additional_discount),
             ordered_qty=line.ordered_qty,
@@ -4313,10 +4541,16 @@ async def app_update():
 
 
 # ---------------- Statistics ----------------
+_STATS_EXCLUDED_STATUSES = ("canceled", "rejected")
+
+
 async def _compute_client_stats(client_id: str) -> ClientStats:
     client = await db.clients.find_one({"id": client_id}, {"_id": 0})
     client_name = client["name"] if client else "Unknown"
-    orders = await db.orders.find({"client_id": client_id}, {"_id": 0}).to_list(None)
+    # Canceled and rejected orders never became sales.
+    orders = await db.orders.find(
+        {"client_id": client_id, "status": {"$nin": list(_STATS_EXCLUDED_STATUSES)}}, {"_id": 0}
+    ).to_list(None)
     customer_count = await db.customers.count_documents({"client_id": client_id})
     product_count = await db.products.count_documents({"client_id": client_id})
 
@@ -4974,6 +5208,8 @@ async def stats_dashboard(
             continue
         if end and created_at >= end + timedelta(days=1):
             continue
+        if order.get("status") in _STATS_EXCLUDED_STATUSES:
+            continue
         filtered_orders.append(order)
 
     product_rows: Dict[str, Dict[str, Any]] = {}
@@ -5004,21 +5240,26 @@ async def stats_dashboard(
         customer["order_count"] += 1
         customer["total_grand"] += totals["grand"]
 
+        order_shipped = order.get("status") == OrderStatus.SHIPPED.value
         for item in order.get("items", []):
             product_id = item.get("product_id", item.get("name", "unknown"))
             product = product_rows.setdefault(product_id, {
                 "product_id": product_id,
                 "name": item.get("name", "Unknown"),
                 "manufacturer": item.get("manufacturer", ""),
+                # Orders come newest first, so this is the product's current unit.
+                "unit_symbol": item.get("unit_symbol") or "kom",
+                "unit_factor": item.get("unit_factor") or 1,
                 "ordered_qty": 0,
                 "order_count": 0,
                 "total_net": 0.0,
                 "total_vat": 0.0,
             })
-            product["ordered_qty"] += int(item.get("ordered_qty") or 0)
+            # Same basis as the order totals: what was packed once shipped, else what was ordered.
+            product["ordered_qty"] += int(effective_qty(item, order_shipped))
             product["order_count"] += 1
-            product["total_net"] += line_net(item)
-            product["total_vat"] += line_vat(item)
+            product["total_net"] += line_net(item, order_shipped)
+            product["total_vat"] += line_vat(item, order_shipped)
 
     customer_count = await db.customers.count_documents(query)
     summary = DashboardSummary(

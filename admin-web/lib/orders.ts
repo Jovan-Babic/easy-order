@@ -9,6 +9,10 @@ export type OrderItem = {
   price_no_vat?: number;
   vat_rate?: number;
   pieces_per_package?: number;
+  // Snapshot of the product's unit: quantities are whole base units, the price is per unit_factor of them.
+  unit?: string;
+  unit_symbol?: string;
+  unit_factor?: number;
   ordered_qty: number;
   picked_qty?: number | null;
   discount?: number;

@@ -135,6 +135,8 @@ export function ChargeMonthDialog({ clientId, onClose, onDone }: { clientId: str
   const { t } = useLanguage();
   const [month, setMonth] = useState(nextMonth());
   const [due, setDue] = useState("");
+  const [amount, setAmount] = useState("");
+  const [amountTouched, setAmountTouched] = useState(false);
   const [preview, setPreview] = useState<ChargePreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const { busy, error, send } = useSubmit(onDone);
@@ -145,8 +147,13 @@ export function ChargeMonthDialog({ clientId, onClose, onDone }: { clientId: str
     fetch(`/api/clients/${clientId}/charge-month?month=${month}`).then(async (res) => {
       if (!current) return;
       if (res.ok) {
-        setPreview(await res.json());
+        const body: ChargePreview = await res.json();
+        setPreview(body);
         setPreviewError(null);
+        setAmountTouched((touched) => {
+          if (!touched) setAmount(String(body.total));
+          return touched;
+        });
       } else {
         setPreview(null);
         setPreviewError(await detailOf(res, t("loadFailed")));
@@ -163,7 +170,7 @@ export function ChargeMonthDialog({ clientId, onClose, onDone }: { clientId: str
         className="grid gap-3"
         onSubmit={(e) => {
           e.preventDefault();
-          send(`/api/clients/${clientId}/charge-month`, "POST", { month, due_date: due });
+          send(`/api/clients/${clientId}/charge-month`, "POST", { month, due_date: due, amount: Number(amount) });
         }}
       >
         <div className="grid grid-cols-2 gap-3">
@@ -199,13 +206,35 @@ export function ChargeMonthDialog({ clientId, onClose, onDone }: { clientId: str
             <dd className="text-right font-bold text-onSurface">{money(preview.total, preview.currency)}</dd>
           </dl>
         )}
+        {preview && (
+          <label className="text-sm font-semibold text-onSurface">
+            {t("payAmount")} ({preview.currency})
+            <input
+              required
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={amount}
+              onChange={(e) => {
+                setAmount(e.target.value);
+                setAmountTouched(true);
+              }}
+              className={`${input} mt-1`}
+            />
+            {amountTouched && Number(amount) !== preview.total && (
+              <button type="button" className="mt-1 text-xs font-semibold text-brand hover:underline" onClick={() => { setAmount(String(preview.total)); setAmountTouched(false); }}>
+                {t("chargeUseCalculated")} ({money(preview.total, preview.currency)})
+              </button>
+            )}
+          </label>
+        )}
         {preview?.already_charged && <p className="text-sm text-warning">{t("chargeMonthAlready")}</p>}
         {error && <p className="text-sm text-error">{error}</p>}
         <div className="flex justify-end gap-3">
           <button type="button" onClick={onClose} className={secondary}>
             {t("cancel")}
           </button>
-          <button type="submit" disabled={busy || !preview || preview.already_charged || !due} className={primary}>
+          <button type="submit" disabled={busy || !preview || preview.already_charged || !due || !(Number(amount) > 0)} className={primary}>
             {t("chargeMonth")}
           </button>
         </div>

@@ -28,7 +28,9 @@ export function lineNet(it: OrderItem, shipped = false): number {
   const supplier = it.discount ?? 0;
   const additional = it.additional_discount ?? 0;
   const totalDiscount = Math.max(0, Math.min(100, supplier + additional));
-  return price * qty * (1 - totalDiscount / 100);
+  // Quantities are whole base units (g, ml, mm, kom); the price is per unit_factor of them.
+  const factor = it.unit_factor || 1;
+  return (price * qty / factor) * (1 - totalDiscount / 100);
 }
 
 export function lineVat(it: OrderItem, shipped = false): number {

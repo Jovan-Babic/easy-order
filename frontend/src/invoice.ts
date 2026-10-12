@@ -1,6 +1,7 @@
 import dayjs from "dayjs";
 import { Order } from "@/src/api";
 import { translations, Lang } from "@/src/i18n";
+import { lineQtyLabel, perUnit } from "@/src/utils/units";
 import { computeTotals, effectiveDiscountPct, effectiveQty, invoiceLines, isShipped, lineNet, money } from "@/src/calc";
 
 export type InvoiceContact = {
@@ -28,8 +29,8 @@ export function buildInvoiceText(order: Order, lang: Lang, contact?: InvoiceCont
   invoiceLines(order).forEach((it, idx) => {
     lines.push(`${idx + 1}. ${it.name}`);
     if (it.manufacturer) lines.push(`   ${t.manufacturer}: ${it.manufacturer}`);
-    lines.push(`   ${t.priceNoVat}: ${money(it.price_no_vat ?? 0)}`);
-    lines.push(`   ${t.orderedPieces}: ${effectiveQty(it, shipped)}`);
+    lines.push(`   ${t.priceNoVat}: ${money(it.price_no_vat ?? 0)}${perUnit(it)}`);
+    lines.push(`   ${t.orderedPieces}: ${lineQtyLabel(effectiveQty(it, shipped), it)}`);
     lines.push(`   ${t.supplierDiscount}: ${it.discount ?? 0}%`);
     lines.push(`   ${t.additionalDiscount}: ${it.additional_discount ?? 0}%`);
     lines.push(`   ${t.totalDiscount}: ${money(effectiveDiscountPct(it))}%`);
@@ -59,8 +60,8 @@ export function buildInvoiceHtml(order: Order, lang: Lang, contact?: InvoiceCont
           <strong>${escapeHtml(it.name)}</strong>
           ${it.manufacturer ? `<br/><span class="muted">${escapeHtml(it.manufacturer)}</span>` : ""}
         </td>
-        <td class="num">${money(it.price_no_vat ?? 0)}</td>
-        <td class="num">${effectiveQty(it, shipped)}</td>
+        <td class="num">${money(it.price_no_vat ?? 0)}${escapeHtml(perUnit(it))}</td>
+        <td class="num">${escapeHtml(lineQtyLabel(effectiveQty(it, shipped), it))}</td>
         <td class="num">${it.discount ?? 0}% + ${it.additional_discount ?? 0}%</td>
         <td class="num">${it.vat_rate ?? 0}%</td>
         <td class="num">${money(lineNet(it, shipped))}</td>

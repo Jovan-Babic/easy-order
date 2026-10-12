@@ -5,6 +5,7 @@ import { useLanguage } from "@/lib/i18n";
 import { useSession } from "@/lib/session-provider";
 import { ClientInfo, Customer, Order, discountPct, money } from "@/lib/orders";
 import { StatusBadge } from "@/components/StatusBadge";
+import { lineQtyLabel } from "@/lib/units";
 
 // Print-friendly invoice / delivery note (pick list without prices). The
 // surrounding page needs the `orders-page` class so globals.css can hide
@@ -142,16 +143,19 @@ export function OrderPrintModal({
                       {item.manufacturer && <span className="block text-xs font-normal text-muted">{item.manufacturer}</span>}
                     </td>
                     <td className="px-2 py-3 text-right">
-                      {isInvoice || shipped ? qty : (
+                      {isInvoice || shipped ? lineQtyLabel(qty, item) : (
                         <span className="inline-block min-w-12 border-b border-borderStrong text-right">
-                          {item.picked_qty ?? ""}
+                          {item.picked_qty != null ? lineQtyLabel(item.picked_qty, item) : ""}
                         </span>
                       )}
-                      {!isInvoice && ` / ${item.ordered_qty}`}
+                      {!isInvoice && ` / ${lineQtyLabel(item.ordered_qty, item)}`}
                     </td>
                     {isInvoice && (
                       <>
-                        <td className="px-2 py-3 text-right">{money(item.price_no_vat ?? 0)}</td>
+                        <td className="px-2 py-3 text-right">
+                          {money(item.price_no_vat ?? 0)}
+                          {item.unit_symbol && item.unit_symbol !== "kom" && <span className="block text-xs text-muted">/ {item.unit_symbol}</span>}
+                        </td>
                         <td className="px-2 py-3 text-right">{discountPct(item)}%</td>
                         <td className="px-2 py-3 text-right font-semibold">{money(item.line_net)}</td>
                       </>

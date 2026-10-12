@@ -40,6 +40,18 @@ export type AppUpdate = {
   release_notes?: string;
 };
 
+/** Unit of measure (GET /units): quantities are whole base units, `factor` base units = 1 of this unit. */
+export type Unit = {
+  code: string;
+  name_sr: string;
+  name_en: string;
+  symbol: string;
+  group: string;
+  base_code: string;
+  factor: number;
+  active: boolean;
+};
+
 export type Customer = {
   id: string;
   client_id?: string;
@@ -64,6 +76,8 @@ export type Product = {
   additional_discounts?: number[];
   pieces_per_package?: number;
   boxes_per_transport?: number;
+  // Unit code (see /units); quantities are whole base units of it. Missing = "kom".
+  unit?: string;
   barcode?: string | null;
   // Barcode of one box: a scan stands for pieces_per_package pieces.
   package_barcode?: string | null;
@@ -121,6 +135,10 @@ export type OrderItem = {
   boxes_per_transport?: number;
   discount?: number;
   additional_discount?: number;
+  // Snapshot of the product's unit: the price is per unit_factor base units.
+  unit?: string;
+  unit_symbol?: string;
+  unit_factor?: number;
   ordered_qty: number;
   picked_qty?: number | null; // set by the warehouse while packing
   line_net?: number; // server-computed, only on responses
@@ -305,6 +323,7 @@ export const api = {
       body: JSON.stringify({ status, note, invoice_number: invoiceNumber }),
     }),
   getMyClient: () => req<ClientInfo>("/clients/me"),
+  listUnits: () => req<Unit[]>("/units"),
   getProductByBarcode: (code: string) => req<Product>(`/products/by-barcode/${encodeURIComponent(code)}`),
   linkBarcode: (id: string, barcode: string, kind: "piece" | "package" = "piece") =>
     req<Product>(`/products/${id}/barcode`, { method: "POST", body: JSON.stringify({ barcode, kind }) }),
