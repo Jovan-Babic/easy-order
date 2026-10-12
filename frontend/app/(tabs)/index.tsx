@@ -27,9 +27,11 @@ import { LangToggle } from "@/src/components/LangToggle";
 import { Button } from "@/src/components/Button";
 import { BarcodeScanner } from "@/src/components/BarcodeScanner";
 import { LOGOUT } from "@/constants/testIds";
+import { cleanQtyInput, formatQty, formatQtyWithUnit, isCountUnit, lineUnit, parseQty, unitOf, useUnits } from "@/src/utils/units";
 
 function OrderCatalogScreen() {
   const { t, showToast } = useApp();
+  const units = useUnits();
   const { logout } = useAuth();
   const router = useRouter();
   const { edit } = useLocalSearchParams<{ edit?: string }>();
@@ -70,7 +72,7 @@ function OrderCatalogScreen() {
         const order = await api.getOrder(edit);
         setEditingOrder(order);
         setSelected(c.find((x) => x.id === order.customer_id) ?? null);
-        setDrafts(Object.fromEntries(order.items.map((i) => [i.product_id, String(i.ordered_qty)])));
+        setDrafts(Object.fromEntries(order.items.map((i) => [i.product_id, formatQty(i.ordered_qty, lineUnit(i))])));
         setAdditionalDiscountSel(
           Object.fromEntries(order.items.map((i) => [i.product_id, i.additional_discount ?? 0]))
         );
@@ -88,8 +90,10 @@ function OrderCatalogScreen() {
     }, [load])
   );
 
+  // Quantities are typed in the product's unit (kg, l, m); only pieces are limited to digits.
   const setQty = (id: string, value: string) => {
-    setDrafts((prev) => ({ ...prev, [id]: value.replace(/[^0-9]/g, "") }));
+    const unit = unitOf(units, products.find((p) => p.id === id)?.unit);
+    setDrafts((prev) => ({ ...prev, [id]: cleanQtyInput(value, unit) }));
   };
 
   const effectiveDiscount = (supplierDiscount: number, additionalDiscount: number) => {
@@ -146,15 +150,19 @@ function OrderCatalogScreen() {
     if (!selected) return;
     // Only what the rep decides - the backend snapshots name/price/VAT from
     // the stored product, so stale catalog data here can't end up on an order.
-    const items: OrderLineInput[] = products
-      .filter((p) => Number(drafts[p.id]) > 0)
-      .map((p) => ({
-        product_id: p.id,
-        ordered_qty: Number(drafts[p.id]) || 0,
-        discount: p.discount ?? 0,
-        additional_discount: additionalDiscountSel[p.id] ?? 0,
-      }));
+    const typed = products.filter((p) => Number(String(drafts[p.id] ?? "").replace(",", ".")) > 0);
+    // The backend takes whole base units (g, ml, mm): "3,5" kg -> 3500.
+    const items: OrderLineInput[] = typed.map((p) => ({
+      product_id: p.id,
+      ordered_qty: parseQty(drafts[p.id], unitOf(units, p.unit)) ?? 0,
+      discount: p.discount ?? 0,
+      additional_discount: additionalDiscountSel[p.id] ?? 0,
+    }));
     if (items.length === 0) return;
+    if (items.some((i) => i.ordered_qty <= 0)) {
+      showToast(t("invalidQuantity"));
+      return;
+    }
     try {
       setSubmitting(true);
       const order = editingOrder
@@ -190,9 +198,10 @@ function OrderCatalogScreen() {
 
   const confirmationItems = useMemo(() => {
     return products
-      .filter((p) => Number(drafts[p.id]) > 0)
+      .filter((p) => Number(String(drafts[p.id] ?? "").replace(",", ".")) > 0)
       .map((p) => {
-        const qty = Number(drafts[p.id]) || 0;
+        const unit = unitOf(units, p.unit);
+        const qty = `${drafts[p.id]}${isCountUnit(unit) ? "" : ` ${unit.symbol}`}`;
         const supplierDiscount = p.discount ?? 0;
         const selectedAdditionalDiscount = additionalDiscountSel[p.id] ?? 0;
         const totalDiscount = effectiveDiscount(supplierDiscount, selectedAdditionalDiscount);
@@ -205,7 +214,7 @@ function OrderCatalogScreen() {
           totalDiscount,
         };
       });
-  }, [products, drafts, additionalDiscountSel]);
+  }, [products, drafts, additionalDiscountSel, units]);
 
   return (
     <View style={styles.container}>
@@ -353,10 +362,14 @@ function OrderCatalogScreen() {
               const selectedAdditionalDiscount = additionalDiscountSel[p.id] ?? 0;
               const totalDiscount = effectiveDiscount(supplierDiscount, selectedAdditionalDiscount);
               const tracked = p.stock_qty != null;
+              const unit = unitOf(units, p.unit);
+              const countUnit = isCountUnit(unit);
               // While editing, this order's own quantity is inside "reserved".
               const ownQty = editingOrder?.items.find((i) => i.product_id === p.id)?.ordered_qty ?? 0;
+              // Stock and availability are whole base units (g, ml, mm, kom).
               const available = tracked ? (p.available_qty ?? 0) + ownQty : 0;
-              const overStock = tracked && Number(drafts[p.id]) > available;
+              const overStock =
+                tracked && Number(String(drafts[p.id] ?? "").replace(",", ".")) * unit.factor > available;
               return (
                 <View style={styles.card} testID={`product-card-${p.id}`}>
                   <View style={styles.cardTop}>
@@ -380,13 +393,13 @@ function OrderCatalogScreen() {
                         <Text style={styles.pManufacturer}>{p.manufacturer}</Text>
                       )}
                       <View style={styles.metaRow}>
-                        <Meta label={t("priceNoVat")} value={String(p.price_no_vat ?? 0)} />
-                        <Meta label={t("piecesPerPackage")} value={String(p.pieces_per_package ?? 0)} />
-                        <Meta label={t("transportPackage")} value={String(p.boxes_per_transport ?? 0)} />
+                        <Meta label={t("priceNoVat")} value={`${p.price_no_vat ?? 0}${countUnit ? "" : ` / ${unit.symbol}`}`} />
+                        {countUnit && <Meta label={t("piecesPerPackage")} value={String(p.pieces_per_package ?? 0)} />}
+                        {countUnit && <Meta label={t("transportPackage")} value={String(p.boxes_per_transport ?? 0)} />}
                       </View>
                       {tracked && (
                         <Text style={[styles.stockLine, available <= 0 && { color: colors.warning }]} testID={`stock-${p.id}`}>
-                          {t("stockOnHand")}: {p.stock_qty} · {t("stockAvailable")}: {available}
+                          {t("stockOnHand")}: {formatQtyWithUnit(p.stock_qty, unit)} · {t("stockAvailable")}: {formatQtyWithUnit(available, unit)}
                         </Text>
                       )}
                     </View>
@@ -416,7 +429,7 @@ function OrderCatalogScreen() {
                       </Pressable>
                     </View>
                     <Field
-                      label={t("orderedPieces")}
+                      label={countUnit ? t("orderedPieces") : `${t("quantity")} (${unit.symbol})`}
                       value={drafts[p.id] || ""}
                       onChangeText={(v) => setQty(p.id, v)}
                       testID={`qty-input-${p.id}`}

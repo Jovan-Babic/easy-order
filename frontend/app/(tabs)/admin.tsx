@@ -24,6 +24,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
 import { hasModule } from "@/src/utils/modules";
+import { isCountUnit, unitOf, useUnits } from "@/src/utils/units";
 import { api, ApiError, Customer, Product } from "@/src/api";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
@@ -139,7 +140,8 @@ function formatPhone(countryCode: string, phoneNumber: string) {
 }
 
 export default function AdminScreen() {
-  const { t, showToast } = useApp();
+  const { t, showToast, lang } = useApp();
+  const units = useUnits();
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const safeBottom = Math.max(insets.bottom, 12);
@@ -186,7 +188,7 @@ export default function AdminScreen() {
     setPendingImage(null);
     setEditing(null);
     setForm(tab === "products"
-      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "", barcode: "", package_barcode: "", active: true, track_expiry: false }
+      ? { name: "", image: "", manufacturer: "", price_no_vat: "", vat_rate: "20", discount: "0", discounts: [...DISCOUNT_OPTIONS], additional_discounts: [0], pieces_per_package: "", boxes_per_transport: "", unit: "kom", barcode: "", package_barcode: "", active: true, track_expiry: false }
       : { name: "", address: "", email: "", phone: "", countryCode: "+381", phoneNumber: "", pib: "" });
     setCountryCodeOpen(false);
     setPermMsg(false);
@@ -214,6 +216,7 @@ export default function AdminScreen() {
               : [0],
             pieces_per_package: String(item.pieces_per_package ?? ""),
             boxes_per_transport: String(item.boxes_per_transport ?? ""),
+            unit: item.unit || "kom",
             barcode: item.barcode ?? "",
             package_barcode: item.package_barcode ?? "",
             active: item.active !== false,
@@ -305,10 +308,12 @@ export default function AdminScreen() {
                 .map((v: number) => Math.trunc(Number(v)))
                 .filter((v: number) => Number.isInteger(v) && v >= 0 && v <= 15)
             : [0]),
-          pieces_per_package: Number(form.pieces_per_package) || 0,
-          boxes_per_transport: Number(form.boxes_per_transport) || 0,
+          unit: form.unit || "kom",
+          // Boxes and transport packaging only apply to products counted in pieces.
+          pieces_per_package: isCountUnit(unitOf(units, form.unit)) ? Number(form.pieces_per_package) || 0 : 0,
+          boxes_per_transport: isCountUnit(unitOf(units, form.unit)) ? Number(form.boxes_per_transport) || 0 : 0,
           barcode: String(form.barcode ?? "").trim(),
-          package_barcode: String(form.package_barcode ?? "").trim(),
+          package_barcode: isCountUnit(unitOf(units, form.unit)) ? String(form.package_barcode ?? "").trim() : "",
           active: form.active !== false,
           track_expiry: form.track_expiry === true,
         };
@@ -530,7 +535,30 @@ export default function AdminScreen() {
                       })}
                     </View>
                   </View>
-                  <FormField label={t("piecesPerPackage")} value={form.pieces_per_package} onChangeText={(v) => setForm((f: any) => ({ ...f, pieces_per_package: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-pieces" />
+                  <View style={{ marginBottom: spacing.md }}>
+                    <Text style={styles.fieldLabel}>{t("productUnit")}</Text>
+                    <View style={styles.discChips}>
+                      {units
+                        .filter((u) => u.active || u.code === form.unit)
+                        .map((u) => {
+                          const selected = (form.unit || "kom") === u.code;
+                          return (
+                            <Pressable
+                              key={`unit-${u.code}`}
+                              testID={`unit-chip-${u.code}`}
+                              style={[styles.discChip, selected && styles.discChipDefault]}
+                              onPress={() => setForm((f: any) => ({ ...f, unit: u.code }))}
+                            >
+                              <Text style={[styles.discChipText, selected && styles.discChipTextDefault]}>
+                                {lang === "en" ? u.name_en : u.name_sr} ({u.symbol})
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                    </View>
+                    <Text style={{ fontSize: font.sm, color: colors.muted }}>{t("productUnitHint")}</Text>
+                  </View>
+                  {isCountUnit(unitOf(units, form.unit)) && <FormField label={t("piecesPerPackage")} value={form.pieces_per_package} onChangeText={(v) => setForm((f: any) => ({ ...f, pieces_per_package: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-pieces" />}
                   {hasModule(user, "warehouse") && (
                   <>
                   <View style={{ flexDirection: "row", alignItems: "flex-end", gap: spacing.sm }}>
@@ -549,6 +577,8 @@ export default function AdminScreen() {
                       setScanOpen(false);
                     }}
                   />
+                  {isCountUnit(unitOf(units, form.unit)) && (
+                  <>
                   <View style={{ flexDirection: "row", alignItems: "flex-end", gap: spacing.sm }}>
                     <View style={{ flex: 1 }}>
                       <FormField label={t("packageBarcode")} value={form.package_barcode ?? ""} onChangeText={(v) => setForm((f: any) => ({ ...f, package_barcode: v.replace(/[^A-Za-z0-9-]/g, "") }))} testID="form-package-barcode" />
@@ -568,7 +598,9 @@ export default function AdminScreen() {
                   />
                   </>
                   )}
-                  <FormField label={t("transportPackage")} value={form.boxes_per_transport} onChangeText={(v) => setForm((f: any) => ({ ...f, boxes_per_transport: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-boxes" />
+                  </>
+                  )}
+                  {isCountUnit(unitOf(units, form.unit)) && <FormField label={t("transportPackage")} value={form.boxes_per_transport} onChangeText={(v) => setForm((f: any) => ({ ...f, boxes_per_transport: v.replace(/[^0-9]/g, "") }))} keyboardType="numeric" testID="form-boxes" />}
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: spacing.sm }}>
                     <View style={{ flex: 1, paddingRight: spacing.md }}>
                       <Text style={{ fontSize: font.base, fontWeight: "600", color: colors.onSurface }}>{t("productActive")}</Text>

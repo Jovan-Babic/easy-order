@@ -40,6 +40,18 @@ export type AppUpdate = {
   release_notes?: string;
 };
 
+/** Unit of measure (GET /units): quantities are whole base units, `factor` base units = 1 of this unit. */
+export type Unit = {
+  code: string;
+  name_sr: string;
+  name_en: string;
+  symbol: string;
+  group: string;
+  base_code: string;
+  factor: number;
+  active: boolean;
+};
+
 export type Customer = {
   id: string;
   client_id?: string;
@@ -311,6 +323,7 @@ export const api = {
       body: JSON.stringify({ status, note, invoice_number: invoiceNumber }),
     }),
   getMyClient: () => req<ClientInfo>("/clients/me"),
+  listUnits: () => req<Unit[]>("/units"),
   getProductByBarcode: (code: string) => req<Product>(`/products/by-barcode/${encodeURIComponent(code)}`),
   linkBarcode: (id: string, barcode: string, kind: "piece" | "package" = "piece") =>
     req<Product>(`/products/${id}/barcode`, { method: "POST", body: JSON.stringify({ barcode, kind }) }),

@@ -25,6 +25,7 @@ import { ExpiringList } from "@/src/components/ExpiringList";
 import { StockScanPanel } from "@/src/components/StockScanPanel";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { isoToDisplay } from "@/src/utils/expiry";
+import { formatQty, lineQtyLabel, lineUnit, parseQty } from "@/src/utils/units";
 
 const QUEUE: OrderStatus[] = ["new", "in_progress"];
 
@@ -210,7 +211,9 @@ export default function WarehouseScreen() {
                               {it.name}
                             </Text>
                             <Text style={styles.lineQty}>
-                              {it.ordered_qty} {t("pieces")}
+                              {lineUnit(it).factor === 1 && lineUnit(it).symbol === "kom"
+                                ? `${it.ordered_qty} ${t("pieces")}`
+                                : lineQtyLabel(it.ordered_qty, it)}
                             </Text>
                           </Pressable>
                           {expiryProducts[it.product_id] && (
@@ -223,7 +226,33 @@ export default function WarehouseScreen() {
                                 : ""}
                             </Text>
                           )}
-                          {on && (
+                          {on && !(lineUnit(it).factor === 1 && lineUnit(it).symbol === "kom") && (
+                            // Weight / volume / length: the amount sent is typed in the line's unit (3,5 kg).
+                            <View style={styles.stepper}>
+                              <Text style={styles.stepValue}>{t("sentLabel")}:</Text>
+                              <TextInput
+                                testID={`picked-${item.id}-${it.product_id}`}
+                                style={styles.input}
+                                keyboardType="numeric"
+                                editable={!busy}
+                                defaultValue={formatQty(it.picked_qty, lineUnit(it))}
+                                key={`${it.product_id}-${it.picked_qty ?? "x"}`}
+                                onEndEditing={(e) => {
+                                  const typed = parseQty(e.nativeEvent.text, lineUnit(it));
+                                  if (typed === null) {
+                                    Alert.alert(t("somethingWentWrong"), t("invalidQuantity"));
+                                    return;
+                                  }
+                                  const next = Math.min(it.ordered_qty, typed);
+                                  if (next !== it.picked_qty) setQty(item, it.product_id, next);
+                                }}
+                              />
+                              <Text style={styles.stepValue}>
+                                {lineUnit(it).symbol} / {formatQty(it.ordered_qty, lineUnit(it))}
+                              </Text>
+                            </View>
+                          )}
+                          {on && lineUnit(it).factor === 1 && lineUnit(it).symbol === "kom" && (
                             <View style={styles.stepper}>
                               <Pressable
                                 style={styles.stepBtn}

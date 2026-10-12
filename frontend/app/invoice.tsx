@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
 import { api, Order } from "@/src/api";
 import { buildInvoiceText, buildInvoiceHtml } from "@/src/invoice";
+import { lineQtyLabel, perUnit } from "@/src/utils/units";
 import { computeTotals, effectiveDiscountPct, effectiveQty, invoiceLines, isShipped, lineNet, money } from "@/src/calc";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
@@ -156,8 +157,8 @@ export default function InvoiceScreen() {
                 <View key={i} style={styles.item} testID={`invoice-item-${i}`}>
                   <Text style={styles.itemName}>{i + 1}. {it.name}</Text>
                   {!!it.manufacturer && <Row label={t("manufacturer")} value={it.manufacturer} />}
-                  <Row label={t("priceNoVat")} value={money(it.price_no_vat ?? 0)} />
-                  <Row label={t("orderedPieces")} value={String(effectiveQty(it, isShipped(order)))} />
+                  <Row label={t("priceNoVat")} value={`${money(it.price_no_vat ?? 0)}${perUnit(it)}`} />
+                  <Row label={t("orderedPieces")} value={lineQtyLabel(effectiveQty(it, isShipped(order)), it)} />
                   <Row label={t("supplierDiscount")} value={`${it.discount ?? 0}%`} />
                   <Row label={t("additionalDiscount")} value={`${it.additional_discount ?? 0}%`} />
                   <Row label={t("totalDiscount")} value={`${money(effectiveDiscountPct(it))}%`} />

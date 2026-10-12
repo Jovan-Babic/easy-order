@@ -16,11 +16,12 @@ import { useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useApp } from "@/src/context/AppContext";
-import { api, ApiError, Product, StockBatch } from "@/src/api";
+import { api, ApiError, Product, StockBatch, Unit } from "@/src/api";
 import { BarcodeScanner, ScanFeedback } from "@/src/components/BarcodeScanner";
 import { Button } from "@/src/components/Button";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { displayToIso, formatDateInput, isoToDisplay } from "@/src/utils/expiry";
+import { cleanQtyInput, formatQty, formatQtyWithUnit, isCountUnit, parseQty, unitOf, useUnits } from "@/src/utils/units";
 
 type Props = { mode: "receipt" | "count" };
 
@@ -38,6 +39,7 @@ const totalPieces = (rows: ExpRow[]) => rows.reduce((sum, r) => sum + (Number(r.
 export function StockScanPanel({ mode }: Props) {
   const { t, showToast } = useApp();
   const insets = useSafeAreaInsets();
+  const units = useUnits();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [qtys, setQtys] = useState<Record<string, string>>({});
@@ -92,6 +94,9 @@ export function StockScanPanel({ mode }: Props) {
   };
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+  // Quantities are typed in the product's unit (kg, l, m) and sent as whole base units (g, ml, mm).
+  const unitFor = (id: string) => unitOf(units, byId.get(id)?.unit);
+  const toBase = (id: string, text: string | undefined) => parseQty(text, unitFor(id)) ?? 0;
 
   // Scan or pick = one more piece on that line (a fresh line starts at 1).
   // A scanned box adds `amount` = its pieces_per_package at once.
@@ -194,14 +199,16 @@ export function StockScanPanel({ mode }: Props) {
   }, [products, search]);
 
   const lines = order.filter((id) => byId.has(id));
-  const rowsOk = (list: ExpRow[]) =>
+  const qtyOk = (id: string, text: string | undefined) => {
+    const base = parseQty(text, unitFor(id));
+    return base !== null && (mode === "count" || base > 0);
+  };
+  const rowsOk = (id: string, list: ExpRow[]) =>
     list.length > 0 &&
-    list.every((r) => r.qty !== "" && (mode === "count" || Number(r.qty) > 0) && rowDate(r) !== "x") &&
+    list.every((r) => qtyOk(id, r.qty) && rowDate(r) !== "x") &&
     new Set(list.map(rowDate)).size === list.length;
   const lineOk = (id: string) =>
-    byId.get(id)?.track_expiry
-      ? rowsOk(rows[id] ?? [])
-      : qtys[id] !== "" && qtys[id] != null && (mode === "count" || Number(qtys[id]) > 0);
+    byId.get(id)?.track_expiry ? rowsOk(id, rows[id] ?? []) : qtyOk(id, qtys[id]);
   const valid = lines.length > 0 && lines.every(lineOk) && (mode === "receipt" || note.trim() !== "");
 
   const confirm = async () => {
@@ -213,8 +220,8 @@ export function StockScanPanel({ mode }: Props) {
         await api.stockReceipt(
           lines.flatMap((id) =>
             tracked(id)
-              ? rows[id].map((r) => ({ product_id: id, qty: Number(r.qty), expiry_date: displayToIso(r.date)! }))
-              : [{ product_id: id, qty: Number(qtys[id]) }]
+              ? rows[id].map((r) => ({ product_id: id, qty: toBase(id, r.qty), expiry_date: displayToIso(r.date)! }))
+              : [{ product_id: id, qty: toBase(id, qtys[id]) }]
           ),
           note.trim() || undefined
         );
@@ -226,10 +233,10 @@ export function StockScanPanel({ mode }: Props) {
                   product_id: id,
                   batches: rows[id].map((r) => ({
                     expiry_date: r.undated ? null : displayToIso(r.date),
-                    counted_qty: Number(r.qty),
+                    counted_qty: toBase(id, r.qty),
                   })),
                 }
-              : { product_id: id, counted_qty: Number(qtys[id]) }
+              : { product_id: id, counted_qty: toBase(id, qtys[id]) }
           ),
           note.trim()
         );
@@ -298,6 +305,7 @@ export function StockScanPanel({ mode }: Props) {
             return (
               <ExpiryCard
                 product={p}
+                unit={unitOf(units, p.unit)}
                 mode={mode}
                 rows={rows[id] ?? []}
                 batches={batchInfo[id] ?? []}
@@ -312,9 +320,12 @@ export function StockScanPanel({ mode }: Props) {
             );
           }
           const tracked = p.stock_qty != null;
-          const book = p.stock_qty ?? 0;
-          const entered = Number(qtys[id]) || 0;
-          const diff = entered - book;
+          const unit = unitOf(units, p.unit);
+          // Display math in the product's unit (a float); only the request is in whole base units.
+          const book = (p.stock_qty ?? 0) / unit.factor;
+          const entered = Number(String(qtys[id] ?? "").replace(",", ".")) || 0;
+          const diff = Number((entered - book).toFixed(6));
+          const bookText = formatQtyWithUnit(p.stock_qty, unit);
           return (
             <View style={styles.card}>
               <View style={{ flex: 1, gap: 2 }}>
@@ -322,18 +333,19 @@ export function StockScanPanel({ mode }: Props) {
                 {p.active === false && <Text style={[styles.sub, { color: colors.warning }]}>{t("inactive")}</Text>}
                 {!!p.barcode && <Text style={styles.sub}>{p.barcode}</Text>}
                 <Text style={styles.sub}>
-                  {t("bookStock")}: {tracked ? book : t("notTracked")}
-                  {mode === "receipt" && entered > 0 ? ` → ${book + entered}` : ""}
+                  {t("bookStock")}: {tracked ? bookText : t("notTracked")}
+                  {mode === "receipt" && entered > 0 ? ` → ${Number((book + entered).toFixed(6))}` : ""}
                   {mode === "count" && qtys[id] !== "" ? ` · ${t("difference")}: ${diff > 0 ? "+" : ""}${diff}` : ""}
                 </Text>
               </View>
               <TextInput
                 testID={`qty-${id}`}
                 style={styles.qty}
-                keyboardType="number-pad"
+                keyboardType={isCountUnit(unit) ? "number-pad" : "numeric"}
                 value={qtys[id] ?? ""}
-                onChangeText={(v) => setQtys((prev) => ({ ...prev, [id]: v.replace(/[^0-9]/g, "") }))}
+                onChangeText={(v) => setQtys((prev) => ({ ...prev, [id]: cleanQtyInput(v, unit) }))}
               />
+              {!isCountUnit(unit) && <Text style={styles.sub}>{unit.symbol}</Text>}
               <Pressable
                 hitSlop={8}
                 accessibilityLabel={t("remove")}
@@ -449,6 +461,7 @@ export function StockScanPanel({ mode }: Props) {
 /** Line card for a product with expiry tracking: one row per expiry date. */
 function ExpiryCard({
   product,
+  unit,
   mode,
   rows,
   batches,
@@ -456,6 +469,7 @@ function ExpiryCard({
   onRemove,
 }: {
   product: Product;
+  unit: Unit;
   mode: "receipt" | "count";
   rows: ExpRow[];
   batches: StockBatch[];
@@ -475,12 +489,12 @@ function ExpiryCard({
           <Text style={styles.name}>{product.name}</Text>
           {!!product.barcode && <Text style={styles.sub}>{product.barcode}</Text>}
           <Text style={styles.sub}>
-            {t("bookStock")}: {product.stock_qty ?? t("notTracked")}
+            {t("bookStock")}: {product.stock_qty == null ? t("notTracked") : formatQtyWithUnit(product.stock_qty, unit)}
           </Text>
           {batches.length > 0 && (
             <Text style={styles.sub}>
               {t("stockByExpiry")}:{" "}
-              {batches.map((b) => `${b.expiry_date ? isoToDisplay(b.expiry_date) : t("undatedStock")} × ${b.qty}`).join(" · ")}
+              {batches.map((b) => `${b.expiry_date ? isoToDisplay(b.expiry_date) : t("undatedStock")} × ${formatQty(b.qty, unit)}`).join(" · ")}
             </Text>
           )}
         </View>
@@ -507,9 +521,9 @@ function ExpiryCard({
           <TextInput
             testID={`exp-qty-${product.id}`}
             style={styles.qty}
-            keyboardType="number-pad"
+            keyboardType={isCountUnit(unit) ? "number-pad" : "numeric"}
             value={r.qty}
-            onChangeText={(v) => update(r.key, { qty: v.replace(/[^0-9]/g, "") })}
+            onChangeText={(v) => update(r.key, { qty: cleanQtyInput(v, unit) })}
           />
           {rows.length > 1 && (
             <Pressable hitSlop={8} onPress={() => onChange(rows.filter((x) => x.key !== r.key))}>
