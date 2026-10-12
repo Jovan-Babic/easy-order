@@ -36,7 +36,11 @@ Cilj: zaliha može da se vodi u litrima, kilogramima i drugim jedinicama, a flas
 - Artikal bez veze radi tačno kao do sada.
 
 ### Rokovi trajanja (R3)
-- `stock_batches` dobija vlasnika: `product_id` ili `bulk_item_id` (jedinstveno po vlasniku i datumu). FEFO i otpis rade nad tankom. Artikal vezan za tank ne ume sam da prati rok.
+- **Rok se vodi po tanku**, a svaka flaša nosi rok serije iz koje je napunjena.
+- `stock_batches` dobija vlasnika: `product_id` ili `bulk_item_id` (jedinstveno po vlasniku i datumu). Prijem u tank traži datum roka (kao za artikle sa praćenjem roka); FEFO i otpis rade nad tankom. Artikal vezan za tank ne prati rok sam.
+- **Flasiranje po porudžbini:** otprema uzima iz serija tanka (magacin bira seriju ili FEFO) i **upisuje na stavku porudžbine** iz koje serije (rok) je došla svaka količina, isto kao danas `picked_batches`. Rok se vidi na otpremnici, a povratak iz `shipped` vraća u iste serije.
+- **Gotove flaše:** `POST /stock/fill` skida iz serija tanka (FEFO ili izabrane) i upisuje flaše u serije artikla **sa istim datumom roka**, pa flaše zadržavaju rok tanka. Otprema gotovih flaša ide po FEFO nad serijama artikla.
+- Napomena o mešanju: kad se tank dopuni uljem drugog roka, fizički je to mešavina. Sistem vodi svaki prijem kao zasebnu seriju (FEFO), što je približno; ako želite strožu varijantu, pri dopuni se cela zaliha tanka vodi sa **ranijim** rokom (predlog: ostaje po prijemu, jer je preciznije dok god se tank prazni redom).
 
 ### Gotove flaše (R3)
 - Artikal sa vezom i `stock_source = own` vodi svoje komade. Operacija **flasiranje** `POST /stock/fill` (`product_id`, `qty` komada): tank −`qty × content_qty`, artikal +`qty` (kretanja `fill`). Otprema tada skida sa sopstvene zalihe artikla, a ne sa tanka.
@@ -63,7 +67,7 @@ Cilj: zaliha može da se vodi u litrima, kilogramima i drugim jedinicama, a flas
 - OTA je dovoljan ako se ne dira `BarcodeScanner` (nativni modul se ne menja).
 
 ### R3 — Rok na tanku i gotove flaše
-- Serije po vlasniku (`bulk_item_id`), FEFO za tank, upozorenja o roku za rasuto; operacija flasiranje i `stock_source = own`.
+- Serije po vlasniku (`bulk_item_id`), prijem sa rokom, FEFO za tank, upozorenja o roku za rasuto (isti `expiry_alert_days`); rok serije upisan na stavku porudžbine i prikazan na otpremnici; operacija flasiranje (flaše nasleđuju rok serije) i `stock_source = own`.
 
 ### R4 — Težinski artikli
 - Jedinica artikla i cena po jedinici, snimak u `OrderItem`, `calc.py`/`calc.ts`, račun/otpremnica, mobilni unos količine sa decimalama u prikaznoj jedinici, uvoz i izveštaji.
@@ -71,7 +75,7 @@ Cilj: zaliha može da se vodi u litrima, kilogramima i drugim jedinicama, a flas
 R1 i R2 pokrivaju trenutnog klijenta (ulje u tankovima); R3 i R4 se rade kad zatrebaju, ali model iz R1 ih ne blokira.
 
 ## Otvoreno (predlog u zagradi)
-- Rok trajanja ulja: da li se vodi po tanku (serija u tanku) ili po flaši? (R3, po tanku.)
+- ~~Rok trajanja ulja~~ - odlučeno: po tanku, flaše nose rok svoje serije (vidi R3).
 - Kad artikal ima gotove flaše (`own`) i vezu: da li otprema prvo skida gotove flaše, pa ostatak iz tanka? (Ne: jedan izvor po artiklu, da stanje ne bude dvosmisleno.)
 - Zaokruživanje pri izdavanju iz tanka: celi komadi po `content_qty`; gubici (prosipanje, mernih razlika) se evidentiraju kao popis ili otpis tanka.
 - Barkod rasute stavke: nije potreban (skenira se artikal).
