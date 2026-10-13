@@ -65,7 +65,7 @@ Zamenjuje ručno „Zaduži mesec“ i trenutni model u kome zaduženje vidi sam
 
 ## Faze
 
-### N1 — Podešavanja sistema
+### N1 — Podešavanja sistema (urađeno)
 - `app_settings`, `GET`/`PUT /settings` (superadmin, validacija: dani 1-28, IPS račun mod 97, email adrese), `setting()` sa rezervom env → kod; zamena konstanti/env iz liste iznad.
 - Portal: stranica „Podešavanja“ (tabovi Naplata / Podaci za uplatu / Izdavalac / Email), meni superadmina.
 - Testovi: podrazumevane vrednosti, rezerva env, validacija, samo superadmin, izmena utiče na obračun.

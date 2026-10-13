@@ -35,7 +35,7 @@ export function isPathAllowed(role: Role, pathname: string): boolean {
   if (role === "warehouse") {
     return WAREHOUSE_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
   }
-  const superadminOnly = ["/units", "/clients", "/subscriptions", "/payments", "/announcements", "/audit", "/api/clients", "/api/subscriptions", "/api/plans", "/api/payments", "/api/superadmin", "/api/announcements", "/api/audit"];
+  const superadminOnly = ["/settings", "/api/settings", "/units", "/clients", "/subscriptions", "/payments", "/announcements", "/audit", "/api/clients", "/api/subscriptions", "/api/plans", "/api/payments", "/api/superadmin", "/api/announcements", "/api/audit"];
   if (superadminOnly.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return role === "superadmin";
   return true;
 }

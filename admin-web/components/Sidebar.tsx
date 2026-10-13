@@ -21,6 +21,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/announcements", labelKey: "announcements", roles: ["superadmin"] },
   { href: "/audit", labelKey: "audit", roles: ["superadmin"] },
   { href: "/units", labelKey: "units", roles: ["superadmin"] },
+  { href: "/settings", labelKey: "settings", roles: ["superadmin"] },
   // The system owner doesn't work with a client's business data (products,
   // customers, orders, warehouse, stock, reports): those pages stay reachable
   // by URL, they just aren't in the menu.

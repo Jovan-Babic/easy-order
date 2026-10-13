@@ -13,6 +13,7 @@ import json
 import os
 import re
 import hmac
+import time
 import secrets
 import smtplib
 import logging
@@ -177,6 +178,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # e.g. two legacy accounts that only differed by case
         logger.error("Could not create unique index on users.email: %s", exc)
     await _seed_units()
+    await refresh_settings(force=True)
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at")
     await db.password_reset_tokens.create_index("user_id")
@@ -255,6 +257,68 @@ CRON_SECRET = os.environ.get("CRON_SECRET", "")
 AUTO_PURGE_ENABLED = os.environ.get("AUTO_PURGE_ENABLED", "false").lower() == "true"
 
 
+# ---------------- System settings (PLAN_NAPLATA_KALENDARSKA.md, N1) ----------------
+# Business values the superadmin edits in the portal ("Podešavanja"). One document
+# in `app_settings`; a value that isn't stored falls back to env, then to code.
+# Secrets, URLs and safety switches (AUTO_PURGE_ENABLED) stay in env.
+SETTINGS_DEFAULTS: Dict[str, Any] = {
+    # billing cycle
+    "draft_day": 25,  # charge drafts for next month are made on this day
+    "due_day": 1,  # payment is due on this day of the paid month
+    "block_after_day": 5,  # unpaid after this day -> blocked
+    "first_month_free": True,
+    "reminder_days": SUBSCRIPTION_REMINDER_DAYS,  # before an annual subscription ends / before a purge
+    "purge_after_days": SUBSCRIPTION_PURGE_AFTER_DAYS,
+    "expiry_alert_days": list(DEFAULT_EXPIRY_ALERT_DAYS),  # default for new clients
+    # payment details shown to clients (+ IPS QR)
+    "payment_instructions_sr": "",
+    "payment_instructions_en": "",
+    "ips_account": "",
+    "ips_recipient_name": "",
+    "ips_payment_code": "289",
+    "ips_purpose": "Pretplata Easy Order",
+    "ips_reference_from_number": True,
+    # issuer on the pro-forma invoice (all optional)
+    "issuer_name": "",
+    "issuer_address": "",
+    "issuer_pib": "",
+    "issuer_account": "",
+    "issuer_note": "",
+    # billing emails
+    "billing_from_email": "",
+    "billing_from_name": "",
+    "billing_reply_to": "",
+    "bilingual_emails": True,
+}
+SETTINGS_TTL_SECONDS = 60
+_settings_cache: Dict[str, Any] = {}
+_settings_loaded_at = 0.0
+
+
+async def refresh_settings(force: bool = False) -> None:
+    """Reload the stored settings at most once a minute (or now, after a change),
+    so every serverless instance picks up an edit within a minute."""
+    global _settings_cache, _settings_loaded_at
+    if not force and time.monotonic() - _settings_loaded_at < SETTINGS_TTL_SECONDS:
+        return
+    try:
+        doc = await db.app_settings.find_one({"_id": "global"}) or {}
+    except Exception as exc:  # keep the last known values
+        logger.warning("Could not load settings: %s", exc)
+        return
+    _settings_cache = {k: v for k, v in doc.items() if k in SETTINGS_DEFAULTS and v is not None}
+    _settings_loaded_at = time.monotonic()
+
+
+def setting(key: str) -> Any:
+    value = _settings_cache.get(key)
+    return SETTINGS_DEFAULTS[key] if value is None else value
+
+
+def effective_settings() -> Dict[str, Any]:
+    return {key: setting(key) for key in SETTINGS_DEFAULTS}
+
+
 def subscription_state(sub: Optional[dict], today: Optional[date] = None) -> dict:
     """Where a subscription stands today. status: none | active | grace | locked."""
     if not sub:
@@ -280,7 +344,7 @@ def subscription_state(sub: Optional[dict], today: Optional[date] = None) -> dic
     if locked_since is not None and locked_since <= today:
         state["status"] = "locked"
         state["locked_since"] = locked_since.isoformat()
-        state["purge_at"] = (locked_since + timedelta(days=SUBSCRIPTION_PURGE_AFTER_DAYS)).isoformat()
+        state["purge_at"] = (locked_since + timedelta(days=setting("purge_after_days"))).isoformat()
     return state
 
 
@@ -312,7 +376,7 @@ class Client(BaseModel):
     invoice_prefix: Optional[str] = ""
     invoice_numbering: str = "auto"  # "auto" | "manual"
     # Days before expiry at which batches show up as warnings (warehouse/admin).
-    expiry_alert_days: List[int] = Field(default_factory=lambda: list(DEFAULT_EXPIRY_ALERT_DAYS))
+    expiry_alert_days: List[int] = Field(default_factory=lambda: list(setting("expiry_alert_days")))
     # Enabled modules (Module values); a stored client without the field has all.
     modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
     # Subscription (superadmin manages it in /subscriptions): plan_id, plan_name,
@@ -1105,6 +1169,7 @@ async def client_is_active(client_id: Optional[str]) -> bool:
 async def _client_gate(client_id: Optional[str]) -> dict:
     """active flag, modules and subscription state of a client in one lookup.
     Superadmins have no client: always active, every module, no subscription."""
+    await refresh_settings()
     if not client_id:
         return {"active": True, "modules": list(ALL_MODULES), "subscription": {"status": "none"}}
     client = await db.clients.find_one({"id": client_id}, {"_id": 0, "active": 1, "modules": 1, "subscription": 1})
@@ -1147,6 +1212,7 @@ async def get_authenticated_user(
 ) -> User:
     """Valid token + active user/client. Does NOT enforce the first-login
     password change - only for the few routes that must work before it."""
+    await refresh_settings()
     if creds is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
@@ -2191,13 +2257,14 @@ async def cron_subscriptions(dry_run: bool = Query(False), authorization: Option
         raise HTTPException(status_code=503, detail="CRON_SECRET is not configured")
     if not hmac.compare_digest(authorization or "", f"Bearer {CRON_SECRET}"):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    await refresh_settings(force=True)
     live = AUTO_PURGE_ENABLED and not dry_run
     today = _today()
     result: Dict[str, Any] = {"live": live, "reminders": [], "purge_warnings": [], "purged": [], "would_purge": []}
     async for client in db.clients.find({"subscription": {"$ne": None}}, {"_id": 0}):
         sub, cid = client["subscription"], client["id"]
         state = subscription_state(sub, today)
-        if state["status"] == "active" and state["days_left"] <= SUBSCRIPTION_REMINDER_DAYS and sub.get("reminder_for") != sub["ends_at"]:
+        if state["status"] == "active" and state["days_left"] <= setting("reminder_days") and sub.get("reminder_for") != sub["ends_at"]:
             await _email_client_admins(
                 cid, "Easy Order - pretplata uskoro ističe / subscription ends soon",
                 f"Pretplata za {client['name']} ističe {sub['ends_at']} (za {state['days_left']} dana).\n\n"
@@ -2209,7 +2276,7 @@ async def cron_subscriptions(dry_run: bool = Query(False), authorization: Option
             continue
         purge_at = date.fromisoformat(state["purge_at"])
         if purge_at > today:
-            if (purge_at - today).days <= SUBSCRIPTION_REMINDER_DAYS and sub.get("purge_warned_for") != state["purge_at"]:
+            if (purge_at - today).days <= setting("reminder_days") and sub.get("purge_warned_for") != state["purge_at"]:
                 await _email_client_admins(
                     cid, "Easy Order - podaci će biti obrisani / data will be deleted",
                     f"Nalog {client['name']} je zaključan. Podaci o zalihama biće obrisani {state['purge_at']}. "
@@ -2698,6 +2765,112 @@ class SystemStatus(BaseModel):
 CRON_LATE_HOURS = 48
 
 
+class SettingsInput(BaseModel):
+    """Partial update: a field that isn't sent keeps its value; null resets it to the default."""
+    draft_day: Optional[int] = Field(default=None, ge=1, le=28)
+    due_day: Optional[int] = Field(default=None, ge=1, le=28)
+    block_after_day: Optional[int] = Field(default=None, ge=1, le=28)
+    first_month_free: Optional[bool] = None
+    reminder_days: Optional[int] = Field(default=None, ge=1, le=120)
+    purge_after_days: Optional[int] = Field(default=None, ge=7, le=3650)
+    expiry_alert_days: Optional[List[int]] = None
+    payment_instructions_sr: Optional[str] = Field(default=None, max_length=2000)
+    payment_instructions_en: Optional[str] = Field(default=None, max_length=2000)
+    ips_account: Optional[str] = Field(default=None, max_length=30)
+    ips_recipient_name: Optional[str] = Field(default=None, max_length=70)
+    ips_payment_code: Optional[str] = Field(default=None, max_length=3)
+    ips_purpose: Optional[str] = Field(default=None, max_length=35)
+    ips_reference_from_number: Optional[bool] = None
+    issuer_name: Optional[str] = Field(default=None, max_length=120)
+    issuer_address: Optional[str] = Field(default=None, max_length=200)
+    issuer_pib: Optional[str] = Field(default=None, max_length=20)
+    issuer_account: Optional[str] = Field(default=None, max_length=30)
+    issuer_note: Optional[str] = Field(default=None, max_length=300)
+    billing_from_email: Optional[str] = Field(default=None, max_length=254)
+    billing_from_name: Optional[str] = Field(default=None, max_length=80)
+    billing_reply_to: Optional[str] = Field(default=None, max_length=254)
+    bilingual_emails: Optional[bool] = None
+
+
+class SettingsOut(BaseModel):
+    values: Dict[str, Any]  # what is in effect
+    defaults: Dict[str, Any]  # what applies when a value is reset (env, else code)
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def normalize_bank_account(value: str) -> str:
+    """Serbian current account: 3-13-2 digits (dashes optional, the middle part may
+    be shortened) -> 18 digits; the control number must be valid (ISO 7064 mod 97)."""
+    raw = value.strip().replace(" ", "")
+    if "-" in raw:
+        parts = raw.split("-")
+        if len(parts) != 3 or not all(p.isdigit() for p in parts) or len(parts[0]) != 3 or len(parts[2]) != 2 or not 1 <= len(parts[1]) <= 13:
+            raise ValueError("Account must look like 160-0000000000000-00")
+        raw = parts[0] + parts[1].zfill(13) + parts[2]
+    if not (raw.isdigit() and len(raw) == 18):
+        raise ValueError("Account must have 18 digits")
+    if int(raw) % 97 != 1:
+        raise ValueError("Account control number is not valid")
+    return raw
+
+
+def _validated_settings(inp: SettingsInput) -> Dict[str, Any]:
+    changes: Dict[str, Any] = {}
+    for field in inp.model_fields_set:
+        value = getattr(inp, field)
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                value = None  # empty text = back to the default
+        if value is None:
+            changes[field] = None
+            continue
+        try:
+            if field in ("ips_account", "issuer_account"):
+                value = normalize_bank_account(value)
+            elif field == "ips_payment_code" and not (value.isdigit() and len(value) == 3):
+                raise ValueError("Payment code must have 3 digits")
+            elif field == "issuer_pib" and not (value.isdigit() and len(value) == 9):
+                raise ValueError("PIB must have 9 digits")
+            elif field in ("billing_from_email", "billing_reply_to"):
+                value = value.lower()
+                if not _EMAIL_RE.match(value):
+                    raise ValueError("Not a valid email address")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"{field}: {exc}")
+        if field == "expiry_alert_days":
+            value = _validated_alert_days(value)
+        changes[field] = value
+    merged = {**effective_settings(), **{k: (SETTINGS_DEFAULTS[k] if v is None else v) for k, v in changes.items()}}
+    if merged["block_after_day"] < merged["due_day"]:
+        raise HTTPException(status_code=400, detail="block_after_day must not be before due_day")
+    return changes
+
+
+@api_router.get("/settings", response_model=SettingsOut)
+async def get_settings(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    await refresh_settings(force=True)
+    return SettingsOut(values=effective_settings(), defaults=SETTINGS_DEFAULTS)
+
+
+@api_router.put("/settings", response_model=SettingsOut)
+async def update_settings(inp: SettingsInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    await refresh_settings(force=True)
+    changes = _validated_settings(inp)
+    if changes:
+        to_set = {k: v for k, v in changes.items() if v is not None}
+        to_unset = {k: "" for k, v in changes.items() if v is None}
+        update: Dict[str, Any] = {"$set": {**to_set, "updated_at": now_iso(), "updated_by": current_user.name}}
+        if to_unset:
+            update["$unset"] = to_unset
+        await db.app_settings.update_one({"_id": "global"}, update, upsert=True)
+        await _audit(current_user, "settings.update", "settings", "global", None, None, {"fields": sorted(changes)})
+        await refresh_settings(force=True)
+    return SettingsOut(values=effective_settings(), defaults=SETTINGS_DEFAULTS)
+
+
 @api_router.get("/superadmin/system", response_model=SystemStatus)
 async def system_status(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
     """Is the daily job running, is mail/image storage set up. Nothing secret is returned."""
@@ -2911,8 +3084,7 @@ _ATTENTION_ORDER = {
     "locked": 0, "purge_soon": 1, "payment_overdue": 2, "grace": 3, "setup_unpaid": 4, "month_not_charged": 5,
     "ending_soon": 6,
 }
-# From this day of the month a client that is billed monthly should have next month charged.
-CHARGE_REMINDER_DAY = 25
+# From settings.draft_day a client that is billed monthly should have next month charged.
 
 
 @api_router.get("/superadmin/overview", response_model=SuperadminOverview)
@@ -2941,7 +3113,7 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
         if status == "locked":
             clients.locked += 1
             purge_at = date.fromisoformat(state["purge_at"])
-            if not sub.get("purged_at") and not sub.get("purge_paused") and (purge_at - today).days <= SUBSCRIPTION_REMINDER_DAYS:
+            if not sub.get("purged_at") and not sub.get("purge_paused") and (purge_at - today).days <= setting("reminder_days"):
                 attention.append(AttentionItem(**item, reason="purge_soon", date=state["purge_at"]))
             else:
                 attention.append(AttentionItem(**item, reason="locked", date=state["locked_since"]))
@@ -2950,7 +3122,7 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
         elif status == "active":
             if state["days_left"] <= 30:
                 subs.ending_30d += 1
-            if state["days_left"] <= SUBSCRIPTION_REMINDER_DAYS:
+            if state["days_left"] <= setting("reminder_days"):
                 attention.append(AttentionItem(**item, reason="ending_soon", date=state["ends_at"]))
     money = await _payment_figures(today)
     for client_id, oldest_due in money["overdue_by_client"].items():
@@ -2968,7 +3140,7 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
                 client_id=c["id"], client_name=c["name"], reason="setup_unpaid", date=pay.get("due_date"),
                 plan_name=(c.get("subscription") or {}).get("plan_name"),
             ))
-    if today.day >= CHARGE_REMINDER_DAY:
+    if today.day >= setting("draft_day"):
         following = (today.replace(day=1) + timedelta(days=32)).strftime("%Y-%m")
         # Only clients already billed month by month (they have at least one monthly charge).
         latest: Dict[str, str] = {}
@@ -4997,7 +5169,7 @@ async def stock_expiring(current_user: User = Depends(require_module(Module.EXPI
     (default 30/15/5 days). For the client's admin and warehouse only: no
     superadmin (not tied to a warehouse), no sales reps."""
     client = await db.clients.find_one({"id": current_user.client_id}, {"_id": 0, "expiry_alert_days": 1}) or {}
-    thresholds = sorted(client.get("expiry_alert_days") or DEFAULT_EXPIRY_ALERT_DAYS)
+    thresholds = sorted(client.get("expiry_alert_days") or setting("expiry_alert_days"))
     limit = (_today() + timedelta(days=thresholds[-1])).isoformat()
     batches = await db.stock_batches.find(
         {"client_id": current_user.client_id, "qty": {"$gt": 0}, "expiry_date": {"$ne": None, "$lte": limit}},
