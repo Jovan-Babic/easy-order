@@ -70,7 +70,13 @@ Zamenjuje ručno „Zaduži mesec“ i trenutni model u kome zaduženje vidi sam
 - Portal: stranica „Podešavanja“ (tabovi Naplata / Podaci za uplatu / Izdavalac / Email), meni superadmina.
 - Testovi: podrazumevane vrednosti, rezerva env, validacija, samo superadmin, izmena utiče na obračun.
 
-### N2 — Kalendarski ciklus, saldo i nacrti (backend)
+### N2 — Kalendarski ciklus, saldo i nacrti (backend) (urađeno)
+- Odstupanja od plana pri implementaciji:
+  - Nema automatske migracije postojećih klijenata pri pokretanju: klijent prelazi na kalendarsku naplatu akcijom `POST /billing/clients/{id}/enroll` (`cycle` monthly/annual) - istek se poravna na kraj meseca, uz `first_month_free` nastaje zaduženje 0 din „Besplatan mesec“. Tako se podaci u produkciji ne menjaju sami.
+  - U saldo ulaze samo novi zapisi (`ledger: true`: odobreni nacrti i uplate preko `POST /billing/payments`); stara ručna zaduženja i „Uplata i produženje“ rade kao pre i ne ulaze u saldo (njihov saldo bi bio pogrešan, npr. uplata bez zaduženja bi izgledala kao preplata).
+  - Blokada zbog duga računa samo dug kome je rok prošao (inače bi zaduženje za sledeći mesec odmah blokiralo klijenta).
+  - Blokada zbog duga i ručna blokada ne vode u brisanje podataka (brisanje ostaje vezano za istek/otkaz).
+  - `POST /billing/drafts/generate` (superadmin, opciono `month`) pravi nacrte odmah, bez čekanja dana nacrta; cron ih pravi od `draft_day`.
 - `billing_cycle`, poravnanje postojećih klijenata (jednokratna migracija pri pokretanju: istek na kraj meseca), prvi mesec besplatan pri dodeli paketa.
 - Saldo i FIFO raspodela uplata; uplata bez vezivanja za zaduženje; kredit.
 - Cron (postojeći dnevni): na dan nacrta pravi nacrte za mesečne i godišnje kojima ističe period (linije, dug/kredit, proporcionalni nalozi za godišnje); jednom po klijentu i periodu.

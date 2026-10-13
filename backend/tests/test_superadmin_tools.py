@@ -112,7 +112,7 @@ def test_cron_run_is_remembered(superadmin_client):
     assert r.status_code == 200
     cron = superadmin_client.get(f"{API}/superadmin/system").json()["cron"]
     assert cron["status"] == "ok" and cron["last_run_at"] and set(cron["summary"]) == {
-        "reminders", "purge_warnings", "purged", "would_purge",
+        "reminders", "purge_warnings", "purged", "would_purge", "drafts",
     }
     assert cron["live"] is r.json()["live"]
 
