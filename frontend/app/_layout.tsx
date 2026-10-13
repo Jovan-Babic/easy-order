@@ -1,3 +1,4 @@
+import { BlockedScreen } from "@/src/components/BlockedScreen";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as Updates from "expo-updates";
@@ -113,6 +114,11 @@ function RouteGuard({
         />
       </View>
     );
+  }
+
+  // Calendar billing: a blocked client's admin is signed in only to see what to pay.
+  if (status === "authenticated" && user?.billing && user.subscription?.status === "locked") {
+    return <BlockedScreen />;
   }
 
   return <>{children}</>;

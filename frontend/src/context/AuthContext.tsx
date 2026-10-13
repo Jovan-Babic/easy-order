@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { AppState } from "react-native";
 import { storage } from "@/src/utils/storage";
-import { api, setAuthToken, setPasswordChangeRequiredHandler, setUnauthorizedHandler, User } from "@/src/api";
+import { api, setAuthToken, setBlockedHandler, setPasswordChangeRequiredHandler, setUnauthorizedHandler, User } from "@/src/api";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 
@@ -53,9 +53,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setPasswordChangeRequiredHandler(() => {
       setUser((current) => (current ? { ...current, must_change_password: true } : current));
     });
+    // The client got blocked (calendar billing): re-read /auth/me so RouteGuard shows the blocked screen.
+    setBlockedHandler(() => {
+      api.me().then(setUser).catch(() => {});
+    });
     return () => {
       setUnauthorizedHandler(null);
       setPasswordChangeRequiredHandler(null);
+      setBlockedHandler(null);
     };
   }, [clearSession]);
 

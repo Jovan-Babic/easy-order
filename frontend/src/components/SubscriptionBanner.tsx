@@ -18,6 +18,18 @@ export function useTopNotices(): Notice[] {
     notices.push({ key: `a-${a.id}`, level: a.level, text: lang === "en" ? a.message_en : a.message_sr });
   }
   const sub = user?.subscription;
+  const billing = user?.billing;
+  const dmy = (iso: string | null) => (iso ? iso.split("-").reverse().join(".") + "." : "");
+  if (billing) {
+    // Calendar billing: the charge instead of the end date.
+    const amount = typeof billing.to_pay === "number" && billing.to_pay > 0 ? ` ${t("billingToPay")}: ${billing.to_pay.toFixed(2)} RSD.` : "";
+    if (billing.late && sub?.status !== "locked") {
+      notices.push({ key: "sub", level: "warning", text: `${t("billingLate")} ${dmy(billing.blocks_on)}.${amount}` });
+    } else if (billing.next_due_date && typeof billing.to_pay === "number" && billing.to_pay > 0 && sub?.status !== "locked") {
+      notices.push({ key: "sub", level: "info", text: `${t("billingDue")} ${dmy(billing.next_due_date)}.${amount}` });
+    }
+    return notices;
+  }
   if (sub?.status === "grace") {
     notices.push({
       key: "sub",

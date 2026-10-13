@@ -210,9 +210,9 @@ class TestBlocking:
         client, admin = _client(superadmin_client, plan)
         r = superadmin_client.post(f"{API}/subscriptions/{client['id']}/block", json={"note": "test"})
         assert r.status_code == 200 and r.json()["state"]["lock_reason"] == "manual"
-        assert admin.get(f"{API}/auth/me").status_code == 401
+        assert admin.get(f"{API}/products").status_code == 403
         superadmin_client.post(f"{API}/subscriptions/{client['id']}/unblock", json={})
-        assert admin.get(f"{API}/auth/me").status_code == 200
+        assert admin.get(f"{API}/products").status_code == 200
 
     def test_next_month_charge_is_not_late(self, superadmin_client):
         superadmin_client.put(f"{API}/settings", json={"due_day": 1, "block_after_day": 1})
@@ -283,3 +283,75 @@ class TestBlocking:
         client, _ = _client(superadmin_client, plan, enroll=False)
         assert superadmin_client.post(f"{API}/subscriptions/{client['id']}/block", json={}).status_code == 400
         assert superadmin_client.post(f"{API}/billing/payments", json={"client_id": client["id"], "amount": 5}).status_code == 400
+
+
+def _set_ips(sa):
+    first16 = "1600000000012345"
+    account = first16 + f"{98 - (int(first16) * 100) % 97:02d}"
+    sa.put(f"{API}/settings", json={
+        "ips_account": account, "ips_recipient_name": "TEST Primalac", "ips_purpose": "Pretplata",
+        "payment_instructions_sr": "Uplatite na račun", "payment_instructions_en": "Pay to the account",
+    })
+    return account
+
+
+class TestClientView:
+    def test_admin_sees_charges_and_qr(self, superadmin_client):
+        account = _set_ips(superadmin_client)
+        try:
+            plan = _plan(superadmin_client)
+            client, admin = _client(superadmin_client, plan)
+            d = _draft(superadmin_client, client["id"])[0]["charge"]
+            # a draft is not shown to the client
+            me = admin.get(f"{API}/billing/me").json()
+            assert me["to_pay"] == 0 and all(c["status"] != "draft" for c in me["charges"])
+            assert admin.get(f"{API}/billing/me/qr.png").status_code == 404
+            charge = _approve(superadmin_client, [d["id"]])[0]
+            me = admin.get(f"{API}/billing/me").json()
+            assert me["to_pay"] == 10000 and me["next_due_date"] == charge["due_date"]
+            row = next(c for c in me["charges"] if c["id"] == d["id"])
+            assert row["number"] == charge["number"] and row["lines"][0]["kind"] == "package" and row["open"] == 10000
+            assert me["instructions_sr"] == "Uplatite na račun" and me["ips"]["available"] is True
+            assert me["ips"]["account"] == account and me["ips"]["reference"].startswith("97")
+            qr = admin.get(f"{API}/billing/me/qr.png")
+            assert qr.status_code == 200 and qr.headers["content-type"] == "image/png" and qr.content[:4] == b"\x89PNG"
+            # the banner data in /auth/me
+            billing = admin.get(f"{API}/auth/me").json()["billing"]
+            assert billing["next_due_date"] == charge["due_date"] and billing["to_pay"] == 10000
+            assert superadmin_client.get(f"{API}/billing/clients/{client['id']}/qr.png").status_code == 200
+        finally:
+            superadmin_client.put(f"{API}/settings", json={
+                "ips_account": None, "ips_recipient_name": None, "ips_purpose": None,
+                "payment_instructions_sr": None, "payment_instructions_en": None,
+            })
+
+    def test_only_the_admin_sees_amounts(self, superadmin_client):
+        plan = _plan(superadmin_client)
+        client, admin = _client(superadmin_client, plan)
+        r = admin.post(f"{API}/users", json={"email": f"test-calop-{uuid.uuid4().hex[:6]}@easyorder.dev", "name": "Op", "role": "operator"})
+        op = activate_invited_user(r.json()["email"], r.json()["temporary_password"])
+        assert op.get(f"{API}/billing/me").status_code == 403
+        billing = op.get(f"{API}/auth/me").json()["billing"]
+        assert billing is not None and "to_pay" not in billing
+
+    def test_blocked_admin_only_reaches_billing(self, superadmin_client):
+        plan = _plan(superadmin_client)
+        client, admin = _client(superadmin_client, plan)
+        r = admin.post(f"{API}/users", json={"email": f"test-calop-{uuid.uuid4().hex[:6]}@easyorder.dev", "name": "Op", "role": "operator"})
+        op_email, op_temp = r.json()["email"], r.json()["temporary_password"]
+        op = activate_invited_user(op_email, op_temp)
+        superadmin_client.post(f"{API}/subscriptions/{client['id']}/block", json={})
+        # the admin: billing yes, the rest no (403, not a logout)
+        assert admin.get(f"{API}/auth/me").status_code == 200
+        assert admin.get(f"{API}/billing/me").status_code == 200
+        r = admin.get(f"{API}/products")
+        assert r.status_code == 403 and r.json()["detail"] == "Subscription blocked"
+        # the admin can still log in; the sales rep cannot
+        admin_email = admin.get(f"{API}/auth/me").json()["email"]
+        from helpers import TEST_PASSWORD
+        import requests as _rq
+        assert _rq.post(f"{API}/auth/login", json={"email": admin_email, "password": TEST_PASSWORD}).status_code == 200
+        assert op.get(f"{API}/auth/me").status_code == 401
+        assert _rq.post(f"{API}/auth/login", json={"email": op_email, "password": TEST_PASSWORD}).status_code == 403
+        superadmin_client.post(f"{API}/subscriptions/{client['id']}/unblock", json={})
+        assert admin.get(f"{API}/products").status_code == 200

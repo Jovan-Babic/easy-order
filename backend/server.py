@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, File, Query, UploadFile
+from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, File, Query, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
@@ -482,6 +482,8 @@ class UserOut(User):
     subscription: Optional[Dict[str, Any]] = None
     # Live announcements from the system owner: [{id, level, message_sr, message_en}].
     announcements: List[Dict[str, Any]] = Field(default_factory=list)
+    # Calendar billing banner (PLAN_NAPLATA_KALENDARSKA.md, N3); amounts only for the admin.
+    billing: Optional[Dict[str, Any]] = None
 
 
 class InviteResult(BaseModel):
@@ -1218,9 +1220,11 @@ async def user_out(raw: dict) -> UserOut:
     """User + the modules of their client (login / me responses)."""
     gate = await _client_gate(raw.get("client_id"))
     sub = gate["subscription"] if gate["subscription"]["status"] != "none" else None
+    billing = await _billing_notice(raw) if sub and sub.get("billing_cycle") else None
     return UserOut(
-        **{k: v for k, v in raw.items() if k not in ("modules", "subscription", "announcements")},
+        **{k: v for k, v in raw.items() if k not in ("modules", "subscription", "announcements", "billing")},
         modules=gate["modules"], subscription=sub, announcements=await _announcements_for(raw.get("client_id")),
+        billing=billing,
     )
 
 
@@ -1236,7 +1240,19 @@ async def _touch_last_seen(raw: dict) -> None:
     await db.users.update_one({"id": raw["id"]}, {"$set": {"last_seen_at": now_iso()}})
 
 
+# A blocked client on calendar billing: its admin still gets in, but only to see
+# what to pay (and to log out / change the password). Everyone else is shut out.
+BLOCKED_ADMIN_PATHS = ("/api/auth/me", "/api/auth/logout", "/api/auth/change-password", "/api/billing/me")
+
+
+def _blocked_admin_may(raw: dict, gate: dict, path: Optional[str]) -> bool:
+    if raw.get("role") != Role.ADMIN.value or not gate["subscription"].get("billing_cycle"):
+        return False
+    return path is None or any(path == p or path.startswith(p + "/") for p in BLOCKED_ADMIN_PATHS)
+
+
 async def get_authenticated_user(
+    request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> User:
     """Valid token + active user/client. Does NOT enforce the first-login
@@ -1260,7 +1276,13 @@ async def get_authenticated_user(
     if not gate["active"]:
         raise HTTPException(status_code=401, detail="Client account is disabled")
     if gate["subscription"]["status"] == "locked":
-        raise HTTPException(status_code=401, detail="Subscription expired")
+        if _blocked_admin_may(raw, gate, request.url.path):
+            pass
+        elif _blocked_admin_may(raw, gate, None):
+            # 403, not 401: the session stays, the app sends the admin to the billing page.
+            raise HTTPException(status_code=403, detail="Subscription blocked")
+        else:
+            raise HTTPException(status_code=401, detail="Subscription expired")
     await _touch_last_seen(raw)
     user = User(**raw)
     user._modules = gate["modules"]
@@ -1378,7 +1400,7 @@ async def login(inp: LoginInput):
     gate = await _client_gate(raw.get("client_id"))
     if not gate["active"]:
         raise HTTPException(status_code=403, detail="Client account is disabled")
-    if gate["subscription"]["status"] == "locked":
+    if gate["subscription"]["status"] == "locked" and not _blocked_admin_may(raw, gate, None):
         raise HTTPException(status_code=403, detail="Subscription expired")
     stamp = now_iso()
     await db.users.update_one({"id": raw["id"]}, {"$set": {"last_login_at": stamp, "last_seen_at": stamp}})
@@ -1478,9 +1500,10 @@ async def change_password(inp: ChangePasswordInput, current_user: User = Depends
 async def me(current_user: User = Depends(get_authenticated_user)):
     modules = list(ALL_MODULES) if current_user.role == Role.SUPERADMIN else (current_user._modules or [])
     sub = current_user._subscription if (current_user._subscription or {}).get("status") not in (None, "none") else None
+    billing = await _billing_notice(current_user.dict()) if sub and sub.get("billing_cycle") else None
     return UserOut(
         **current_user.dict(), modules=modules, subscription=sub,
-        announcements=await _announcements_for(current_user.client_id),
+        announcements=await _announcements_for(current_user.client_id), billing=billing,
     )
 
 
@@ -3283,6 +3306,152 @@ async def _billing_attention(today: date, active_clients: Dict[str, dict]) -> Li
         if len(late) >= 2:
             items.append(AttentionItem(client_id=client_id, client_name=c["name"], reason="debt_repeated", date=late[0]["due_date"], plan_name=c["subscription"].get("plan_name")))
     return items
+
+
+# ---------------- What the client sees: charges, payment details, IPS QR (N3) ----------------
+def _ips_reference(number: Optional[str]) -> Optional[str]:
+    """Pro-forma PR-2026-0001 -> reference 97 + control + 20260001 (model 97, ISO 7064 mod 97-10)."""
+    if not number:
+        return None
+    digits = re.sub(r"\D", "", number)
+    if not digits:
+        return None
+    control = 98 - (int(digits) * 100) % 97
+    return f"97{control:02d}{digits}"
+
+
+def _ips_string(amount: float, number: Optional[str]) -> Optional[str]:
+    """NBS IPS QR payload (K:PR) for paying `amount`; None when the account or the
+    recipient isn't set in the settings. Empty optional tags are left out."""
+    account, name = setting("ips_account"), setting("ips_recipient_name")
+    if not account or not name or amount <= 0:
+        return None
+    parts = [
+        "K:PR", "V:01", "C:1", f"R:{account}", f"N:{name[:70]}",
+        "I:RSD" + f"{amount:.2f}".replace(".", ","),
+    ]
+    code = setting("ips_payment_code")
+    if code:
+        parts.append(f"SF:{code}")
+    purpose = setting("ips_purpose")
+    if purpose:
+        parts.append(f"S:{purpose[:35]}")
+    reference = _ips_reference(number) if setting("ips_reference_from_number") else None
+    if reference:
+        parts.append(f"RO:{reference}")
+    return "|".join(parts)
+
+
+def _qr_png(text: str) -> bytes:
+    import io
+    import segno
+
+    buf = io.BytesIO()
+    segno.make(text, error="m").save(buf, kind="png", scale=6, border=3)
+    return buf.getvalue()
+
+
+async def _billing_notice(raw: dict) -> Optional[dict]:
+    """Banner data for /auth/me: the earliest unpaid due date, whether it is late,
+    the day the account will be blocked; amounts only for the client's admin."""
+    client = await db.clients.find_one({"id": raw.get("client_id")}, {"_id": 0, "subscription": 1})
+    sub = (client or {}).get("subscription") or {}
+    if not sub.get("billing_cycle"):
+        return None
+    today = _today()
+    state = subscription_state(sub, today)
+    dues = sorted(c["due_date"] for c in (sub.get("open_charges") or []) if c.get("due_date") and c.get("open", 0) > 0)
+    next_due = dues[0] if dues else None
+    blocks_on = None
+    if next_due:
+        due = date.fromisoformat(next_due)
+        blocks_on = (date(due.year, due.month, int(setting("block_after_day"))) + timedelta(days=1)).isoformat()
+    out: Dict[str, Any] = {
+        "status": state["status"], "lock_reason": state.get("lock_reason"), "next_due_date": next_due,
+        "late": bool(next_due and next_due <= today.isoformat()), "blocks_on": blocks_on,
+    }
+    if raw.get("role") == Role.ADMIN.value:
+        out.update(to_pay=round(float(sub.get("balance_due") or 0), 2), credit=round(float(sub.get("credit") or 0), 2))
+    return out
+
+
+class IpsInfo(BaseModel):
+    available: bool
+    recipient: Optional[str] = None
+    account: Optional[str] = None
+    payment_code: Optional[str] = None
+    purpose: Optional[str] = None
+    reference: Optional[str] = None
+    amount: float = 0
+
+
+class BillingMe(BaseModel):
+    client_name: str
+    state: Dict[str, Any]
+    to_pay: float  # owed now, all open charges
+    credit: float
+    next_due_date: Optional[str] = None
+    monthly_estimate: float  # what one month costs now (an estimate, the charge is what counts)
+    charges: List[LedgerCharge]  # approved charges, newest first, with what is still open
+    payments: List[LedgerPayment]
+    instructions_sr: str = ""
+    instructions_en: str = ""
+    ips: IpsInfo
+
+
+async def _billing_for_client(client_id: str) -> Tuple[BillingMe, Optional[str]]:
+    client = await _client_or_404(client_id)
+    balance = await _balance_out(client_id)
+    open_rows = sorted((c for c in balance.charges if c.open > 0), key=lambda c: (c.due_date or "", c.created_at))
+    reference_number = open_rows[0].number if open_rows else None
+    payload = _ips_string(balance.balance_due, reference_number)
+    sub = client.get("subscription") or {}
+    me = BillingMe(
+        client_name=client["name"], state=subscription_state(sub) if sub else {"status": "none"},
+        to_pay=balance.balance_due, credit=balance.credit,
+        next_due_date=open_rows[0].due_date if open_rows else None,
+        monthly_estimate=await _monthly_amount(client_id) if sub else 0,
+        charges=balance.charges, payments=balance.payments,
+        instructions_sr=setting("payment_instructions_sr") or "", instructions_en=setting("payment_instructions_en") or "",
+        ips=IpsInfo(
+            available=payload is not None, recipient=setting("ips_recipient_name") or None,
+            account=setting("ips_account") or None, payment_code=setting("ips_payment_code") or None,
+            purpose=setting("ips_purpose") or None,
+            reference=_ips_reference(reference_number) if setting("ips_reference_from_number") else None,
+            amount=balance.balance_due,
+        ),
+    )
+    return me, payload
+
+
+@api_router.get("/billing/me", response_model=BillingMe)
+async def my_billing(current_user: User = Depends(require_roles(Role.ADMIN))):
+    """The client's admin: charges with lines and numbers, what is owed, payment
+    details. Works while the client is blocked (see BLOCKED_ADMIN_PATHS)."""
+    me, _ = await _billing_for_client(current_user.client_id)
+    return me
+
+
+def _png_response(data: bytes):
+    from fastapi.responses import Response
+
+    return Response(content=data, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@api_router.get("/billing/me/qr.png")
+async def my_billing_qr(current_user: User = Depends(require_roles(Role.ADMIN))):
+    _, payload = await _billing_for_client(current_user.client_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Nothing to pay or payment details are not set")
+    return _png_response(_qr_png(payload))
+
+
+@api_router.get("/billing/clients/{client_id}/qr.png")
+async def client_billing_qr(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    _, payload = await _billing_for_client(client_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Nothing to pay or payment details are not set")
+    return _png_response(_qr_png(payload))
 
 
 # ---------------- Superadmin tools (PLAN_SUPERADMIN.md, phase D) ----------------

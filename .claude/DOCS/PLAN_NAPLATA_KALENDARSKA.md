@@ -85,7 +85,8 @@ Zamenjuje ručno „Zaduži mesec“ i trenutni model u kome zaduženje vidi sam
 - „Treba pažnju“: nacrti čekaju odobrenje, 2 uzastopna meseca sa dugom, blokiran zbog duga.
 - Testovi: obračun mesečnog i godišnjeg nacrta, prvi mesec 0, proporcionalni nalog, dug i preplata u sledećem nacrtu, FIFO, delimična uplata (bez blokade), dug ≥ mesečnog (blokada), ništa uplaćeno posle 5. (blokada), produžen rok, ručna blokada, uplata skida blokadu, duplikat nacrta, tuđi klijent.
 
-### N3 — Klijent vidi zaduženja i blokadu
+### N3 — Klijent vidi zaduženja i blokadu (urađeno)
+- Odstupanja: blokiran admin sme da se prijavi samo kod klijenata na kalendarskoj naplati (stari model zaključavanja ostaje isti); na ostalim putanjama dobija 403 „Subscription blocked“ (ne 401, da ga aplikacija ne odjavi). IPS QR je jedan, za ukupan iznos „Za uplatu“, sa pozivom na broj iz najstarijeg otvorenog predračuna (model 97: `97` + kontrolni broj + cifre broja predračuna). Mobilna za blokiranog admina prikazuje ekran sa iznosom i uputom na portal (QR i detalji su na portalu).
 - `GET /billing/me` (samo admin klijenta): otvorena zaduženja sa linijama i brojem predračuna, saldo „Za uplatu“, rok, istorija, podaci za uplatu, procena sledećeg meseca (jasno označena); `GET /billing/me/charges/{id}/qr.png` (IPS QR).
 - Blokiran klijent: admin dobija pristup samo `/auth/me`, `/auth/logout`, `/billing/me*`; ostali 401/403 sa porukom o blokadi.
 - `/auth/me` dobija `billing` (nema duga / rok / kasni / blokada od, za baner).
