@@ -11,7 +11,7 @@ Three projects live in this repo:
 - `frontend/` — Expo / React Native mobile app (Expo Router). Used by operators and admins; distributed as an APK built with EAS.
 - `admin-web/` — Next.js 16 portal for superadmins and admins. Talks to the backend only server-side (route handlers proxy to FastAPI), so the browser never calls the backend directly.
 
-Project docs (Serbian) are in `.claude/DOCS/` (planned: `PLAN_JEDINICE_MERE.md` - units of measure per product, stored in the DB): `IZMENE_BEZBEDNOST.md` and `IZMENE_RUNDA_2.md` (what changed and why), `RBAC_PLAN.md` (planned warehouse role), `SETUP_GUIDE.md`. The repo started on the "emergent" platform (`.emergent/`, old "Auto-generated changes" commits); that tooling is no longer used.
+Project docs (Serbian) are in `.claude/DOCS/` (planned: `PLAN_NAPLATA_KALENDARSKA.md` - calendar billing, client balance, charge drafts, billing emails; `PLAN_JEDINICE_MERE.md` J3): `IZMENE_BEZBEDNOST.md` and `IZMENE_RUNDA_2.md` (what changed and why), `RBAC_PLAN.md` (planned warehouse role), `SETUP_GUIDE.md`. The repo started on the "emergent" platform (`.emergent/`, old "Auto-generated changes" commits); that tooling is no longer used.
 
 ## Commands
 
