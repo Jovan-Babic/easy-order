@@ -1,4 +1,5 @@
-"""Plan prices, payments, debts and pay-and-extend (PLAN_SUPERADMIN.md, phase C)."""
+"""Plan prices, payments and debts (PLAN_SUPERADMIN.md, phase C) for clients without a plan;
+clients with a plan use the calendar-billing balance (test_billing_calendar.py, test_seats.py)."""
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -154,76 +155,6 @@ def test_list_filters(superadmin_client):
     items = _payments(superadmin_client, client_id=a["id"])["items"]
     assert [p["paid_at"] for p in items] == sorted((p["paid_at"] for p in items), reverse=True)
     assert superadmin_client.get(f"{API}/payments", params={"from_date": "nope"}).status_code == 400
-
-
-def test_pay_extends_the_subscription(superadmin_client):
-    plan = _plan(superadmin_client, {"3": 4000})
-    client = _client(superadmin_client, plan, 10)
-    cid = client["id"]
-    r = superadmin_client.post(f"{API}/subscriptions/{cid}/pay", json={"months": 3, "amount": 4000, "note": "uplata"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["subscription"]["state"]["ends_at"] == _add_months(_today() + timedelta(days=10), 3).isoformat()
-    assert body["payment"]["status"] == "received" and body["payment"]["period_months"] == 3
-    assert body["payment"]["plan_name"] == plan["name"] and body["payment"]["amount"] == 4000
-    assert _payments(superadmin_client, client_id=cid)["totals"]["received"] == 4000
-    events = [e["type"] for e in superadmin_client.get(f"{API}/subscriptions/{cid}").json()["events"]]
-    assert "payment_received" in events and "extended" in events
-    # the plan can only be changed through assign
-    other = _plan(superadmin_client)
-    bad = superadmin_client.post(f"{API}/subscriptions/{cid}/pay", json={"months": 1, "amount": 10, "plan_id": other["id"]})
-    assert bad.status_code == 400
-    assert len(_payments(superadmin_client, client_id=cid)["items"]) == 1  # nothing was written
-    assert superadmin_client.post(f"{API}/subscriptions/{cid}/pay", json={"months": 0, "amount": 10}).status_code == 422
-    assert superadmin_client.post(f"{API}/subscriptions/{cid}/pay", json={"months": 1, "amount": 10, "paid_at": _day(3)}).status_code == 400
-
-
-def test_pay_starts_a_subscription_and_unlocks(superadmin_client):
-    plan = _plan(superadmin_client, {"1": 1500}, modules=["reports"])
-    client = _client(superadmin_client)  # no subscription
-    cid = client["id"]
-    assert superadmin_client.post(f"{API}/subscriptions/{cid}/pay", json={"months": 1, "amount": 1500}).status_code == 400
-    r = superadmin_client.post(f"{API}/subscriptions/{cid}/pay", json={"months": 1, "amount": 1500, "plan_id": plan["id"]})
-    assert r.status_code == 200, r.text
-    state = r.json()["subscription"]
-    assert state["plan_name"] == plan["name"] and state["modules"] == ["reports"]
-    assert state["state"]["ends_at"] == _add_months(_today(), 1).isoformat()
-
-    # a locked client paying is unlocked, counting from today
-    superadmin_client.post(f"{API}/subscriptions/{cid}/assign", json={"plan_id": plan["id"], "ends_at": _day(-60)})
-    assert superadmin_client.get(f"{API}/subscriptions/{cid}").json()["row"]["state"]["status"] == "locked"
-    again = superadmin_client.post(f"{API}/subscriptions/{cid}/pay", json={"months": 1, "amount": 1500}).json()
-    assert again["subscription"]["state"]["status"] == "active"
-    assert again["subscription"]["state"]["ends_at"] == _add_months(_today(), 1).isoformat()
-
-
-def test_pay_settles_an_expected_payment(superadmin_client):
-    plan = _plan(superadmin_client, {"12": 15000})
-    client, other = _client(superadmin_client, plan, 30), _client(superadmin_client, plan, 30)
-    debt = superadmin_client.post(
-        f"{API}/payments", json={"client_id": client["id"], "amount": 15000, "status": "expected", "due_date": _day(-1)}
-    ).json()
-    foreign = superadmin_client.post(
-        f"{API}/payments", json={"client_id": other["id"], "amount": 1, "status": "expected", "due_date": _day(5)}
-    ).json()
-    assert superadmin_client.post(
-        f"{API}/subscriptions/{client['id']}/pay", json={"months": 12, "amount": 13500, "payment_id": foreign["id"]}
-    ).status_code == 404
-    r = superadmin_client.post(
-        f"{API}/subscriptions/{client['id']}/pay", json={"months": 12, "amount": 13500, "payment_id": debt["id"], "note": "akcija"}
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["payment"]["id"] == debt["id"] and r.json()["payment"]["amount"] == 13500
-    assert r.json()["payment"]["status"] == "received" and r.json()["payment"]["period_months"] == 12
-    items = _payments(superadmin_client, client_id=client["id"])
-    assert len(items["items"]) == 1 and items["totals"]["expected"] == 0 and items["totals"]["received"] == 13500
-    # the same debt can't be paid twice (and nothing was extended the second time)
-    ends = superadmin_client.get(f"{API}/subscriptions/{client['id']}").json()["row"]["state"]["ends_at"]
-    twice = superadmin_client.post(
-        f"{API}/subscriptions/{client['id']}/pay", json={"months": 12, "amount": 1, "payment_id": debt["id"]}
-    )
-    assert twice.status_code == 409
-    assert superadmin_client.get(f"{API}/subscriptions/{client['id']}").json()["row"]["state"]["ends_at"] == ends
 
 
 def test_dashboard_money_figures(superadmin_client):

@@ -18,6 +18,10 @@ export type Payment = {
   note: string | null;
   plan_name: string | null;
   period_months: number | null;
+  // Calendar billing: in the client's balance (charges stay "expected", `open` is what's unpaid).
+  ledger?: boolean;
+  number?: string | null;
+  open?: number | null;
   kind: PaymentKind;
   period: string | null;
   created_by: string | null;

@@ -12,7 +12,6 @@ import {
   CancelDialog,
   ExtendDialog,
   HistoryDialog,
-  PayDialog,
   link,
   primary,
 } from "@/components/SubscriptionDialogs";
@@ -146,7 +145,7 @@ function ClientUsers({ clientId }: { clientId: string }) {
   );
 }
 
-type Dialog = "assign" | "extend" | "cancel" | "history" | "pay" | "seats" | null;
+type Dialog = "assign" | "extend" | "cancel" | "history" | "seats" | null;
 
 function ClientSubscription({ clientId }: { clientId: string }) {
   const { t } = useLanguage();
@@ -216,13 +215,7 @@ function ClientSubscription({ clientId }: { clientId: string }) {
         )}
       </dl>
       <div className="mt-5 flex flex-wrap gap-4">
-        {row.state.billing_cycle ? (
-          <span className="text-sm text-muted">{t("billingUseTab")}</span>
-        ) : (
-          <button className={primary} onClick={() => setDialog("pay")}>
-            {t("payAndExtend")}
-          </button>
-        )}
+        {has && <span className="text-sm text-muted">{t("billingUseTab")}</span>}
         <button className={link} onClick={() => setDialog("assign")}>
           {has ? t("changePlan") : t("assignPlan")}
         </button>
@@ -240,7 +233,6 @@ function ClientSubscription({ clientId }: { clientId: string }) {
           </button>
         )}
       </div>
-      {dialog === "pay" && <PayDialog row={row} plans={plans} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "assign" && <AssignDialog row={row} plans={plans} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "extend" && <ExtendDialog row={row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "cancel" && <CancelDialog row={row} onClose={() => setDialog(null)} onDone={done} />}

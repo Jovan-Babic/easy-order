@@ -60,14 +60,7 @@ export function BillingPanel({ clientId }: { clientId: string }) {
       {error && <p className="text-sm text-error">{error}</p>}
       {!calendar ? (
         <div className="rounded-lg bg-surfaceSecondary p-6 shadow-sm">
-          <p className="mb-3 text-sm text-onSurfaceSecondary">{t("billingNotEnrolled")}</p>
-          {state.status === "none" ? (
-            <p className="text-sm text-muted">{t("billingNeedsPlan")}</p>
-          ) : (
-            <button className={primary} onClick={() => setDialog("enroll")}>
-              {t("billingEnroll")}
-            </button>
-          )}
+          <p className="text-sm text-muted">{t("billingNeedsPlan")}</p>
         </div>
       ) : (
         <>
@@ -95,6 +88,9 @@ export function BillingPanel({ clientId }: { clientId: string }) {
                   {t("billingBlock")}
                 </button>
               )}
+              <button className={link} onClick={() => setDialog("enroll")}>
+                {t("billingChangeCycle")}
+              </button>
               <button className={link} onClick={() => setQr(!qr)}>
                 {t("billingShowQr")}
               </button>
@@ -196,9 +192,9 @@ function EnrollDialog({ clientId, onClose, onDone }: { clientId: string; onClose
   const [cycle, setCycle] = useState<"monthly" | "annual">("monthly");
   const { busy, error, send } = useSubmit(onDone);
   return (
-    <Modal title={t("billingEnroll")} onClose={onClose}>
+    <Modal title={t("billingChangeCycle")} onClose={onClose}>
       <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); send(`/api/billing/clients/${clientId}/enroll`, "POST", { cycle }); }}>
-        <p className="text-xs text-muted">{t("billingEnrollHint")}</p>
+        <p className="text-xs text-muted">{t("billingChangeCycleHint")}</p>
         <select value={cycle} onChange={(e) => setCycle(e.target.value as "monthly" | "annual")} className={input}>
           <option value="monthly">{t("cycleMonthly")}</option>
           <option value="annual">{t("cycleAnnual")}</option>

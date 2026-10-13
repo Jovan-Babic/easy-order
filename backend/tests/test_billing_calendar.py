@@ -278,11 +278,18 @@ class TestBlocking:
         finally:
             superadmin_client.put(f"{API}/settings", json={"due_day": None, "block_after_day": None})
 
-    def test_block_needs_calendar_billing(self, superadmin_client):
+    def test_new_clients_are_on_calendar_billing(self, superadmin_client):
         plan = _plan(superadmin_client)
         client, _ = _client(superadmin_client, plan, enroll=False)
-        assert superadmin_client.post(f"{API}/subscriptions/{client['id']}/block", json={}).status_code == 400
-        assert superadmin_client.post(f"{API}/billing/payments", json={"client_id": client["id"], "amount": 5}).status_code == 400
+        assert _state(superadmin_client, client["id"])["billing_cycle"] == "monthly"
+
+    def test_block_needs_a_plan(self, superadmin_client):
+        suffix = uuid.uuid4().hex[:8]
+        r = superadmin_client.post(f"{API}/clients", json={"name": f"TEST_Cal_{suffix}", "admin_name": "A", "admin_email": f"test-cal-{suffix}@easyorder.dev"})
+        cid = r.json()["client"]["id"]
+        S.clients.append(cid)
+        assert superadmin_client.post(f"{API}/subscriptions/{cid}/block", json={}).status_code == 400
+        assert superadmin_client.post(f"{API}/billing/payments", json={"client_id": cid, "amount": 5}).status_code == 400
 
 
 def _set_ips(sa):

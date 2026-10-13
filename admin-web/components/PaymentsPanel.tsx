@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Modal, input, link, primary, secondary, useSubmit } from "@/components/SubscriptionDialogs";
 import { useLanguage } from "@/lib/i18n";
-import { ChargeMonthDialog } from "@/components/SeatsPanel";
 import { SeatsOut } from "@/lib/seats";
 import {
   KIND_KEYS,
@@ -26,7 +25,6 @@ type ClientOption = { id: string; name: string };
 type Dialog =
   | { kind: "new"; status: "received" | "expected" }
   | { kind: "receive" | "cancel"; payment: Payment }
-  | { kind: "month" }
   | null;
 
 const stat = "rounded-lg bg-surfaceSecondary p-4 shadow-sm";
@@ -47,15 +45,6 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
   const [dialog, setDialog] = useState<Dialog>(null);
 
   const effectiveClient = clientId ?? clientFilter;
-  // A client on calendar billing gets its charges from drafts, not "Zaduži mesec".
-  const [calendar, setCalendar] = useState(false);
-  useEffect(() => {
-    if (!clientId) return;
-    fetch(`/api/subscriptions/${clientId}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((body) => setCalendar(!!body?.row?.state?.billing_cycle))
-      .catch(() => {});
-  }, [clientId]);
 
   useEffect(() => {
     if (clientId) return;
@@ -147,11 +136,6 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
           <button className={secondary} onClick={exportCsv} disabled={items.length === 0}>
             {t("payExportCsv")}
           </button>
-          {clientId && !calendar && (
-            <button className={secondary} onClick={() => setDialog({ kind: "month" })}>
-              {t("chargeMonth")}
-            </button>
-          )}
           <button className={secondary} onClick={() => setDialog({ kind: "new", status: "expected" })}>
             {t("newCharge")}
           </button>
@@ -209,7 +193,7 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
                   </td>
                   <td className="px-4 py-3 text-xs text-onSurfaceSecondary">{p.note ?? ""}</td>
                   <td className="whitespace-nowrap px-4 py-3 text-right">
-                    {p.status === "expected" && (
+                    {p.status === "expected" && !p.ledger && (
                       <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "receive", payment: p })}>
                         {t("payReceive")}
                       </button>
@@ -237,7 +221,6 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
       {dialog?.kind === "new" && (
         <NewPaymentDialog status={dialog.status} clientId={clientId} clients={clients} onClose={() => setDialog(null)} onDone={done} />
       )}
-      {dialog?.kind === "month" && clientId && <ChargeMonthDialog clientId={clientId} onClose={() => setDialog(null)} onDone={done} />}
       {dialog?.kind === "receive" && <ReceiveDialog payment={dialog.payment} onClose={() => setDialog(null)} onDone={done} />}
       {dialog?.kind === "cancel" && <CancelPaymentDialog payment={dialog.payment} onClose={() => setDialog(null)} onDone={done} />}
     </div>

@@ -179,6 +179,7 @@ async def lifespan(app: FastAPI):
         logger.error("Could not create unique index on users.email: %s", exc)
     await _seed_units()
     await refresh_settings(force=True)
+    await _migrate_calendar_billing()
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at")
     await db.password_reset_tokens.create_index("user_id")
@@ -449,7 +450,8 @@ class ClientCreateInput(ClientInput):
     admin_email: EmailStr
     # Optional: start the client on a package. Then `modules` comes from the plan.
     plan_id: Optional[str] = None
-    subscription_ends_at: Optional[str] = None  # YYYY-MM-DD, required with plan_id
+    subscription_ends_at: Optional[str] = None  # YYYY-MM-DD (moved to its month end); None = this month
+    billing_cycle: Literal["monthly", "annual"] = "monthly"
 
 
 class User(BaseModel):
@@ -1675,7 +1677,7 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
     if inp.plan_id:
         plan = await _get_plan_or_400(inp.plan_id)
         settings["modules"] = list(plan["modules"])
-        settings["subscription"] = _new_subscription(plan, inp.subscription_ends_at, None, "manual")
+        settings["subscription"] = _new_subscription(plan, inp.subscription_ends_at or _today().isoformat(), None, "manual")
     else:
         settings["modules"] = validated_modules(inp.modules if inp.modules is not None else list(Module))
 
@@ -1684,7 +1686,7 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
             **inp.dict(
                 exclude={
                     "admin_name", "admin_email", "invoice_next_seq", "expiry_alert_days", "modules",
-                    "plan_id", "subscription_ends_at",
+                    "plan_id", "subscription_ends_at", "billing_cycle",
                 }
             ),
             **settings,
@@ -1697,7 +1699,8 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
     await _audit(current_user, "client.create", "client", client_obj.id, client_obj.name, client_obj.id)
 
     if plan:
-        await _log_subscription_event(client_obj.id, "assigned", current_user, plan_name=plan["name"], ends_at=inp.subscription_ends_at)
+        await _log_subscription_event(client_obj.id, "assigned", current_user, plan_name=plan["name"], ends_at=settings["subscription"]["ends_at"])
+        await _enroll_calendar(client_obj.id, inp.billing_cycle, current_user, from_today=False)
     admin_obj = User(
         email=normalize_email(inp.admin_email), name=inp.admin_name, role=Role.ADMIN, client_id=client_obj.id
     )
@@ -1802,7 +1805,8 @@ class PlanInput(BaseModel):
 
 class SubscriptionAssignInput(BaseModel):
     plan_id: str
-    ends_at: str  # YYYY-MM-DD, last day of validity (inclusive)
+    ends_at: Optional[str] = None  # YYYY-MM-DD; moved to the end of its month (calendar billing); None = this month
+    billing_cycle: Literal["monthly", "annual"] = "monthly"  # for a client that had no plan yet
     note: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -2084,7 +2088,7 @@ async def assign_subscription(
     unlocks a locked client) and sets its modules to the plan's."""
     client = await _client_or_404(client_id)
     plan = await _get_plan_or_400(inp.plan_id)
-    subscription = _new_subscription(plan, inp.ends_at, inp.note, "manual")
+    subscription = _new_subscription(plan, inp.ends_at or _today().isoformat(), inp.note, "manual")
     for kept in ("extra_seats", "discount_percent", *_BILLING_KEPT_FIELDS):
         if (client.get("subscription") or {}).get(kept) is not None:
             subscription[kept] = client["subscription"][kept]
@@ -2092,7 +2096,14 @@ async def assign_subscription(
     await _log_subscription_event(
         client_id, "assigned", current_user, note=inp.note, plan_name=plan["name"], ends_at=subscription["ends_at"]
     )
-    await _apply_ledger(client_id, current_user)
+    # Every client with a plan is on calendar billing: the end date goes to the end of
+    # its month (a date in the past stays in the past - an assigned end date is kept).
+    if subscription.get("billing_cycle"):
+        aligned = _month_end(date.fromisoformat(subscription["ends_at"])).isoformat()
+        await db.clients.update_one({"id": client_id}, {"$set": {"subscription.ends_at": aligned}})
+        await _apply_ledger(client_id, current_user)
+    else:
+        await _enroll_calendar(client_id, inp.billing_cycle, current_user, from_today=False)
     return await _subscription_row(await _client_or_404(client_id))
 
 
@@ -2431,19 +2442,14 @@ class PaymentsList(BaseModel):
     totals: PaymentTotals
 
 
-class SubscriptionPayInput(BaseModel):
-    months: int = Field(ge=1, le=60)
-    amount: float = Field(gt=0, le=1_000_000_000)
-    paid_at: Optional[str] = None
-    method: Literal["bank", "card", "cash", "other"] = "bank"
-    note: Optional[str] = Field(default=None, max_length=500)
-    plan_id: Optional[str] = None  # only for a client that has no subscription yet
-    payment_id: Optional[str] = None  # settle this expected payment instead of adding a new one
-
-
-class PayResult(BaseModel):
-    subscription: SubscriptionRow
-    payment: Payment
+def _valid_month(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value, "%Y-%m")
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+    if parsed.year < 2000 or parsed.year > _today().year + 5:
+        raise HTTPException(status_code=400, detail="month is out of range")
+    return parsed.strftime("%Y-%m")
 
 
 def _payment_out(doc: dict, names: Optional[Dict[str, str]] = None, today: Optional[date] = None) -> Payment:
@@ -2518,10 +2524,46 @@ async def list_payments(
     return PaymentsList(items=out, totals=totals)
 
 
+async def _ledger_entry(client: dict, inp: "PaymentInput", user: User) -> "Payment":
+    if inp.status == "received":
+        doc = {
+            "id": str(uuid.uuid4()), "client_id": client["id"], "status": "received", "ledger": True, "kind": inp.kind,
+            "amount": round(inp.amount, 2), "currency": PAYMENT_CURRENCY, "paid_at": _paid_day(inp.paid_at),
+            "due_date": None, "method": inp.method or "bank", "note": inp.note,
+            "plan_name": client["subscription"].get("plan_name"), "created_by": user.name, "source": "manual",
+            "created_at": now_iso(), "canceled_at": None,
+        }
+        event = "payment_received"
+    else:
+        if not inp.due_date:
+            raise HTTPException(status_code=400, detail="due_date is required for a debt")
+        label = inp.note or {"setup": "Uvođenje", "other": "Ostalo"}.get(inp.kind, "Pretplata")
+        doc = {
+            "id": str(uuid.uuid4()), "client_id": client["id"], "status": "expected", "ledger": True, "kind": inp.kind,
+            "amount": round(inp.amount, 2), "currency": PAYMENT_CURRENCY, "due_date": _valid_day(inp.due_date, "due_date"),
+            "paid_at": None, "method": None, "note": inp.note, "lines": [{"kind": "manual", "label": label, "amount": round(inp.amount, 2)}],
+            "number": await _next_proforma_number(_today()), "approved_at": now_iso(), "approved_by": user.name,
+            "period_start": None, "period_end": None, "plan_name": client["subscription"].get("plan_name"),
+            "created_by": user.name, "source": "manual", "created_at": now_iso(), "canceled_at": None,
+        }
+        event = "charge_created"
+    await db.payments.insert_one({**doc, "_id": doc["id"]})
+    await _log_subscription_event(
+        client["id"], event, user, note=inp.note, plan_name=doc["plan_name"],
+        data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "kind": inp.kind},
+    )
+    await _apply_ledger(client["id"], user)
+    return _payment_out(doc, {client["id"]: client["name"]})
+
+
 @api_router.post("/payments", response_model=Payment)
 async def create_payment(inp: PaymentInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
-    """Records money received (paid_at) or a debt to be paid (due_date)."""
+    """Records money received (paid_at) or a debt to be paid (due_date). For a client
+    on calendar billing both go into its balance: a debt gets a pro-forma number and
+    is shown to the client (e.g. the setup fee), money in is applied oldest first."""
     client = await _client_or_404(inp.client_id)
+    if (client.get("subscription") or {}).get("billing_cycle"):
+        return await _ledger_entry(client, inp, current_user)
     doc = {
         "id": str(uuid.uuid4()), "client_id": client["id"], "status": inp.status, "amount": round(inp.amount, 2),
         "currency": PAYMENT_CURRENCY, "due_date": None, "paid_at": None, "method": inp.method, "note": inp.note,
@@ -2589,135 +2631,6 @@ async def cancel_payment(
     if doc.get("ledger"):
         await _apply_ledger(doc["client_id"], current_user)
     return _payment_out(await _payment_or_404(payment_id), await _client_names())
-
-
-class ChargeMonthPreview(BaseModel):
-    month: str
-    already_charged: bool
-    breakdown: Dict[str, Any]
-    total: float
-    currency: str = PAYMENT_CURRENCY
-
-
-class ChargeMonthInput(BaseModel):
-    month: str  # YYYY-MM
-    due_date: str  # YYYY-MM-DD
-    amount: Optional[float] = Field(default=None, gt=0, le=1_000_000_000)  # None = the calculated total
-    note: Optional[str] = Field(default=None, max_length=500)
-
-
-def _valid_month(value: str) -> str:
-    try:
-        parsed = datetime.strptime(value, "%Y-%m")
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="month must be YYYY-MM")
-    if parsed.year < 2000 or parsed.year > _today().year + 5:
-        raise HTTPException(status_code=400, detail="month is out of range")
-    return parsed.strftime("%Y-%m")
-
-
-async def _month_charge(client_id: str, month: str) -> ChargeMonthPreview:
-    """Package + contracted extra accounts - discount, as it would be charged for `month`."""
-    month = _valid_month(month)
-    seats = await _seats_out(client_id)
-    if seats.plan_name is None or seats.monthly_total is None or seats.monthly_total <= 0:
-        raise HTTPException(status_code=400, detail="Nothing to charge: the plan has no monthly price")
-    lines = [
-        {"role": row.role, "extra": row.extra, "price": row.price or 0, "amount": round(row.extra * (row.price or 0), 2)}
-        for row in seats.seats if row.extra
-    ]
-    breakdown = {
-        "package": seats.package_price or 0, "seats": lines, "discount_percent": seats.discount_percent,
-        "total": seats.monthly_total,
-    }
-    taken = await db.payments.find_one(
-        {"client_id": client_id, "kind": "subscription", "period": month, "status": {"$ne": "canceled"}}, {"_id": 1}
-    )
-    return ChargeMonthPreview(month=month, already_charged=bool(taken), breakdown=breakdown, total=seats.monthly_total)
-
-
-@api_router.get("/clients/{client_id}/charge-month", response_model=ChargeMonthPreview)
-async def preview_charge_month(
-    client_id: str, month: str = Query(..., description="YYYY-MM"),
-    current_user: User = Depends(require_roles(Role.SUPERADMIN)),
-):
-    return await _month_charge(client_id, month)
-
-
-@api_router.post("/clients/{client_id}/charge-month", response_model=Payment)
-async def charge_month(client_id: str, inp: ChargeMonthInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
-    """Creates the debt (expected payment) for one month: package + extra accounts, with the
-    breakdown stored on it. One per client and month unless the earlier one is canceled."""
-    client = await _client_or_404(client_id)
-    charge = await _month_charge(client_id, inp.month)
-    if charge.already_charged:
-        raise HTTPException(status_code=409, detail="This month is already charged")
-    amount = round(inp.amount, 2) if inp.amount is not None else charge.total
-    breakdown = charge.breakdown if amount == charge.total else {**charge.breakdown, "calculated_total": charge.total}
-    doc = {
-        "id": str(uuid.uuid4()), "client_id": client_id, "status": "expected", "amount": amount,
-        "currency": PAYMENT_CURRENCY, "due_date": _valid_day(inp.due_date, "due_date"), "paid_at": None, "method": None,
-        "note": inp.note, "plan_name": (client.get("subscription") or {}).get("plan_name"), "period_months": 1,
-        "kind": "subscription", "period": charge.month, "breakdown": breakdown,
-        "created_by": current_user.name, "source": "manual", "created_at": now_iso(), "canceled_at": None,
-    }
-    await db.payments.insert_one({**doc, "_id": doc["id"]})
-    await _log_subscription_event(
-        client_id, "charge_created", current_user, note=inp.note, plan_name=doc["plan_name"],
-        data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "period": charge.month},
-    )
-    return _payment_out(doc, {client_id: client["name"]})
-
-
-@api_router.post("/subscriptions/{client_id}/pay", response_model=PayResult)
-async def pay_and_extend(
-    client_id: str, inp: SubscriptionPayInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
-):
-    """One step for the usual case: the client paid for N months. Records the
-    payment (or settles an expected one) and extends the subscription - or
-    starts it on `plan_id` when the client has none yet."""
-    client = await _client_or_404(client_id)
-    sub = client.get("subscription")
-    expected = None
-    if inp.payment_id:
-        expected = await _payment_or_404(inp.payment_id)
-        if expected["client_id"] != client_id:
-            raise HTTPException(status_code=404, detail="Payment not found")
-        if expected.get("ledger"):
-            raise HTTPException(status_code=400, detail="Record payments for calendar billing with POST /billing/payments")
-        if expected["status"] != "expected":
-            raise HTTPException(status_code=409, detail="Only an expected payment can be marked as received")
-    paid_at = _paid_day(inp.paid_at)  # validated before anything is written
-    if sub:
-        if inp.plan_id and inp.plan_id != sub.get("plan_id"):
-            raise HTTPException(status_code=400, detail="To change the plan use the assign action")
-        await _extend_subscription(client, inp.months, None, inp.note, current_user)
-    else:
-        if not inp.plan_id:
-            raise HTTPException(status_code=400, detail="plan_id is required for a client without a subscription")
-        plan = await _get_plan_or_400(inp.plan_id)
-        ends_at = _add_months(_today(), inp.months).isoformat()
-        subscription = _new_subscription(plan, ends_at, inp.note, "manual")
-        await db.clients.update_one({"id": client_id}, {"$set": {"subscription": subscription, "modules": plan["modules"]}})
-        await _log_subscription_event(client_id, "assigned", current_user, note=inp.note, plan_name=plan["name"], ends_at=ends_at)
-    fresh = await _client_or_404(client_id)
-    plan_name = (fresh.get("subscription") or {}).get("plan_name")
-    receive = PaymentReceiveInput(paid_at=paid_at, amount=inp.amount, method=inp.method, note=inp.note)
-    if expected:
-        payment_doc = await _settle_payment({**expected, "plan_name": plan_name}, receive, current_user, inp.months)
-    else:
-        payment = await create_payment(
-            PaymentInput(
-                client_id=client_id, status="received", amount=inp.amount, paid_at=paid_at, method=inp.method,
-                note=inp.note, period_months=inp.months, plan_name=plan_name,
-            ),
-            current_user,
-        )
-        payment_doc = payment.dict()
-    return PayResult(
-        subscription=await _subscription_row(fresh),
-        payment=_payment_out(payment_doc, {client_id: client["name"]}),
-    )
 
 
 async def _payment_figures(today: date) -> Dict[str, Any]:
@@ -3213,36 +3126,65 @@ class EnrollInput(BaseModel):
     cycle: Literal["monthly", "annual"] = "monthly"
 
 
-@api_router.post("/billing/clients/{client_id}/enroll", response_model=SubscriptionRow)
-async def enroll_calendar_billing(client_id: str, inp: EnrollInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
-    """Moves a client with a subscription onto calendar billing: the end date goes to
-    the end of its month (the days until then are free; with settings.first_month_free
-    a 0 charge "Besplatan mesec" records it) and drafts follow from the draft day."""
+async def _enroll_calendar(
+    client_id: str, cycle: str, user: Optional[User], *, from_today: bool = True, free_month: bool = True,
+    source: str = "manual",
+) -> None:
+    """Puts a client with a subscription on calendar billing (or changes its cycle).
+    The end date goes to the end of its month - from today on (`from_today`), or of the
+    stored end date as it is (the startup migration: nobody gets unlocked or shortened).
+    A new client's first partial month is a 0 charge "Besplatan mesec"."""
     client = await _client_or_404(client_id)
     sub = client.get("subscription")
     if not sub or not sub.get("plan_id"):
         raise HTTPException(status_code=400, detail="Client has no subscription - assign a plan first")
     today = _today()
     ends = date.fromisoformat(sub["ends_at"])
-    aligned = _month_end(max(ends, today))
-    updates = {"subscription.billing_cycle": inp.cycle, "subscription.ends_at": aligned.isoformat(), "subscription.canceled_at": None}
-    if inp.cycle == "annual" and sub.get("extra_seats_billed") is None:
+    aligned = _month_end(max(ends, today) if from_today else ends)
+    updates: Dict[str, Any] = {"subscription.billing_cycle": cycle, "subscription.ends_at": aligned.isoformat()}
+    if cycle == "annual" and sub.get("extra_seats_billed") is None:
         updates["subscription.extra_seats_billed"] = sub.get("extra_seats") or {}
     await db.clients.update_one({"id": client_id}, {"$set": updates})
-    if ends < _month_end(today) and setting("first_month_free") and not sub.get("billing_cycle"):
+    if free_month and not sub.get("billing_cycle") and aligned == _month_end(today) and setting("first_month_free"):
         month_start = date(today.year, today.month, 1)
         doc = {
             "id": str(uuid.uuid4()), "client_id": client_id, "status": "expected", "ledger": True, "kind": "subscription",
             "cycle": "monthly", "amount": 0.0, "currency": PAYMENT_CURRENCY, "period_start": month_start.isoformat(),
-            "period_end": _month_end(today).isoformat(), "period": month_start.strftime("%Y-%m"), "period_months": 1,
+            "period_end": aligned.isoformat(), "period": month_start.strftime("%Y-%m"), "period_months": 1,
             "lines": [{"kind": "free", "label": "Besplatan mesec", "amount": 0.0}], "note": "Besplatan mesec",
             "number": await _next_proforma_number(today), "due_date": today.isoformat(), "approved_at": now_iso(),
-            "approved_by": current_user.name, "plan_name": sub.get("plan_name"), "paid_at": None, "method": None,
-            "created_by": current_user.name, "source": "billing", "created_at": now_iso(), "canceled_at": None,
+            "approved_by": user.name if user else "system", "plan_name": sub.get("plan_name"), "paid_at": None, "method": None,
+            "created_by": user.name if user else "system", "source": "billing", "created_at": now_iso(), "canceled_at": None,
         }
         await db.payments.insert_one({**doc, "_id": doc["id"]})
-    await _log_subscription_event(client_id, "billing_enrolled", current_user, plan_name=sub.get("plan_name"), ends_at=aligned.isoformat(), data={"cycle": inp.cycle})
-    await _apply_ledger(client_id, current_user)
+    await _log_subscription_event(
+        client_id, "billing_enrolled", user, plan_name=sub.get("plan_name"), ends_at=aligned.isoformat(),
+        data={"cycle": cycle}, source=source,
+    )
+    await _apply_ledger(client_id, user)
+
+
+async def _migrate_calendar_billing() -> None:
+    """One-off at startup: every client with a plan that is still on the old model
+    goes to monthly calendar billing (annual when its plan has only an annual price)."""
+    async for client in db.clients.find(
+        {"subscription.plan_id": {"$ne": None}, "subscription.billing_cycle": {"$exists": False}}, {"_id": 0}
+    ):
+        try:
+            plan = await db.plans.find_one({"id": client["subscription"]["plan_id"]}, {"_id": 0}) or {}
+            prices = plan.get("prices") or {}
+            cycle = "annual" if prices.get("12") is not None and prices.get("1") is None else "monthly"
+            await _enroll_calendar(client["id"], cycle, None, from_today=False, free_month=False, source="migration")
+            logger.info("Calendar billing: moved client %s (%s)", client["id"], cycle)
+        except Exception as exc:
+            logger.error("Calendar billing migration failed for %s: %s", client.get("id"), exc)
+
+
+@api_router.post("/billing/clients/{client_id}/enroll", response_model=SubscriptionRow)
+async def enroll_calendar_billing(client_id: str, inp: EnrollInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Calendar billing cycle of a client: monthly or annual (every client with a plan
+    is on calendar billing; this changes the cycle or re-enrolls a client)."""
+    await _enroll_calendar(client_id, inp.cycle, current_user)
     return await _subscription_row(await _client_or_404(client_id))
 
 
@@ -3842,7 +3784,7 @@ class OverviewSubscriptions(BaseModel):
 class AttentionItem(BaseModel):
     client_id: str
     client_name: str
-    reason: str  # locked | grace | purge_soon | ending_soon | payment_overdue | setup_unpaid | month_not_charged
+    reason: str  # locked | blocked_debt | grace | purge_soon | ending_soon | payment_overdue | setup_unpaid | drafts_pending | debt_repeated
     date: Optional[str] = None  # the date that matters for the reason
     plan_name: Optional[str] = None
 
@@ -3919,7 +3861,11 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
                 plan_name=(c.get("subscription") or {}).get("plan_name"),
             ))
     overdue_ids = set(money["overdue_by_client"])
-    async for pay in db.payments.find({"kind": "setup", "status": "expected"}, {"_id": 0}):
+    setup_docs = await db.payments.find({"kind": "setup", "status": "expected"}, {"_id": 0}).to_list(None)
+    open_by_id = await _ledger_open_map({p["client_id"] for p in setup_docs if p.get("ledger")})
+    for pay in setup_docs:
+        if pay.get("ledger") and open_by_id.get(pay["id"], 0) <= 0:
+            continue  # paid (calendar billing: charges stay "expected", what's open counts)
         c = active_clients.get(pay["client_id"])
         if c and pay["client_id"] not in overdue_ids:  # a late setup debt already shows as payment_overdue
             attention.append(AttentionItem(
@@ -3927,25 +3873,6 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
                 plan_name=(c.get("subscription") or {}).get("plan_name"),
             ))
     attention.extend(await _billing_attention(today, active_clients))
-    if today.day >= setting("draft_day"):
-        following = (today.replace(day=1) + timedelta(days=32)).strftime("%Y-%m")
-        # Only clients already billed month by month (they have at least one monthly charge).
-        latest: Dict[str, str] = {}
-        async for p in db.payments.find(
-            {"kind": "subscription", "period": {"$ne": None}, "status": {"$ne": "canceled"}}, {"_id": 0, "client_id": 1, "period": 1}
-        ):
-            latest[p["client_id"]] = max(latest.get(p["client_id"], ""), p["period"])
-        for client_id in latest:
-            if client_id not in active_clients:
-                continue
-            c = active_clients[client_id]
-            if (c.get("subscription") or {}).get("billing_cycle"):
-                continue  # calendar billing: drafts take care of it
-            if latest[client_id] < following and subscription_state(c.get("subscription"), today)["status"] in ("active", "grace"):
-                attention.append(AttentionItem(
-                    client_id=client_id, client_name=c["name"], reason="month_not_charged", date=following,
-                    plan_name=(c.get("subscription") or {}).get("plan_name"),
-                ))
     by_role: Dict[str, int] = {}
     async for row in db.users.aggregate([
         {"$match": {"client_id": {"$in": list(active_ids)}, "active": {"$ne": False}}},
