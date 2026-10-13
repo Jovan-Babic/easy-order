@@ -20,10 +20,23 @@ export type User = {
   announcements?: Array<{ id: string; level: "info" | "warning"; message_sr: string; message_en: string }>;
   // Only when the client has a subscription that is ending (active) or over (grace).
   subscription?: {
-    status: "active" | "grace";
+    status: "active" | "grace" | "locked";
     ends_at: string;
     days_left: number;
     grace_ends_at: string;
+    billing_cycle?: string;
+    lock_reason?: string | null;
+  } | null;
+  // Calendar billing: earliest unpaid due date, the day the account is blocked,
+  // amounts only for the client's admin (PLAN_NAPLATA_KALENDARSKA.md).
+  billing?: {
+    status: string;
+    lock_reason?: string | null;
+    next_due_date: string | null;
+    late: boolean;
+    blocks_on: string | null;
+    to_pay?: number;
+    credit?: number;
   } | null;
 };
 
@@ -221,6 +234,11 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn;
 }
 
+let onBlocked: (() => void) | null = null;
+export function setBlockedHandler(fn: (() => void) | null) {
+  onBlocked = fn;
+}
+
 let onPasswordChangeRequired: (() => void) | null = null;
 export function setPasswordChangeRequiredHandler(fn: (() => void) | null) {
   onPasswordChangeRequired = fn;
@@ -247,6 +265,10 @@ async function req<T>(path: string, options?: RequestInit): Promise<T> {
     const error = new ApiError(res.status, await res.text());
     if (res.status === 403 && error.detail === "Password change required") {
       onPasswordChangeRequired?.();
+    }
+    if (res.status === 403 && error.detail === "Subscription blocked") {
+      // Calendar billing: the client got blocked while the app was open.
+      onBlocked?.();
     }
     throw error;
   }

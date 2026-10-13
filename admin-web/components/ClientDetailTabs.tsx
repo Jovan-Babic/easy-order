@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { BillingPanel } from "@/components/BillingPanel";
 import { ClientEditForm } from "@/components/ClientEditForm";
 import { PaymentsPanel } from "@/components/PaymentsPanel";
 import { ROLE_KEYS, SeatsEditDialog, SeatsSummary } from "@/components/SeatsPanel";
@@ -11,7 +12,6 @@ import {
   CancelDialog,
   ExtendDialog,
   HistoryDialog,
-  PayDialog,
   link,
   primary,
 } from "@/components/SubscriptionDialogs";
@@ -22,7 +22,7 @@ import { SeatsOut } from "@/lib/seats";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
 
 type Stats = { order_count: number; customer_count: number; product_count: number; total_grand: number } | null;
-type Tab = "overview" | "users" | "subscription" | "payments" | "activity" | "notes";
+type Tab = "overview" | "users" | "subscription" | "billing" | "payments" | "activity" | "notes";
 type ClientUser = { id: string; name: string; email: string; phone?: string; role: string; active: boolean };
 
 // Superadmin's page for one client: company data, its users, its subscription.
@@ -33,6 +33,7 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
     ["overview", t("clientOverview")],
     ["users", t("users")],
     ["subscription", t("subscription")],
+    ["billing", t("billingTab")],
     ["payments", t("payments")],
     ["activity", t("activity")],
     ["notes", t("notes")],
@@ -67,6 +68,7 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
       )}
       {tab === "users" && <ClientUsers clientId={client.id} />}
       {tab === "subscription" && <ClientSubscription clientId={client.id} />}
+      {tab === "billing" && <BillingPanel clientId={client.id} />}
       {tab === "payments" && <PaymentsPanel clientId={client.id} />}
       {tab === "activity" && <ClientActivity clientId={client.id} />}
       {tab === "notes" && <ClientNotes clientId={client.id} />}
@@ -143,7 +145,7 @@ function ClientUsers({ clientId }: { clientId: string }) {
   );
 }
 
-type Dialog = "assign" | "extend" | "cancel" | "history" | "pay" | "seats" | null;
+type Dialog = "assign" | "extend" | "cancel" | "history" | "seats" | null;
 
 function ClientSubscription({ clientId }: { clientId: string }) {
   const { t } = useLanguage();
@@ -213,9 +215,7 @@ function ClientSubscription({ clientId }: { clientId: string }) {
         )}
       </dl>
       <div className="mt-5 flex flex-wrap gap-4">
-        <button className={primary} onClick={() => setDialog("pay")}>
-          {t("payAndExtend")}
-        </button>
+        {has && <span className="text-sm text-muted">{t("billingUseTab")}</span>}
         <button className={link} onClick={() => setDialog("assign")}>
           {has ? t("changePlan") : t("assignPlan")}
         </button>
@@ -233,7 +233,6 @@ function ClientSubscription({ clientId }: { clientId: string }) {
           </button>
         )}
       </div>
-      {dialog === "pay" && <PayDialog row={row} plans={plans} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "assign" && <AssignDialog row={row} plans={plans} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "extend" && <ExtendDialog row={row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "cancel" && <CancelDialog row={row} onClose={() => setDialog(null)} onDone={done} />}

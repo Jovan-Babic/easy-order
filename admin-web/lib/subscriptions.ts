@@ -8,6 +8,12 @@ export type SubState = {
   grace_ends_at?: string;
   locked_since?: string | null;
   purge_at?: string | null;
+  // Calendar billing (PLAN_NAPLATA_KALENDARSKA.md).
+  billing_cycle?: "monthly" | "annual";
+  lock_reason?: "expired" | "canceled" | "manual" | "debt" | null;
+  balance_due?: number;
+  credit?: number;
+  due_extension_until?: string | null;
 };
 
 export type SubscriptionRow = {

@@ -174,111 +174,46 @@ class TestAmounts:
         ).status_code == 400
 
 
-class TestCharges:
-    def _setup_client(self, sa):
-        plan = _plan(
-            sa, prices={"1": 10000}, included_seats={"operator": 1}, seat_prices={"operator": 1000},
-        )
-        client, admin = _client(sa, plan)
-        sa.put(f"{API}/subscriptions/{client['id']}/seats", json={"extra_seats": {"operator": 2}, "discount_percent": 10})
-        return client, admin
+class TestLedgerEntries:
+    """Every client with a plan is on calendar billing: a manual debt (setup fee) and
+    money in go into the client's balance (PLAN_NAPLATA_KALENDARSKA.md)."""
 
-    def test_setup_charge_and_payment(self, superadmin_client):
-        client, _ = self._setup_client(superadmin_client)
+    def _items(self, sa, client_id):
+        return [a for a in sa.get(f"{API}/superadmin/overview").json()["attention"] if a["client_id"] == client_id]
+
+    def test_setup_fee_is_a_charge_the_client_sees_until_paid(self, superadmin_client):
+        plan = _plan(superadmin_client, prices={"1": 10000})
+        client, admin = _client(superadmin_client, plan)
         r = superadmin_client.post(
             f"{API}/payments",
             json={"client_id": client["id"], "status": "expected", "amount": 120000, "due_date": DUE,
                   "kind": "setup", "note": "Uvođenje - Napredna"},
         )
         assert r.status_code == 200, r.text
-        assert r.json()["kind"] == "setup"
-        paid = superadmin_client.post(f"{API}/payments/{r.json()['id']}/receive", json={})
-        assert paid.status_code == 200 and paid.json()["status"] == "received" and paid.json()["kind"] == "setup"
-        # paying the setup fee does not touch the subscription
-        sub = superadmin_client.get(f"{API}/subscriptions/{client['id']}").json()["row"]["state"]
-        assert sub["status"] == "active"
-
-    def test_charge_month_preview_and_create(self, superadmin_client):
-        client, _ = self._setup_client(superadmin_client)
-        url = f"{API}/clients/{client['id']}/charge-month"
-        pv = superadmin_client.get(url, params={"month": MONTH}).json()
-        assert pv["already_charged"] is False
-        assert pv["total"] == round((10000 + 2000) * 0.9, 2)
-        assert pv["breakdown"]["package"] == 10000
-        assert pv["breakdown"]["seats"] == [{"role": "operator", "extra": 2, "price": 1000, "amount": 2000}]
-        r = superadmin_client.post(url, json={"month": MONTH, "due_date": DUE})
-        assert r.status_code == 200, r.text
-        pay = r.json()
-        assert pay["status"] == "expected" and pay["kind"] == "subscription" and pay["period"] == MONTH
-        assert pay["amount"] == pv["total"] and pay["breakdown"]["discount_percent"] == 10
-        assert superadmin_client.get(url, params={"month": MONTH}).json()["already_charged"] is True
-        assert superadmin_client.post(url, json={"month": MONTH, "due_date": DUE}).status_code == 409
-        # canceling lets the month be charged again
-        superadmin_client.post(f"{API}/payments/{pay['id']}/cancel", json={})
-        assert superadmin_client.post(url, json={"month": MONTH, "due_date": DUE}).status_code == 200
-
-    def test_charge_month_validation(self, superadmin_client, api_client):
-        client, admin = self._setup_client(superadmin_client)
-        url = f"{API}/clients/{client['id']}/charge-month"
-        assert superadmin_client.post(url, json={"month": "02-2099", "due_date": DUE}).status_code == 400
-        assert superadmin_client.post(url, json={"month": MONTH, "due_date": "soon"}).status_code == 400
-        assert admin.post(url, json={"month": MONTH, "due_date": DUE}).status_code == 403
-        free = _plan(superadmin_client)  # no monthly price
-        bare, _ = _client(superadmin_client, free)
-        assert superadmin_client.post(
-            f"{API}/clients/{bare['id']}/charge-month", json={"month": MONTH, "due_date": DUE}
-        ).status_code == 400
-
-
-class TestAttention:
-    def _items(self, sa, client_id):
-        return [a for a in sa.get(f"{API}/superadmin/overview").json()["attention"] if a["client_id"] == client_id]
-
-    def test_unpaid_setup_is_listed_until_paid(self, superadmin_client):
-        plan = _plan(superadmin_client, prices={"1": 5000})
-        client, _ = _client(superadmin_client, plan)
-        pay = superadmin_client.post(
-            f"{API}/payments",
-            json={"client_id": client["id"], "status": "expected", "amount": 60000, "due_date": DUE, "kind": "setup"},
-        ).json()
+        charge = r.json()
+        assert charge["kind"] == "setup" and charge["ledger"] is True and charge["number"].startswith("PR-")
+        me = admin.get(f"{API}/billing/me").json()
+        assert me["to_pay"] == 120000 and any(c["id"] == charge["id"] for c in me["charges"])
         assert "setup_unpaid" in [a["reason"] for a in self._items(superadmin_client, client["id"])]
-        superadmin_client.post(f"{API}/payments/{pay['id']}/receive", json={})
+        # the old way of settling one entry is refused; money in goes through the balance
+        assert superadmin_client.post(f"{API}/payments/{charge['id']}/receive", json={}).status_code == 400
+        paid = superadmin_client.post(f"{API}/payments", json={"client_id": client["id"], "amount": 120000})
+        assert paid.status_code == 200 and paid.json()["ledger"] is True
+        assert admin.get(f"{API}/billing/me").json()["to_pay"] == 0
         assert "setup_unpaid" not in [a["reason"] for a in self._items(superadmin_client, client["id"])]
+        # paying the setup fee does not move the end date
+        assert superadmin_client.get(f"{API}/subscriptions/{client['id']}").json()["row"]["state"]["status"] == "active"
 
     def test_plain_debt_is_not_a_setup_item(self, superadmin_client):
         plan = _plan(superadmin_client, prices={"1": 5000})
         client, _ = _client(superadmin_client, plan)
         superadmin_client.post(
-            f"{API}/payments", json={"client_id": client["id"], "status": "expected", "amount": 100, "due_date": DUE}
+            f"{API}/payments", json={"client_id": client["id"], "status": "expected", "amount": 100, "due_date": DUE, "kind": "other"}
         )
         assert "setup_unpaid" not in [a["reason"] for a in self._items(superadmin_client, client["id"])]
 
-    def test_month_not_charged_from_the_25th(self, superadmin_client):
+    def test_old_endpoints_are_gone(self, superadmin_client):
         plan = _plan(superadmin_client, prices={"1": 5000})
         client, _ = _client(superadmin_client, plan)
-        today = datetime.now(timezone.utc).date()
-        this_month = today.strftime("%Y-%m")
-        r = superadmin_client.post(f"{API}/clients/{client['id']}/charge-month", json={"month": this_month, "due_date": DUE})
-        assert r.status_code == 200, r.text
-        reasons = [a["reason"] for a in self._items(superadmin_client, client["id"])]
-        # Only from the 25th on, and only for a client already billed month by month.
-        assert ("month_not_charged" in reasons) == (today.day >= 25)
-
-
-class TestChargeAmountOverride:
-    def test_manual_amount_is_kept_with_the_calculated_one(self, superadmin_client):
-        plan = _plan(superadmin_client, prices={"1": 10000})
-        client, _ = _client(superadmin_client, plan)
-        url = f"{API}/clients/{client['id']}/charge-month"
-        assert superadmin_client.post(url, json={"month": MONTH, "due_date": DUE, "amount": 0}).status_code == 422
-        r = superadmin_client.post(url, json={"month": MONTH, "due_date": DUE, "amount": 8000})
-        assert r.status_code == 200, r.text
-        assert r.json()["amount"] == 8000 and r.json()["breakdown"]["calculated_total"] == 10000
-
-    def test_same_amount_has_no_override_mark(self, superadmin_client):
-        plan = _plan(superadmin_client, prices={"1": 10000})
-        client, _ = _client(superadmin_client, plan)
-        r = superadmin_client.post(
-            f"{API}/clients/{client['id']}/charge-month", json={"month": MONTH, "due_date": DUE, "amount": 10000}
-        )
-        assert r.json()["amount"] == 10000 and "calculated_total" not in r.json()["breakdown"]
+        assert superadmin_client.post(f"{API}/clients/{client['id']}/charge-month", json={"month": MONTH, "due_date": DUE}).status_code in (404, 405)
+        assert superadmin_client.post(f"{API}/subscriptions/{client['id']}/pay", json={"months": 1, "amount": 5}).status_code in (404, 405)

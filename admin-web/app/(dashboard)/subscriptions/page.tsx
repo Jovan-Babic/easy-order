@@ -1,10 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MODULES, toggleModule } from "@/lib/modules";
-import { ChargeMonthDialog, ROLE_KEYS } from "@/components/SeatsPanel";
+import { ROLE_KEYS } from "@/components/SeatsPanel";
 import { SEAT_ROLES } from "@/lib/seats";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
 import {
@@ -13,7 +14,6 @@ import {
   ExtendDialog,
   HistoryDialog,
   Modal,
-  PayDialog,
   link,
   primary,
   secondary,
@@ -24,7 +24,7 @@ import {
 const PRICE_PERIODS = [1, 3, 6, 12];
 
 type Dialog =
-  | { kind: "assign" | "extend" | "cancel" | "history" | "pay" | "charge"; row: SubscriptionRow }
+  | { kind: "assign" | "extend" | "cancel" | "history"; row: SubscriptionRow }
   | { kind: "plan"; plan: Plan | null }
   | null;
 
@@ -150,13 +150,11 @@ export default function SubscriptionsPage() {
                         {r.modules.length ? MODULES.filter((m) => r.modules.includes(m.key)).map((m) => t(m.labelKey)).join(", ") : "-"}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-right">
-                        <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "pay", row: r })}>
-                          {t("payAndExtend")}
-                        </button>
                         {has && (
-                          <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "charge", row: r })}>
-                            {t("chargeMonth")}
-                          </button>
+                          // Charges and payments live on the client's "Naplata" tab (calendar billing).
+                          <Link href={`/clients/${r.client_id}`} className={`${link} mr-3`}>
+                            {t("billingTab")}
+                          </Link>
                         )}
                         <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "assign", row: r })}>
                           {has ? t("changePlan") : t("assignPlan")}
@@ -233,8 +231,6 @@ export default function SubscriptionsPage() {
       )}
 
       {dialog?.kind === "assign" && <AssignDialog row={dialog.row} plans={plans} onClose={() => setDialog(null)} onDone={done} />}
-      {dialog?.kind === "pay" && <PayDialog row={dialog.row} plans={plans} onClose={() => setDialog(null)} onDone={done} />}
-      {dialog?.kind === "charge" && <ChargeMonthDialog clientId={dialog.row.client_id} onClose={() => setDialog(null)} onDone={done} />}
       {dialog?.kind === "extend" && <ExtendDialog row={dialog.row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog?.kind === "cancel" && <CancelDialog row={dialog.row} onClose={() => setDialog(null)} onDone={done} />}
       {dialog?.kind === "history" && <HistoryDialog row={dialog.row} onClose={() => setDialog(null)} onChanged={load} />}

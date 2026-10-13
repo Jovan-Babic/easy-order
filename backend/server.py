@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, File, Query, UploadFile
+from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, File, Query, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
@@ -13,13 +13,14 @@ import json
 import os
 import re
 import hmac
+import time
 import secrets
 import smtplib
 import logging
 import mimetypes
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr, PrivateAttr
-from typing import List, Literal, Optional, Dict, Any
+from typing import List, Literal, Optional, Dict, Any, Tuple
 from enum import Enum
 import uuid
 import bcrypt
@@ -177,6 +178,8 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # e.g. two legacy accounts that only differed by case
         logger.error("Could not create unique index on users.email: %s", exc)
     await _seed_units()
+    await refresh_settings(force=True)
+    await _migrate_calendar_billing()
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at")
     await db.password_reset_tokens.create_index("user_id")
@@ -255,13 +258,86 @@ CRON_SECRET = os.environ.get("CRON_SECRET", "")
 AUTO_PURGE_ENABLED = os.environ.get("AUTO_PURGE_ENABLED", "false").lower() == "true"
 
 
+# ---------------- System settings (PLAN_NAPLATA_KALENDARSKA.md, N1) ----------------
+# Business values the superadmin edits in the portal ("Podešavanja"). One document
+# in `app_settings`; a value that isn't stored falls back to env, then to code.
+# Secrets, URLs and safety switches (AUTO_PURGE_ENABLED) stay in env.
+SETTINGS_DEFAULTS: Dict[str, Any] = {
+    # billing cycle
+    "draft_day": 25,  # charge drafts for next month are made on this day
+    "due_day": 1,  # payment is due on this day of the paid month
+    "block_after_day": 5,  # unpaid after this day -> blocked
+    "first_month_free": True,
+    "reminder_days": SUBSCRIPTION_REMINDER_DAYS,  # before an annual subscription ends / before a purge
+    "purge_after_days": SUBSCRIPTION_PURGE_AFTER_DAYS,
+    "expiry_alert_days": list(DEFAULT_EXPIRY_ALERT_DAYS),  # default for new clients
+    # payment details shown to clients (+ IPS QR)
+    "payment_instructions_sr": "",
+    "payment_instructions_en": "",
+    "ips_account": "",
+    "ips_recipient_name": "",
+    "ips_payment_code": "289",
+    "ips_purpose": "Pretplata Easy Order",
+    "ips_reference_from_number": True,
+    # issuer on the pro-forma invoice (all optional)
+    "issuer_name": "",
+    "issuer_address": "",
+    "issuer_pib": "",
+    "issuer_account": "",
+    "issuer_note": "",
+    # billing emails
+    "billing_from_email": "",
+    "billing_from_name": "",
+    "billing_reply_to": "",
+    "bilingual_emails": True,
+}
+SETTINGS_TTL_SECONDS = 60
+_settings_cache: Dict[str, Any] = {}
+_settings_loaded_at = 0.0
+
+
+async def refresh_settings(force: bool = False) -> None:
+    """Reload the stored settings at most once a minute (or now, after a change),
+    so every serverless instance picks up an edit within a minute."""
+    global _settings_cache, _settings_loaded_at
+    if not force and time.monotonic() - _settings_loaded_at < SETTINGS_TTL_SECONDS:
+        return
+    try:
+        doc = await db.app_settings.find_one({"_id": "global"}) or {}
+    except Exception as exc:  # keep the last known values
+        logger.warning("Could not load settings: %s", exc)
+        return
+    _settings_cache = {k: v for k, v in doc.items() if k in SETTINGS_DEFAULTS and v is not None}
+    _settings_loaded_at = time.monotonic()
+
+
+def setting(key: str) -> Any:
+    value = _settings_cache.get(key)
+    return SETTINGS_DEFAULTS[key] if value is None else value
+
+
+def effective_settings() -> Dict[str, Any]:
+    return {key: setting(key) for key in SETTINGS_DEFAULTS}
+
+
 def subscription_state(sub: Optional[dict], today: Optional[date] = None) -> dict:
     """Where a subscription stands today. status: none | active | grace | locked."""
     if not sub:
         return {"status": "none"}
     today = today or datetime.now(timezone.utc).date()
     ends = date.fromisoformat(sub["ends_at"])
-    grace_ends = ends + timedelta(days=SUBSCRIPTION_GRACE_DAYS)
+    calendar = bool(sub.get("billing_cycle"))
+    block_day = int(setting("block_after_day"))
+    if calendar:
+        # Calendar billing (PLAN_NAPLATA_KALENDARSKA.md): paid up to the end of a
+        # month, then usable until `block_after_day` of the next month.
+        following = _add_months(date(ends.year, ends.month, 1), 1)
+        grace_ends = date(following.year, following.month, block_day)
+        extension = sub.get("due_extension_until")
+        if extension and date.fromisoformat(extension) > grace_ends:
+            grace_ends = date.fromisoformat(extension)
+    else:
+        grace_ends = ends + timedelta(days=SUBSCRIPTION_GRACE_DAYS)
     state = {
         "status": "active",
         "ends_at": ends.isoformat(),
@@ -280,7 +356,25 @@ def subscription_state(sub: Optional[dict], today: Optional[date] = None) -> dic
     if locked_since is not None and locked_since <= today:
         state["status"] = "locked"
         state["locked_since"] = locked_since.isoformat()
-        state["purge_at"] = (locked_since + timedelta(days=SUBSCRIPTION_PURGE_AFTER_DAYS)).isoformat()
+        state["purge_at"] = (locked_since + timedelta(days=setting("purge_after_days"))).isoformat()
+        state["lock_reason"] = "canceled" if sub.get("canceled_at") else "expired"
+    elif calendar:
+        # Blocks that don't come from the end date: they lift as soon as the
+        # cause is gone and never lead to a purge.
+        extension = sub.get("due_extension_until")
+        extended = bool(extension) and date.fromisoformat(extension) >= today
+        monthly = float(sub.get("monthly_amount") or 0)
+        # Only debt whose due date has passed counts (a charge for next month is not late yet).
+        overdue = sum(c["open"] for c in (sub.get("open_charges") or []) if c.get("due_date") and c["due_date"] < today.isoformat())
+        if sub.get("manual_block"):
+            state.update(status="locked", lock_reason="manual", locked_since=sub["manual_block"].get("since"))
+        elif not extended and today.day > block_day and monthly > 0 and overdue >= monthly - 0.005:
+            state.update(status="locked", lock_reason="debt", locked_since=date(today.year, today.month, block_day + 1).isoformat())
+    if calendar:
+        state["billing_cycle"] = sub["billing_cycle"]
+        state["balance_due"] = round(float(sub.get("balance_due") or 0), 2)
+        state["credit"] = round(float(sub.get("credit") or 0), 2)
+        state["due_extension_until"] = sub.get("due_extension_until")
     return state
 
 
@@ -312,7 +406,7 @@ class Client(BaseModel):
     invoice_prefix: Optional[str] = ""
     invoice_numbering: str = "auto"  # "auto" | "manual"
     # Days before expiry at which batches show up as warnings (warehouse/admin).
-    expiry_alert_days: List[int] = Field(default_factory=lambda: list(DEFAULT_EXPIRY_ALERT_DAYS))
+    expiry_alert_days: List[int] = Field(default_factory=lambda: list(setting("expiry_alert_days")))
     # Enabled modules (Module values); a stored client without the field has all.
     modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
     # Subscription (superadmin manages it in /subscriptions): plan_id, plan_name,
@@ -356,7 +450,8 @@ class ClientCreateInput(ClientInput):
     admin_email: EmailStr
     # Optional: start the client on a package. Then `modules` comes from the plan.
     plan_id: Optional[str] = None
-    subscription_ends_at: Optional[str] = None  # YYYY-MM-DD, required with plan_id
+    subscription_ends_at: Optional[str] = None  # YYYY-MM-DD (moved to its month end); None = this month
+    billing_cycle: Literal["monthly", "annual"] = "monthly"
 
 
 class User(BaseModel):
@@ -389,6 +484,8 @@ class UserOut(User):
     subscription: Optional[Dict[str, Any]] = None
     # Live announcements from the system owner: [{id, level, message_sr, message_en}].
     announcements: List[Dict[str, Any]] = Field(default_factory=list)
+    # Calendar billing banner (PLAN_NAPLATA_KALENDARSKA.md, N3); amounts only for the admin.
+    billing: Optional[Dict[str, Any]] = None
 
 
 class InviteResult(BaseModel):
@@ -1105,6 +1202,7 @@ async def client_is_active(client_id: Optional[str]) -> bool:
 async def _client_gate(client_id: Optional[str]) -> dict:
     """active flag, modules and subscription state of a client in one lookup.
     Superadmins have no client: always active, every module, no subscription."""
+    await refresh_settings()
     if not client_id:
         return {"active": True, "modules": list(ALL_MODULES), "subscription": {"status": "none"}}
     client = await db.clients.find_one({"id": client_id}, {"_id": 0, "active": 1, "modules": 1, "subscription": 1})
@@ -1124,9 +1222,11 @@ async def user_out(raw: dict) -> UserOut:
     """User + the modules of their client (login / me responses)."""
     gate = await _client_gate(raw.get("client_id"))
     sub = gate["subscription"] if gate["subscription"]["status"] != "none" else None
+    billing = await _billing_notice(raw) if sub and sub.get("billing_cycle") else None
     return UserOut(
-        **{k: v for k, v in raw.items() if k not in ("modules", "subscription", "announcements")},
+        **{k: v for k, v in raw.items() if k not in ("modules", "subscription", "announcements", "billing")},
         modules=gate["modules"], subscription=sub, announcements=await _announcements_for(raw.get("client_id")),
+        billing=billing,
     )
 
 
@@ -1142,11 +1242,24 @@ async def _touch_last_seen(raw: dict) -> None:
     await db.users.update_one({"id": raw["id"]}, {"$set": {"last_seen_at": now_iso()}})
 
 
+# A blocked client on calendar billing: its admin still gets in, but only to see
+# what to pay (and to log out / change the password). Everyone else is shut out.
+BLOCKED_ADMIN_PATHS = ("/api/auth/me", "/api/auth/logout", "/api/auth/change-password", "/api/billing/me")
+
+
+def _blocked_admin_may(raw: dict, gate: dict, path: Optional[str]) -> bool:
+    if raw.get("role") != Role.ADMIN.value or not gate["subscription"].get("billing_cycle"):
+        return False
+    return path is None or any(path == p or path.startswith(p + "/") for p in BLOCKED_ADMIN_PATHS)
+
+
 async def get_authenticated_user(
+    request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> User:
     """Valid token + active user/client. Does NOT enforce the first-login
     password change - only for the few routes that must work before it."""
+    await refresh_settings()
     if creds is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
@@ -1165,7 +1278,13 @@ async def get_authenticated_user(
     if not gate["active"]:
         raise HTTPException(status_code=401, detail="Client account is disabled")
     if gate["subscription"]["status"] == "locked":
-        raise HTTPException(status_code=401, detail="Subscription expired")
+        if _blocked_admin_may(raw, gate, request.url.path):
+            pass
+        elif _blocked_admin_may(raw, gate, None):
+            # 403, not 401: the session stays, the app sends the admin to the billing page.
+            raise HTTPException(status_code=403, detail="Subscription blocked")
+        else:
+            raise HTTPException(status_code=401, detail="Subscription expired")
     await _touch_last_seen(raw)
     user = User(**raw)
     user._modules = gate["modules"]
@@ -1283,7 +1402,7 @@ async def login(inp: LoginInput):
     gate = await _client_gate(raw.get("client_id"))
     if not gate["active"]:
         raise HTTPException(status_code=403, detail="Client account is disabled")
-    if gate["subscription"]["status"] == "locked":
+    if gate["subscription"]["status"] == "locked" and not _blocked_admin_may(raw, gate, None):
         raise HTTPException(status_code=403, detail="Subscription expired")
     stamp = now_iso()
     await db.users.update_one({"id": raw["id"]}, {"$set": {"last_login_at": stamp, "last_seen_at": stamp}})
@@ -1383,9 +1502,10 @@ async def change_password(inp: ChangePasswordInput, current_user: User = Depends
 async def me(current_user: User = Depends(get_authenticated_user)):
     modules = list(ALL_MODULES) if current_user.role == Role.SUPERADMIN else (current_user._modules or [])
     sub = current_user._subscription if (current_user._subscription or {}).get("status") not in (None, "none") else None
+    billing = await _billing_notice(current_user.dict()) if sub and sub.get("billing_cycle") else None
     return UserOut(
         **current_user.dict(), modules=modules, subscription=sub,
-        announcements=await _announcements_for(current_user.client_id),
+        announcements=await _announcements_for(current_user.client_id), billing=billing,
     )
 
 
@@ -1557,7 +1677,7 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
     if inp.plan_id:
         plan = await _get_plan_or_400(inp.plan_id)
         settings["modules"] = list(plan["modules"])
-        settings["subscription"] = _new_subscription(plan, inp.subscription_ends_at, None, "manual")
+        settings["subscription"] = _new_subscription(plan, inp.subscription_ends_at or _today().isoformat(), None, "manual")
     else:
         settings["modules"] = validated_modules(inp.modules if inp.modules is not None else list(Module))
 
@@ -1566,7 +1686,7 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
             **inp.dict(
                 exclude={
                     "admin_name", "admin_email", "invoice_next_seq", "expiry_alert_days", "modules",
-                    "plan_id", "subscription_ends_at",
+                    "plan_id", "subscription_ends_at", "billing_cycle",
                 }
             ),
             **settings,
@@ -1579,7 +1699,8 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
     await _audit(current_user, "client.create", "client", client_obj.id, client_obj.name, client_obj.id)
 
     if plan:
-        await _log_subscription_event(client_obj.id, "assigned", current_user, plan_name=plan["name"], ends_at=inp.subscription_ends_at)
+        await _log_subscription_event(client_obj.id, "assigned", current_user, plan_name=plan["name"], ends_at=settings["subscription"]["ends_at"])
+        await _enroll_calendar(client_obj.id, inp.billing_cycle, current_user, from_today=False)
     admin_obj = User(
         email=normalize_email(inp.admin_email), name=inp.admin_name, role=Role.ADMIN, client_id=client_obj.id
     )
@@ -1684,7 +1805,8 @@ class PlanInput(BaseModel):
 
 class SubscriptionAssignInput(BaseModel):
     plan_id: str
-    ends_at: str  # YYYY-MM-DD, last day of validity (inclusive)
+    ends_at: Optional[str] = None  # YYYY-MM-DD; moved to the end of its month (calendar billing); None = this month
+    billing_cycle: Literal["monthly", "annual"] = "monthly"  # for a client that had no plan yet
     note: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -1966,14 +2088,22 @@ async def assign_subscription(
     unlocks a locked client) and sets its modules to the plan's."""
     client = await _client_or_404(client_id)
     plan = await _get_plan_or_400(inp.plan_id)
-    subscription = _new_subscription(plan, inp.ends_at, inp.note, "manual")
-    for kept in ("extra_seats", "discount_percent"):
+    subscription = _new_subscription(plan, inp.ends_at or _today().isoformat(), inp.note, "manual")
+    for kept in ("extra_seats", "discount_percent", *_BILLING_KEPT_FIELDS):
         if (client.get("subscription") or {}).get(kept) is not None:
             subscription[kept] = client["subscription"][kept]
     await db.clients.update_one({"id": client_id}, {"$set": {"subscription": subscription, "modules": plan["modules"]}})
     await _log_subscription_event(
         client_id, "assigned", current_user, note=inp.note, plan_name=plan["name"], ends_at=subscription["ends_at"]
     )
+    # Every client with a plan is on calendar billing: the end date goes to the end of
+    # its month (a date in the past stays in the past - an assigned end date is kept).
+    if subscription.get("billing_cycle"):
+        aligned = _month_end(date.fromisoformat(subscription["ends_at"])).isoformat()
+        await db.clients.update_one({"id": client_id}, {"$set": {"subscription.ends_at": aligned}})
+        await _apply_ledger(client_id, current_user)
+    else:
+        await _enroll_calendar(client_id, inp.billing_cycle, current_user, from_today=False)
     return await _subscription_row(await _client_or_404(client_id))
 
 
@@ -2058,6 +2188,7 @@ async def set_client_seats(client_id: str, inp: SeatsInput, current_user: User =
         await _log_subscription_event(
             client_id, "seats", current_user, data={k.split(".")[1]: v for k, v in changes.items()}
         )
+        await _apply_ledger(client_id, current_user)
     return await _seats_out(client_id)
 
 
@@ -2191,13 +2322,15 @@ async def cron_subscriptions(dry_run: bool = Query(False), authorization: Option
         raise HTTPException(status_code=503, detail="CRON_SECRET is not configured")
     if not hmac.compare_digest(authorization or "", f"Bearer {CRON_SECRET}"):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    await refresh_settings(force=True)
     live = AUTO_PURGE_ENABLED and not dry_run
     today = _today()
     result: Dict[str, Any] = {"live": live, "reminders": [], "purge_warnings": [], "purged": [], "would_purge": []}
     async for client in db.clients.find({"subscription": {"$ne": None}}, {"_id": 0}):
         sub, cid = client["subscription"], client["id"]
         state = subscription_state(sub, today)
-        if state["status"] == "active" and state["days_left"] <= SUBSCRIPTION_REMINDER_DAYS and sub.get("reminder_for") != sub["ends_at"]:
+        # Monthly calendar billing gets its charge every month; the end-date reminder is for the rest.
+        if sub.get("billing_cycle") != "monthly" and state["status"] == "active" and state["days_left"] <= setting("reminder_days") and sub.get("reminder_for") != sub["ends_at"]:
             await _email_client_admins(
                 cid, "Easy Order - pretplata uskoro ističe / subscription ends soon",
                 f"Pretplata za {client['name']} ističe {sub['ends_at']} (za {state['days_left']} dana).\n\n"
@@ -2205,11 +2338,11 @@ async def cron_subscriptions(dry_run: bool = Query(False), authorization: Option
             )
             await db.clients.update_one({"id": cid}, {"$set": {"subscription.reminder_for": sub["ends_at"]}})
             result["reminders"].append(client["name"])
-        if state["status"] != "locked" or sub.get("purged_at") or sub.get("purge_paused"):
+        if state["status"] != "locked" or not state.get("purge_at") or sub.get("purged_at") or sub.get("purge_paused"):
             continue
         purge_at = date.fromisoformat(state["purge_at"])
         if purge_at > today:
-            if (purge_at - today).days <= SUBSCRIPTION_REMINDER_DAYS and sub.get("purge_warned_for") != state["purge_at"]:
+            if (purge_at - today).days <= setting("reminder_days") and sub.get("purge_warned_for") != state["purge_at"]:
                 await _email_client_admins(
                     cid, "Easy Order - podaci će biti obrisani / data will be deleted",
                     f"Nalog {client['name']} je zaključan. Podaci o zalihama biće obrisani {state['purge_at']}. "
@@ -2227,11 +2360,15 @@ async def cron_subscriptions(dry_run: bool = Query(False), authorization: Option
         else:
             counts = await _count_purgeable(cid)
             result["would_purge"].append({"client": client["name"], **counts})
+    # Calendar billing: drafts for next month from the draft day on (one per client and period).
+    result["drafts"] = []
+    if today.day >= int(setting("draft_day")):
+        result["drafts"] = [d["client_id"] for d in await _make_drafts(today)]
     await db.system_runs.replace_one(
         {"_id": "subscriptions_cron"},
         {
             "_id": "subscriptions_cron", "finished_at": now_iso(), "live": live,
-            "summary": {k: len(result[k]) for k in ("reminders", "purge_warnings", "purged", "would_purge")},
+            "summary": {k: len(result[k]) for k in ("reminders", "purge_warnings", "purged", "would_purge", "drafts")},
         },
         upsert=True,
     )
@@ -2248,7 +2385,12 @@ class Payment(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     client_id: str
     client_name: Optional[str] = None  # filled in lists
-    status: Literal["expected", "received", "canceled"]
+    status: Literal["draft", "expected", "received", "canceled"]
+    # Calendar billing (ledger) entries: charges stay `expected`; `open` is what is
+    # still unpaid after the client's payments were applied oldest first.
+    ledger: bool = False
+    number: Optional[str] = None
+    open: Optional[float] = None
     amount: float
     currency: str = PAYMENT_CURRENCY
     due_date: Optional[str] = None
@@ -2300,24 +2442,20 @@ class PaymentsList(BaseModel):
     totals: PaymentTotals
 
 
-class SubscriptionPayInput(BaseModel):
-    months: int = Field(ge=1, le=60)
-    amount: float = Field(gt=0, le=1_000_000_000)
-    paid_at: Optional[str] = None
-    method: Literal["bank", "card", "cash", "other"] = "bank"
-    note: Optional[str] = Field(default=None, max_length=500)
-    plan_id: Optional[str] = None  # only for a client that has no subscription yet
-    payment_id: Optional[str] = None  # settle this expected payment instead of adding a new one
-
-
-class PayResult(BaseModel):
-    subscription: SubscriptionRow
-    payment: Payment
+def _valid_month(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value, "%Y-%m")
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+    if parsed.year < 2000 or parsed.year > _today().year + 5:
+        raise HTTPException(status_code=400, detail="month is out of range")
+    return parsed.strftime("%Y-%m")
 
 
 def _payment_out(doc: dict, names: Optional[Dict[str, str]] = None, today: Optional[date] = None) -> Payment:
     today = today or _today()
-    overdue = doc.get("status") == "expected" and bool(doc.get("due_date")) and date.fromisoformat(doc["due_date"]) < today
+    still_owed = doc.get("open", doc.get("amount", 0)) > 0 if doc.get("ledger") else True
+    overdue = doc.get("status") == "expected" and still_owed and bool(doc.get("due_date")) and date.fromisoformat(doc["due_date"]) < today
     return Payment(**{**doc, "client_name": (names or {}).get(doc["client_id"]), "overdue": overdue})
 
 
@@ -2359,7 +2497,11 @@ async def list_payments(
     hi = _valid_day(to_date, "to_date") if to_date else None
     names, today = await _client_names(), _today()
     items = []
-    for doc in await db.payments.find(query, {"_id": 0}).to_list(None):
+    docs = [d for d in await db.payments.find(query, {"_id": 0}).to_list(None) if d.get("status") != "draft"]
+    open_by_id = await _ledger_open_map({d["client_id"] for d in docs if d.get("ledger")})
+    for doc in docs:
+        if doc["id"] in open_by_id:
+            doc = {**doc, "open": open_by_id[doc["id"]]}
         day = doc.get("paid_at") or doc.get("due_date") or doc["created_at"][:10]
         if (lo and day < lo) or (hi and day > hi):
             continue
@@ -2371,9 +2513,10 @@ async def list_payments(
         if p.status == "received":
             totals.received += p.amount
         elif p.status == "expected":
-            totals.expected += p.amount
+            owed = p.open if p.ledger and p.open is not None else p.amount
+            totals.expected += owed
             if p.overdue:
-                totals.overdue_total += p.amount
+                totals.overdue_total += owed
                 totals.overdue_count += 1
     totals.received, totals.expected, totals.overdue_total = (
         round(totals.received, 2), round(totals.expected, 2), round(totals.overdue_total, 2)
@@ -2381,10 +2524,46 @@ async def list_payments(
     return PaymentsList(items=out, totals=totals)
 
 
+async def _ledger_entry(client: dict, inp: "PaymentInput", user: User) -> "Payment":
+    if inp.status == "received":
+        doc = {
+            "id": str(uuid.uuid4()), "client_id": client["id"], "status": "received", "ledger": True, "kind": inp.kind,
+            "amount": round(inp.amount, 2), "currency": PAYMENT_CURRENCY, "paid_at": _paid_day(inp.paid_at),
+            "due_date": None, "method": inp.method or "bank", "note": inp.note,
+            "plan_name": client["subscription"].get("plan_name"), "created_by": user.name, "source": "manual",
+            "created_at": now_iso(), "canceled_at": None,
+        }
+        event = "payment_received"
+    else:
+        if not inp.due_date:
+            raise HTTPException(status_code=400, detail="due_date is required for a debt")
+        label = inp.note or {"setup": "Uvođenje", "other": "Ostalo"}.get(inp.kind, "Pretplata")
+        doc = {
+            "id": str(uuid.uuid4()), "client_id": client["id"], "status": "expected", "ledger": True, "kind": inp.kind,
+            "amount": round(inp.amount, 2), "currency": PAYMENT_CURRENCY, "due_date": _valid_day(inp.due_date, "due_date"),
+            "paid_at": None, "method": None, "note": inp.note, "lines": [{"kind": "manual", "label": label, "amount": round(inp.amount, 2)}],
+            "number": await _next_proforma_number(_today()), "approved_at": now_iso(), "approved_by": user.name,
+            "period_start": None, "period_end": None, "plan_name": client["subscription"].get("plan_name"),
+            "created_by": user.name, "source": "manual", "created_at": now_iso(), "canceled_at": None,
+        }
+        event = "charge_created"
+    await db.payments.insert_one({**doc, "_id": doc["id"]})
+    await _log_subscription_event(
+        client["id"], event, user, note=inp.note, plan_name=doc["plan_name"],
+        data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "kind": inp.kind},
+    )
+    await _apply_ledger(client["id"], user)
+    return _payment_out(doc, {client["id"]: client["name"]})
+
+
 @api_router.post("/payments", response_model=Payment)
 async def create_payment(inp: PaymentInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
-    """Records money received (paid_at) or a debt to be paid (due_date)."""
+    """Records money received (paid_at) or a debt to be paid (due_date). For a client
+    on calendar billing both go into its balance: a debt gets a pro-forma number and
+    is shown to the client (e.g. the setup fee), money in is applied oldest first."""
     client = await _client_or_404(inp.client_id)
+    if (client.get("subscription") or {}).get("billing_cycle"):
+        return await _ledger_entry(client, inp, current_user)
     doc = {
         "id": str(uuid.uuid4()), "client_id": client["id"], "status": inp.status, "amount": round(inp.amount, 2),
         "currency": PAYMENT_CURRENCY, "due_date": None, "paid_at": None, "method": inp.method, "note": inp.note,
@@ -2408,6 +2587,8 @@ async def create_payment(inp: PaymentInput, current_user: User = Depends(require
 
 
 async def _settle_payment(doc: dict, inp: PaymentReceiveInput, user: User, period_months: Optional[int] = None) -> dict:
+    if doc.get("ledger"):
+        raise HTTPException(status_code=400, detail="Record payments for calendar billing with POST /billing/payments")
     if doc["status"] != "expected":
         raise HTTPException(status_code=409, detail="Only an expected payment can be marked as received")
     update = {
@@ -2447,134 +2628,9 @@ async def cancel_payment(
         doc["client_id"], "payment_canceled", current_user, note=inp.note, plan_name=doc.get("plan_name"),
         data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "was": doc["status"]},
     )
+    if doc.get("ledger"):
+        await _apply_ledger(doc["client_id"], current_user)
     return _payment_out(await _payment_or_404(payment_id), await _client_names())
-
-
-class ChargeMonthPreview(BaseModel):
-    month: str
-    already_charged: bool
-    breakdown: Dict[str, Any]
-    total: float
-    currency: str = PAYMENT_CURRENCY
-
-
-class ChargeMonthInput(BaseModel):
-    month: str  # YYYY-MM
-    due_date: str  # YYYY-MM-DD
-    amount: Optional[float] = Field(default=None, gt=0, le=1_000_000_000)  # None = the calculated total
-    note: Optional[str] = Field(default=None, max_length=500)
-
-
-def _valid_month(value: str) -> str:
-    try:
-        parsed = datetime.strptime(value, "%Y-%m")
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="month must be YYYY-MM")
-    if parsed.year < 2000 or parsed.year > _today().year + 5:
-        raise HTTPException(status_code=400, detail="month is out of range")
-    return parsed.strftime("%Y-%m")
-
-
-async def _month_charge(client_id: str, month: str) -> ChargeMonthPreview:
-    """Package + contracted extra accounts - discount, as it would be charged for `month`."""
-    month = _valid_month(month)
-    seats = await _seats_out(client_id)
-    if seats.plan_name is None or seats.monthly_total is None or seats.monthly_total <= 0:
-        raise HTTPException(status_code=400, detail="Nothing to charge: the plan has no monthly price")
-    lines = [
-        {"role": row.role, "extra": row.extra, "price": row.price or 0, "amount": round(row.extra * (row.price or 0), 2)}
-        for row in seats.seats if row.extra
-    ]
-    breakdown = {
-        "package": seats.package_price or 0, "seats": lines, "discount_percent": seats.discount_percent,
-        "total": seats.monthly_total,
-    }
-    taken = await db.payments.find_one(
-        {"client_id": client_id, "kind": "subscription", "period": month, "status": {"$ne": "canceled"}}, {"_id": 1}
-    )
-    return ChargeMonthPreview(month=month, already_charged=bool(taken), breakdown=breakdown, total=seats.monthly_total)
-
-
-@api_router.get("/clients/{client_id}/charge-month", response_model=ChargeMonthPreview)
-async def preview_charge_month(
-    client_id: str, month: str = Query(..., description="YYYY-MM"),
-    current_user: User = Depends(require_roles(Role.SUPERADMIN)),
-):
-    return await _month_charge(client_id, month)
-
-
-@api_router.post("/clients/{client_id}/charge-month", response_model=Payment)
-async def charge_month(client_id: str, inp: ChargeMonthInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
-    """Creates the debt (expected payment) for one month: package + extra accounts, with the
-    breakdown stored on it. One per client and month unless the earlier one is canceled."""
-    client = await _client_or_404(client_id)
-    charge = await _month_charge(client_id, inp.month)
-    if charge.already_charged:
-        raise HTTPException(status_code=409, detail="This month is already charged")
-    amount = round(inp.amount, 2) if inp.amount is not None else charge.total
-    breakdown = charge.breakdown if amount == charge.total else {**charge.breakdown, "calculated_total": charge.total}
-    doc = {
-        "id": str(uuid.uuid4()), "client_id": client_id, "status": "expected", "amount": amount,
-        "currency": PAYMENT_CURRENCY, "due_date": _valid_day(inp.due_date, "due_date"), "paid_at": None, "method": None,
-        "note": inp.note, "plan_name": (client.get("subscription") or {}).get("plan_name"), "period_months": 1,
-        "kind": "subscription", "period": charge.month, "breakdown": breakdown,
-        "created_by": current_user.name, "source": "manual", "created_at": now_iso(), "canceled_at": None,
-    }
-    await db.payments.insert_one({**doc, "_id": doc["id"]})
-    await _log_subscription_event(
-        client_id, "charge_created", current_user, note=inp.note, plan_name=doc["plan_name"],
-        data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "period": charge.month},
-    )
-    return _payment_out(doc, {client_id: client["name"]})
-
-
-@api_router.post("/subscriptions/{client_id}/pay", response_model=PayResult)
-async def pay_and_extend(
-    client_id: str, inp: SubscriptionPayInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))
-):
-    """One step for the usual case: the client paid for N months. Records the
-    payment (or settles an expected one) and extends the subscription - or
-    starts it on `plan_id` when the client has none yet."""
-    client = await _client_or_404(client_id)
-    sub = client.get("subscription")
-    expected = None
-    if inp.payment_id:
-        expected = await _payment_or_404(inp.payment_id)
-        if expected["client_id"] != client_id:
-            raise HTTPException(status_code=404, detail="Payment not found")
-        if expected["status"] != "expected":
-            raise HTTPException(status_code=409, detail="Only an expected payment can be marked as received")
-    paid_at = _paid_day(inp.paid_at)  # validated before anything is written
-    if sub:
-        if inp.plan_id and inp.plan_id != sub.get("plan_id"):
-            raise HTTPException(status_code=400, detail="To change the plan use the assign action")
-        await _extend_subscription(client, inp.months, None, inp.note, current_user)
-    else:
-        if not inp.plan_id:
-            raise HTTPException(status_code=400, detail="plan_id is required for a client without a subscription")
-        plan = await _get_plan_or_400(inp.plan_id)
-        ends_at = _add_months(_today(), inp.months).isoformat()
-        subscription = _new_subscription(plan, ends_at, inp.note, "manual")
-        await db.clients.update_one({"id": client_id}, {"$set": {"subscription": subscription, "modules": plan["modules"]}})
-        await _log_subscription_event(client_id, "assigned", current_user, note=inp.note, plan_name=plan["name"], ends_at=ends_at)
-    fresh = await _client_or_404(client_id)
-    plan_name = (fresh.get("subscription") or {}).get("plan_name")
-    receive = PaymentReceiveInput(paid_at=paid_at, amount=inp.amount, method=inp.method, note=inp.note)
-    if expected:
-        payment_doc = await _settle_payment({**expected, "plan_name": plan_name}, receive, current_user, inp.months)
-    else:
-        payment = await create_payment(
-            PaymentInput(
-                client_id=client_id, status="received", amount=inp.amount, paid_at=paid_at, method=inp.method,
-                note=inp.note, period_months=inp.months, plan_name=plan_name,
-            ),
-            current_user,
-        )
-        payment_doc = payment.dict()
-    return PayResult(
-        subscription=await _subscription_row(fresh),
-        payment=_payment_out(payment_doc, {client_id: client["name"]}),
-    )
 
 
 async def _payment_figures(today: date) -> Dict[str, Any]:
@@ -2584,7 +2640,11 @@ async def _payment_figures(today: date) -> Dict[str, Any]:
         "received_month": 0.0, "received_year": 0.0, "expected_total": 0.0, "overdue_total": 0.0, "overdue_count": 0,
         "overdue_by_client": {},
     }
+    ledger_clients = set()
     async for doc in db.payments.find({"status": {"$in": ["received", "expected"]}}, {"_id": 0}):
+        if doc.get("ledger") and doc["status"] == "expected":
+            ledger_clients.add(doc["client_id"])
+            continue  # counted below by what is still open
         if doc["status"] == "received":
             paid = doc.get("paid_at") or ""
             if paid.startswith(month):
@@ -2598,9 +2658,742 @@ async def _payment_figures(today: date) -> Dict[str, Any]:
                 out["overdue_count"] += 1
                 oldest = out["overdue_by_client"].get(doc["client_id"])
                 out["overdue_by_client"][doc["client_id"]] = min(oldest, doc["due_date"]) if oldest else doc["due_date"]
+    for client_id in ledger_clients:
+        charges, payments = await _ledger(client_id)
+        allocated, _, _ = _allocate(charges, payments)
+        for c in allocated:
+            if c["open"] <= 0:
+                continue
+            out["expected_total"] += c["open"]
+            if c.get("due_date") and date.fromisoformat(c["due_date"]) < today:
+                out["overdue_total"] += c["open"]
+                out["overdue_count"] += 1
+                oldest = out["overdue_by_client"].get(client_id)
+                out["overdue_by_client"][client_id] = min(oldest, c["due_date"]) if oldest else c["due_date"]
     for key in ("received_month", "received_year", "expected_total", "overdue_total"):
         out[key] = round(out[key], 2)
     return out
+
+
+async def _ledger_open_map(client_ids) -> Dict[str, float]:
+    """charge id -> still unpaid, for the ledger charges of these clients."""
+    out: Dict[str, float] = {}
+    for client_id in client_ids:
+        charges, payments = await _ledger(client_id)
+        for c in _allocate(charges, payments)[0]:
+            out[c["id"]] = c["open"]
+    return out
+
+
+# ---------------- Calendar billing: ledger, drafts, blocking (PLAN_NAPLATA_KALENDARSKA.md, N2) ----------------
+# Only entries with `ledger: true` count toward a client's balance: charges made
+# from approved drafts (status `expected`, never flipped) and payments recorded
+# through POST /billing/payments (status `received`). Older manual entries keep
+# working as before but stay out of the balance.
+_BILLING_KEPT_FIELDS = (
+    "billing_cycle", "balance_due", "credit", "open_charges", "monthly_amount", "extra_seats_billed", "manual_block",
+    "due_extension_until", "billing_emails",
+)
+
+
+def _month_end(day: date) -> date:
+    return _add_months(date(day.year, day.month, 1), 1) - timedelta(days=1)
+
+
+def _month_label(day: date) -> str:
+    return day.strftime("%m.%Y")
+
+
+class ChargeLine(BaseModel):
+    kind: str  # package | seats | seats_prorated | discount | manual | free
+    label: str
+    amount: float
+    role: Optional[str] = None
+    qty: Optional[int] = None
+    unit_price: Optional[float] = None
+    months: Optional[int] = None
+
+
+class LedgerCharge(BaseModel):
+    id: str
+    status: str  # draft | expected | canceled
+    number: Optional[str] = None
+    amount: float
+    paid: float = 0
+    open: float = 0
+    due_date: Optional[str] = None
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    cycle: Optional[str] = None
+    kind: str = "subscription"
+    lines: List[ChargeLine] = Field(default_factory=list)
+    note: Optional[str] = None
+    calculated_total: Optional[float] = None
+    approved_at: Optional[str] = None
+    created_at: str
+
+
+class LedgerPayment(BaseModel):
+    id: str
+    amount: float
+    paid_at: Optional[str] = None
+    method: Optional[str] = None
+    note: Optional[str] = None
+    created_at: str
+
+
+class Balance(BaseModel):
+    client_id: str
+    balance_due: float  # what is owed now (charges - payments), 0 when nothing is owed
+    credit: float  # overpayment carried to the next charge
+    monthly_amount: float
+    charges: List[LedgerCharge]
+    payments: List[LedgerPayment]
+
+
+async def _ledger(client_id: str) -> Tuple[List[dict], List[dict]]:
+    charges = await db.payments.find(
+        {"client_id": client_id, "ledger": True, "status": "expected"}, {"_id": 0}
+    ).to_list(None)
+    payments = await db.payments.find(
+        {"client_id": client_id, "ledger": True, "status": "received"}, {"_id": 0}
+    ).to_list(None)
+    charges.sort(key=lambda c: (c.get("due_date") or "", c.get("approved_at") or c["created_at"]))
+    payments.sort(key=lambda p: (p.get("paid_at") or "", p["created_at"]))
+    return charges, payments
+
+
+def _allocate(charges: List[dict], payments: List[dict]) -> Tuple[List[dict], float, float]:
+    """FIFO: money in closes the oldest charges first. Returns charges with
+    paid/open, the amount owed and the credit left over."""
+    pool = round(sum(p["amount"] for p in payments), 2)
+    out = []
+    for c in charges:
+        paid = round(min(pool, c["amount"]), 2)
+        pool = round(pool - paid, 2)
+        out.append({**c, "paid": paid, "open": round(c["amount"] - paid, 2)})
+    owed = round(sum(c["open"] for c in out), 2)
+    return out, owed, max(0.0, pool)
+
+
+async def _monthly_amount(client_id: str) -> float:
+    """What one month costs this client (package + extra accounts - discount); the debt
+    threshold for blocking. Annual-only plans: the annual price / 12."""
+    try:
+        seats = await _seats_out(client_id)
+    except HTTPException:
+        return 0.0
+    if seats.monthly_total:
+        return round(seats.monthly_total, 2)
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "subscription": 1})
+    sub = (client or {}).get("subscription") or {}
+    plan = await db.plans.find_one({"id": sub.get("plan_id")}, {"_id": 0}) if sub.get("plan_id") else None
+    yearly = ((plan or {}).get("prices") or {}).get("12")
+    return round(float(yearly) / 12, 2) if yearly else 0.0
+
+
+async def _apply_ledger(client_id: str, user: Optional[User] = None) -> dict:
+    """Recomputes the balance after any change, stores it on the subscription (the
+    lock check reads it on every request) and moves the end date to the end of the
+    latest period that has money (or a zero amount) on it. Never shortens it."""
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    sub = (client or {}).get("subscription")
+    charges, payments = await _ledger(client_id)
+    allocated, owed, credit = _allocate(charges, payments)
+    if not sub:
+        return {"balance_due": owed, "credit": credit}
+    updates: Dict[str, Any] = {
+        "subscription.balance_due": owed,
+        "subscription.credit": round(credit, 2),
+        "subscription.open_charges": [{"due_date": c.get("due_date"), "open": c["open"]} for c in allocated if c["open"] > 0],
+        "subscription.monthly_amount": await _monthly_amount(client_id),
+    }
+    covered = [c["period_end"] for c in allocated if c.get("period_end") and (c["paid"] > 0 or c["amount"] == 0)]
+    if covered and sub.get("billing_cycle"):
+        new_end = max(covered)
+        if new_end > sub["ends_at"]:
+            updates.update({
+                "subscription.ends_at": new_end, "subscription.canceled_at": None,
+                "subscription.reminder_for": None, "subscription.purge_warned_for": None,
+            })
+            await _log_subscription_event(
+                client_id, "extended", user, plan_name=sub.get("plan_name"), ends_at=new_end, source="billing",
+            )
+    await db.clients.update_one({"id": client_id}, {"$set": updates})
+    return {"balance_due": owed, "credit": round(credit, 2)}
+
+
+async def _next_proforma_number(day: date) -> str:
+    counter = await db.counters.find_one_and_update(
+        {"_id": f"proforma:{day.year}"}, {"$inc": {"seq": 1}}, upsert=True, return_document=ReturnDocument.AFTER,
+    )
+    return f"PR-{day.year}-{counter['seq']:04d}"
+
+
+def _charge_out(doc: dict) -> LedgerCharge:
+    return LedgerCharge(**{
+        **doc,
+        "lines": doc.get("lines") or [],
+        "paid": doc.get("paid", 0),
+        "open": doc.get("open", doc["amount"]),
+        "calculated_total": (doc.get("breakdown") or {}).get("calculated_total"),
+    })
+
+
+async def _balance_out(client_id: str, include_drafts: bool = False) -> Balance:
+    client = await _client_or_404(client_id)
+    charges, payments = await _ledger(client_id)
+    allocated, owed, credit = _allocate(charges, payments)
+    rows = [_charge_out(c) for c in allocated]
+    if include_drafts:
+        drafts = await db.payments.find({"client_id": client_id, "ledger": True, "status": "draft"}, {"_id": 0}).to_list(None)
+        rows += [_charge_out(d) for d in drafts]
+    rows.sort(key=lambda c: (c.period_start or "", c.created_at), reverse=True)
+    return Balance(
+        client_id=client_id, balance_due=owed, credit=round(credit, 2),
+        monthly_amount=float(((client.get("subscription") or {}).get("monthly_amount")) or 0),
+        charges=rows,
+        payments=[LedgerPayment(**p) for p in sorted(payments, key=lambda p: (p.get("paid_at") or "", p["created_at"]), reverse=True)],
+    )
+
+
+async def _draft_lines(client: dict, cycle: str, period_start: date, period_end: date) -> Tuple[List[dict], float]:
+    """Lines of the next charge: package, extra accounts, discount."""
+    sub = client["subscription"]
+    plan = await db.plans.find_one({"id": sub["plan_id"]}, {"_id": 0}) or {}
+    prices = plan.get("prices") or {}
+    figures = _seat_figures(plan, sub)
+    modules = effective_modules(client)
+    lines: List[dict] = []
+    if cycle == "annual":
+        package = prices.get("12")
+        if package is None and prices.get("1") is not None:
+            package = prices["1"] * 12
+        months = 12
+    else:
+        package = prices.get("1")
+        months = 1
+    if package:
+        lines.append({"kind": "package", "label": f"{sub.get('plan_name') or plan.get('name')} ({_month_label(period_start)} - {_month_label(period_end)})", "amount": round(float(package), 2)})
+    for role in SEAT_ROLES:
+        if role == "warehouse" and Module.WAREHOUSE.value not in modules:
+            continue
+        f = figures[role]
+        if f["extra"] and f["price"]:
+            lines.append({
+                "kind": "seats", "label": f"extra:{role}", "role": role, "qty": f["extra"],
+                "unit_price": f["price"], "months": months, "amount": round(f["extra"] * f["price"] * months, 2),
+            })
+    discount = float(sub.get("discount_percent") or 0)
+    subtotal = round(sum(line["amount"] for line in lines), 2)
+    if discount and subtotal:
+        lines.append({"kind": "discount", "label": f"{discount:g}%", "amount": round(-subtotal * discount / 100, 2)})
+    return lines, round(sum(line["amount"] for line in lines), 2)
+
+
+async def _prorated_seat_lines(client: dict, today: date) -> Tuple[List[dict], Dict[str, int]]:
+    """Annual clients that added accounts since the year was paid: those accounts
+    to the end of the paid year, whole months from next month's 1st."""
+    sub = client["subscription"]
+    plan = await db.plans.find_one({"id": sub["plan_id"]}, {"_id": 0}) or {}
+    figures = _seat_figures(plan, sub)
+    billed = sub.get("extra_seats_billed") or {}
+    start = _add_months(date(today.year, today.month, 1), 1)
+    ends = date.fromisoformat(sub["ends_at"])
+    months = (ends.year - start.year) * 12 + ends.month - start.month + 1
+    lines: List[dict] = []
+    if months <= 0:
+        return lines, {}
+    for role in SEAT_ROLES:
+        added = figures[role]["extra"] - int(billed.get(role, 0))
+        if added > 0 and figures[role]["price"]:
+            lines.append({
+                "kind": "seats_prorated", "label": f"extra:{role}", "role": role, "qty": added,
+                "unit_price": figures[role]["price"], "months": months,
+                "amount": round(added * figures[role]["price"] * months, 2),
+            })
+    return lines, {r: figures[r]["extra"] for r in SEAT_ROLES}
+
+
+async def _make_drafts(today: date, client_ids: Optional[List[str]] = None, force: bool = False) -> List[dict]:
+    """Drafts for the period that starts next month: monthly clients every month,
+    annual clients when their year ends this month (and prorated extra accounts).
+    One per client and period; `force` ignores canceled ones (a fresh draft after a
+    wrong one was dropped)."""
+    start = _add_months(date(today.year, today.month, 1), 1)
+    made: List[dict] = []
+    query: Dict[str, Any] = {"subscription.billing_cycle": {"$in": ["monthly", "annual"]}, "active": {"$ne": False}}
+    if client_ids:
+        query["id"] = {"$in": client_ids}
+    async for client in db.clients.find(query, {"_id": 0}):
+        sub = client["subscription"]
+        if sub.get("canceled_at") or not sub.get("plan_id"):
+            continue
+        ends = date.fromisoformat(sub["ends_at"])
+        cycle = sub["billing_cycle"]
+        taken_query = {"client_id": client["id"], "ledger": True, "period_start": start.isoformat(), "kind": "subscription"}
+        if force:
+            taken_query["status"] = {"$ne": "canceled"}
+        if ends >= start:  # the next period is already paid (annual mid-year)
+            if cycle == "annual":
+                lines, billed = await _prorated_seat_lines(client, today)
+                addon_query = {**taken_query, "cycle": "annual_addon"}
+                if lines and not await db.payments.find_one(addon_query, {"_id": 1}):
+                    made.append(await _insert_draft(client, "annual_addon", start, ends, lines, billed))
+            continue
+        if await db.payments.find_one({**taken_query, "cycle": {"$ne": "annual_addon"}}, {"_id": 1}):
+            continue
+        period_end = _month_end(_add_months(start, 11)) if cycle == "annual" else _month_end(start)
+        lines, _ = await _draft_lines(client, cycle, start, period_end)
+        if not lines:
+            continue  # nothing priced (free plan)
+        billed = (sub.get("extra_seats") or {}) if cycle == "annual" else None
+        made.append(await _insert_draft(client, cycle, start, period_end, lines, billed))
+    return made
+
+
+async def _insert_draft(client: dict, cycle: str, start: date, end: date, lines: List[dict], billed: Optional[dict]) -> dict:
+    total = round(sum(line["amount"] for line in lines), 2)
+    doc = {
+        "id": str(uuid.uuid4()), "client_id": client["id"], "status": "draft", "ledger": True, "kind": "subscription",
+        "cycle": cycle, "amount": max(total, 0.0), "currency": PAYMENT_CURRENCY,
+        "period_start": start.isoformat(), "period_end": end.isoformat(), "period": start.strftime("%Y-%m"),
+        "period_months": 12 if cycle == "annual" else 1, "lines": lines,
+        "breakdown": {"calculated_total": max(total, 0.0)}, "seats_billed": billed,
+        "plan_name": client["subscription"].get("plan_name"), "due_date": None, "paid_at": None, "method": None,
+        "note": None, "created_by": "system", "source": "billing", "created_at": now_iso(), "canceled_at": None,
+    }
+    await db.payments.insert_one({**doc, "_id": doc["id"]})
+    return doc
+
+
+class DraftRow(BaseModel):
+    charge: LedgerCharge
+    client_id: str
+    client_name: str
+    balance_due: float  # owed before this draft
+    credit: float
+    to_pay: float  # balance after approving it
+
+
+class DraftUpdate(BaseModel):
+    amount: Optional[float] = Field(default=None, ge=0, le=1_000_000_000)
+    note: Optional[str] = Field(default=None, max_length=500)
+    free: Optional[bool] = None  # True = 0 din, note "Besplatan mesec"
+
+
+class DraftApproveInput(BaseModel):
+    ids: Optional[List[str]] = None
+    all: bool = False
+
+
+class DraftGenerateInput(BaseModel):
+    client_ids: Optional[List[str]] = None
+    month: Optional[str] = None  # YYYY-MM of the period to draft (default: next month)
+
+
+async def _draft_or_404(draft_id: str) -> dict:
+    doc = await db.payments.find_one({"id": draft_id, "ledger": True, "status": "draft"}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return doc
+
+
+async def _draft_row(doc: dict, names: Dict[str, str]) -> DraftRow:
+    charges, payments = await _ledger(doc["client_id"])
+    _, owed, credit = _allocate(charges, payments)
+    return DraftRow(
+        charge=_charge_out(doc), client_id=doc["client_id"], client_name=names.get(doc["client_id"], ""),
+        balance_due=owed, credit=credit, to_pay=round(max(0.0, owed + doc["amount"] - credit), 2),
+    )
+
+
+@api_router.get("/billing/drafts", response_model=List[DraftRow])
+async def list_drafts(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    names = await _client_names()
+    docs = await db.payments.find({"ledger": True, "status": "draft"}, {"_id": 0}).sort("created_at", 1).to_list(None)
+    return [await _draft_row(d, names) for d in docs]
+
+
+@api_router.post("/billing/drafts/generate", response_model=List[DraftRow])
+async def generate_drafts(inp: DraftGenerateInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Drafts now, without waiting for the draft day (for one client or all)."""
+    base = _today()
+    if inp.month:
+        month = date.fromisoformat(_valid_month(inp.month) + "-01")
+        base = _add_months(month, -1)
+    made = await _make_drafts(base, inp.client_ids, force=True)
+    await _audit(current_user, "billing.drafts_generated", None, None, None, None, {"count": len(made)})
+    names = await _client_names()
+    return [await _draft_row(d, names) for d in made]
+
+
+@api_router.put("/billing/drafts/{draft_id}", response_model=DraftRow)
+async def update_draft(draft_id: str, inp: DraftUpdate, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    doc = await _draft_or_404(draft_id)
+    changes: Dict[str, Any] = {}
+    if inp.free:
+        changes.update(amount=0.0, note=inp.note or "Besplatan mesec")
+    else:
+        if inp.amount is not None:
+            changes["amount"] = round(inp.amount, 2)
+        if inp.note is not None:
+            changes["note"] = inp.note.strip() or None
+    if changes:
+        await db.payments.update_one({"id": draft_id}, {"$set": changes})
+    fresh = await _draft_or_404(draft_id)
+    return await _draft_row(fresh, await _client_names())
+
+
+@api_router.post("/billing/drafts/approve", response_model=List[LedgerCharge])
+async def approve_drafts(inp: DraftApproveInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Drafts become charges the client sees: a pro-forma number, a due date
+    (settings.due_day of the period's month) and the balance is recomputed."""
+    if not inp.all and not inp.ids:
+        raise HTTPException(status_code=400, detail="Send ids or all=true")
+    query: Dict[str, Any] = {"ledger": True, "status": "draft"}
+    if not inp.all:
+        query["id"] = {"$in": inp.ids}
+    docs = await db.payments.find(query, {"_id": 0}).to_list(None)
+    approved = []
+    for doc in docs:
+        start = date.fromisoformat(doc["period_start"])
+        update = {
+            "status": "expected", "approved_at": now_iso(), "approved_by": current_user.name,
+            "number": await _next_proforma_number(_today()),
+            "due_date": date(start.year, start.month, int(setting("due_day"))).isoformat(),
+        }
+        result = await db.payments.update_one({"id": doc["id"], "status": "draft"}, {"$set": update})
+        if result.modified_count == 0:
+            continue  # approved meanwhile
+        if doc.get("seats_billed") is not None:
+            await db.clients.update_one({"id": doc["client_id"]}, {"$set": {"subscription.extra_seats_billed": doc["seats_billed"]}})
+        await _log_subscription_event(
+            doc["client_id"], "charge_created", current_user, plan_name=doc.get("plan_name"),
+            data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "number": update["number"], "period": doc.get("period")},
+        )
+        await _apply_ledger(doc["client_id"], current_user)
+        approved.append(_charge_out({**doc, **update}))
+    return approved
+
+
+class LedgerPaymentInput(BaseModel):
+    client_id: str
+    amount: float = Field(gt=0, le=1_000_000_000)
+    paid_at: Optional[str] = None
+    method: Literal["bank", "card", "cash", "other"] = "bank"
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class LedgerPaymentResult(BaseModel):
+    payment: LedgerPayment
+    balance: Balance
+    subscription: SubscriptionRow
+
+
+@api_router.post("/billing/payments", response_model=LedgerPaymentResult)
+async def record_ledger_payment(inp: LedgerPaymentInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Money in for a client on calendar billing: closes the oldest charges first,
+    a surplus stays as credit, the end date moves to the paid period and a block
+    caused by the debt lifts."""
+    client = await _client_or_404(inp.client_id)
+    if not (client.get("subscription") or {}).get("billing_cycle"):
+        raise HTTPException(status_code=400, detail="Client is not on calendar billing")
+    doc = {
+        "id": str(uuid.uuid4()), "client_id": client["id"], "status": "received", "ledger": True, "kind": "subscription",
+        "amount": round(inp.amount, 2), "currency": PAYMENT_CURRENCY, "paid_at": _paid_day(inp.paid_at),
+        "due_date": None, "method": inp.method, "note": inp.note, "plan_name": client["subscription"].get("plan_name"),
+        "created_by": current_user.name, "source": "manual", "created_at": now_iso(), "canceled_at": None,
+    }
+    await db.payments.insert_one({**doc, "_id": doc["id"]})
+    await _log_subscription_event(
+        client["id"], "payment_received", current_user, note=inp.note, plan_name=doc["plan_name"],
+        data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY},
+    )
+    await _apply_ledger(client["id"], current_user)
+    return LedgerPaymentResult(
+        payment=LedgerPayment(**doc), balance=await _balance_out(client["id"]),
+        subscription=await _subscription_row(await _client_or_404(client["id"])),
+    )
+
+
+@api_router.get("/billing/clients/{client_id}", response_model=Balance)
+async def client_balance(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    return await _balance_out(client_id, include_drafts=True)
+
+
+class EnrollInput(BaseModel):
+    cycle: Literal["monthly", "annual"] = "monthly"
+
+
+async def _enroll_calendar(
+    client_id: str, cycle: str, user: Optional[User], *, from_today: bool = True, free_month: bool = True,
+    source: str = "manual",
+) -> None:
+    """Puts a client with a subscription on calendar billing (or changes its cycle).
+    The end date goes to the end of its month - from today on (`from_today`), or of the
+    stored end date as it is (the startup migration: nobody gets unlocked or shortened).
+    A new client's first partial month is a 0 charge "Besplatan mesec"."""
+    client = await _client_or_404(client_id)
+    sub = client.get("subscription")
+    if not sub or not sub.get("plan_id"):
+        raise HTTPException(status_code=400, detail="Client has no subscription - assign a plan first")
+    today = _today()
+    ends = date.fromisoformat(sub["ends_at"])
+    aligned = _month_end(max(ends, today) if from_today else ends)
+    updates: Dict[str, Any] = {"subscription.billing_cycle": cycle, "subscription.ends_at": aligned.isoformat()}
+    if cycle == "annual" and sub.get("extra_seats_billed") is None:
+        updates["subscription.extra_seats_billed"] = sub.get("extra_seats") or {}
+    await db.clients.update_one({"id": client_id}, {"$set": updates})
+    if free_month and not sub.get("billing_cycle") and aligned == _month_end(today) and setting("first_month_free"):
+        month_start = date(today.year, today.month, 1)
+        doc = {
+            "id": str(uuid.uuid4()), "client_id": client_id, "status": "expected", "ledger": True, "kind": "subscription",
+            "cycle": "monthly", "amount": 0.0, "currency": PAYMENT_CURRENCY, "period_start": month_start.isoformat(),
+            "period_end": aligned.isoformat(), "period": month_start.strftime("%Y-%m"), "period_months": 1,
+            "lines": [{"kind": "free", "label": "Besplatan mesec", "amount": 0.0}], "note": "Besplatan mesec",
+            "number": await _next_proforma_number(today), "due_date": today.isoformat(), "approved_at": now_iso(),
+            "approved_by": user.name if user else "system", "plan_name": sub.get("plan_name"), "paid_at": None, "method": None,
+            "created_by": user.name if user else "system", "source": "billing", "created_at": now_iso(), "canceled_at": None,
+        }
+        await db.payments.insert_one({**doc, "_id": doc["id"]})
+    await _log_subscription_event(
+        client_id, "billing_enrolled", user, plan_name=sub.get("plan_name"), ends_at=aligned.isoformat(),
+        data={"cycle": cycle}, source=source,
+    )
+    await _apply_ledger(client_id, user)
+
+
+async def _migrate_calendar_billing() -> None:
+    """One-off at startup: every client with a plan that is still on the old model
+    goes to monthly calendar billing (annual when its plan has only an annual price)."""
+    async for client in db.clients.find(
+        {"subscription.plan_id": {"$ne": None}, "subscription.billing_cycle": {"$exists": False}}, {"_id": 0}
+    ):
+        try:
+            plan = await db.plans.find_one({"id": client["subscription"]["plan_id"]}, {"_id": 0}) or {}
+            prices = plan.get("prices") or {}
+            cycle = "annual" if prices.get("12") is not None and prices.get("1") is None else "monthly"
+            await _enroll_calendar(client["id"], cycle, None, from_today=False, free_month=False, source="migration")
+            logger.info("Calendar billing: moved client %s (%s)", client["id"], cycle)
+        except Exception as exc:
+            logger.error("Calendar billing migration failed for %s: %s", client.get("id"), exc)
+
+
+@api_router.post("/billing/clients/{client_id}/enroll", response_model=SubscriptionRow)
+async def enroll_calendar_billing(client_id: str, inp: EnrollInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Calendar billing cycle of a client: monthly or annual (every client with a plan
+    is on calendar billing; this changes the cycle or re-enrolls a client)."""
+    await _enroll_calendar(client_id, inp.cycle, current_user)
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+class BlockInput(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class DueExtensionInput(BaseModel):
+    until: Optional[str] = None  # YYYY-MM-DD; None = remove the extension
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+@api_router.post("/subscriptions/{client_id}/block", response_model=SubscriptionRow)
+async def block_client(client_id: str, inp: BlockInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    client = await _client_or_404(client_id)
+    if not (client.get("subscription") or {}).get("billing_cycle"):
+        raise HTTPException(status_code=400, detail="Client is not on calendar billing")
+    await db.clients.update_one(
+        {"id": client_id}, {"$set": {"subscription.manual_block": {"since": _today().isoformat(), "by": current_user.name, "note": inp.note}}}
+    )
+    await _log_subscription_event(client_id, "blocked", current_user, note=inp.note, plan_name=client["subscription"].get("plan_name"))
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+@api_router.post("/subscriptions/{client_id}/unblock", response_model=SubscriptionRow)
+async def unblock_client(client_id: str, inp: BlockInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    client = await _client_or_404(client_id)
+    await db.clients.update_one({"id": client_id}, {"$set": {"subscription.manual_block": None}})
+    await _log_subscription_event(client_id, "unblocked", current_user, note=inp.note, plan_name=(client.get("subscription") or {}).get("plan_name"))
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+@api_router.post("/subscriptions/{client_id}/extend-due", response_model=SubscriptionRow)
+async def extend_due(client_id: str, inp: DueExtensionInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    """Exception for one client: no block until this date (e.g. paid, statement not in yet)."""
+    client = await _client_or_404(client_id)
+    if not (client.get("subscription") or {}).get("billing_cycle"):
+        raise HTTPException(status_code=400, detail="Client is not on calendar billing")
+    until = _valid_day(inp.until, "until") if inp.until else None
+    await db.clients.update_one({"id": client_id}, {"$set": {"subscription.due_extension_until": until}})
+    await _log_subscription_event(client_id, "due_extended", current_user, note=inp.note, plan_name=client["subscription"].get("plan_name"), ends_at=until)
+    return await _subscription_row(await _client_or_404(client_id))
+
+
+async def _billing_attention(today: date, active_clients: Dict[str, dict]) -> List["AttentionItem"]:
+    """Drafts waiting for approval and clients with debt in two or more periods."""
+    items: List[AttentionItem] = []
+    drafts: Dict[str, int] = {}
+    async for d in db.payments.find({"ledger": True, "status": "draft"}, {"_id": 0, "client_id": 1}):
+        drafts[d["client_id"]] = drafts.get(d["client_id"], 0) + 1
+    for client_id, count in drafts.items():
+        c = active_clients.get(client_id)
+        if c:
+            items.append(AttentionItem(client_id=client_id, client_name=c["name"], reason="drafts_pending", plan_name=(c.get("subscription") or {}).get("plan_name")))
+    for client_id, c in active_clients.items():
+        if not (c.get("subscription") or {}).get("billing_cycle") or not (c["subscription"].get("balance_due") or 0):
+            continue
+        charges, payments = await _ledger(client_id)
+        allocated, _, _ = _allocate(charges, payments)
+        late = [x for x in allocated if x["open"] > 0 and x.get("due_date") and x["due_date"] < today.isoformat()]
+        if len(late) >= 2:
+            items.append(AttentionItem(client_id=client_id, client_name=c["name"], reason="debt_repeated", date=late[0]["due_date"], plan_name=c["subscription"].get("plan_name")))
+    return items
+
+
+# ---------------- What the client sees: charges, payment details, IPS QR (N3) ----------------
+def _ips_reference(number: Optional[str]) -> Optional[str]:
+    """Pro-forma PR-2026-0001 -> reference 97 + control + 20260001 (model 97, ISO 7064 mod 97-10)."""
+    if not number:
+        return None
+    digits = re.sub(r"\D", "", number)
+    if not digits:
+        return None
+    control = 98 - (int(digits) * 100) % 97
+    return f"97{control:02d}{digits}"
+
+
+def _ips_string(amount: float, number: Optional[str]) -> Optional[str]:
+    """NBS IPS QR payload (K:PR) for paying `amount`; None when the account or the
+    recipient isn't set in the settings. Empty optional tags are left out."""
+    account, name = setting("ips_account"), setting("ips_recipient_name")
+    if not account or not name or amount <= 0:
+        return None
+    parts = [
+        "K:PR", "V:01", "C:1", f"R:{account}", f"N:{name[:70]}",
+        "I:RSD" + f"{amount:.2f}".replace(".", ","),
+    ]
+    code = setting("ips_payment_code")
+    if code:
+        parts.append(f"SF:{code}")
+    purpose = setting("ips_purpose")
+    if purpose:
+        parts.append(f"S:{purpose[:35]}")
+    reference = _ips_reference(number) if setting("ips_reference_from_number") else None
+    if reference:
+        parts.append(f"RO:{reference}")
+    return "|".join(parts)
+
+
+def _qr_png(text: str) -> bytes:
+    import io
+    import segno
+
+    buf = io.BytesIO()
+    segno.make(text, error="m").save(buf, kind="png", scale=6, border=3)
+    return buf.getvalue()
+
+
+async def _billing_notice(raw: dict) -> Optional[dict]:
+    """Banner data for /auth/me: the earliest unpaid due date, whether it is late,
+    the day the account will be blocked; amounts only for the client's admin."""
+    client = await db.clients.find_one({"id": raw.get("client_id")}, {"_id": 0, "subscription": 1})
+    sub = (client or {}).get("subscription") or {}
+    if not sub.get("billing_cycle"):
+        return None
+    today = _today()
+    state = subscription_state(sub, today)
+    dues = sorted(c["due_date"] for c in (sub.get("open_charges") or []) if c.get("due_date") and c.get("open", 0) > 0)
+    next_due = dues[0] if dues else None
+    blocks_on = None
+    if next_due:
+        due = date.fromisoformat(next_due)
+        blocks_on = (date(due.year, due.month, int(setting("block_after_day"))) + timedelta(days=1)).isoformat()
+    out: Dict[str, Any] = {
+        "status": state["status"], "lock_reason": state.get("lock_reason"), "next_due_date": next_due,
+        "late": bool(next_due and next_due <= today.isoformat()), "blocks_on": blocks_on,
+    }
+    if raw.get("role") == Role.ADMIN.value:
+        out.update(to_pay=round(float(sub.get("balance_due") or 0), 2), credit=round(float(sub.get("credit") or 0), 2))
+    return out
+
+
+class IpsInfo(BaseModel):
+    available: bool
+    recipient: Optional[str] = None
+    account: Optional[str] = None
+    payment_code: Optional[str] = None
+    purpose: Optional[str] = None
+    reference: Optional[str] = None
+    amount: float = 0
+
+
+class BillingMe(BaseModel):
+    client_name: str
+    state: Dict[str, Any]
+    to_pay: float  # owed now, all open charges
+    credit: float
+    next_due_date: Optional[str] = None
+    monthly_estimate: float  # what one month costs now (an estimate, the charge is what counts)
+    charges: List[LedgerCharge]  # approved charges, newest first, with what is still open
+    payments: List[LedgerPayment]
+    instructions_sr: str = ""
+    instructions_en: str = ""
+    ips: IpsInfo
+
+
+async def _billing_for_client(client_id: str) -> Tuple[BillingMe, Optional[str]]:
+    client = await _client_or_404(client_id)
+    balance = await _balance_out(client_id)
+    open_rows = sorted((c for c in balance.charges if c.open > 0), key=lambda c: (c.due_date or "", c.created_at))
+    reference_number = open_rows[0].number if open_rows else None
+    payload = _ips_string(balance.balance_due, reference_number)
+    sub = client.get("subscription") or {}
+    me = BillingMe(
+        client_name=client["name"], state=subscription_state(sub) if sub else {"status": "none"},
+        to_pay=balance.balance_due, credit=balance.credit,
+        next_due_date=open_rows[0].due_date if open_rows else None,
+        monthly_estimate=await _monthly_amount(client_id) if sub else 0,
+        charges=balance.charges, payments=balance.payments,
+        instructions_sr=setting("payment_instructions_sr") or "", instructions_en=setting("payment_instructions_en") or "",
+        ips=IpsInfo(
+            available=payload is not None, recipient=setting("ips_recipient_name") or None,
+            account=setting("ips_account") or None, payment_code=setting("ips_payment_code") or None,
+            purpose=setting("ips_purpose") or None,
+            reference=_ips_reference(reference_number) if setting("ips_reference_from_number") else None,
+            amount=balance.balance_due,
+        ),
+    )
+    return me, payload
+
+
+@api_router.get("/billing/me", response_model=BillingMe)
+async def my_billing(current_user: User = Depends(require_roles(Role.ADMIN))):
+    """The client's admin: charges with lines and numbers, what is owed, payment
+    details. Works while the client is blocked (see BLOCKED_ADMIN_PATHS)."""
+    me, _ = await _billing_for_client(current_user.client_id)
+    return me
+
+
+def _png_response(data: bytes):
+    from fastapi.responses import Response
+
+    return Response(content=data, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@api_router.get("/billing/me/qr.png")
+async def my_billing_qr(current_user: User = Depends(require_roles(Role.ADMIN))):
+    _, payload = await _billing_for_client(current_user.client_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Nothing to pay or payment details are not set")
+    return _png_response(_qr_png(payload))
+
+
+@api_router.get("/billing/clients/{client_id}/qr.png")
+async def client_billing_qr(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    _, payload = await _billing_for_client(client_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Nothing to pay or payment details are not set")
+    return _png_response(_qr_png(payload))
 
 
 # ---------------- Superadmin tools (PLAN_SUPERADMIN.md, phase D) ----------------
@@ -2696,6 +3489,112 @@ class SystemStatus(BaseModel):
 
 
 CRON_LATE_HOURS = 48
+
+
+class SettingsInput(BaseModel):
+    """Partial update: a field that isn't sent keeps its value; null resets it to the default."""
+    draft_day: Optional[int] = Field(default=None, ge=1, le=28)
+    due_day: Optional[int] = Field(default=None, ge=1, le=28)
+    block_after_day: Optional[int] = Field(default=None, ge=1, le=28)
+    first_month_free: Optional[bool] = None
+    reminder_days: Optional[int] = Field(default=None, ge=1, le=120)
+    purge_after_days: Optional[int] = Field(default=None, ge=7, le=3650)
+    expiry_alert_days: Optional[List[int]] = None
+    payment_instructions_sr: Optional[str] = Field(default=None, max_length=2000)
+    payment_instructions_en: Optional[str] = Field(default=None, max_length=2000)
+    ips_account: Optional[str] = Field(default=None, max_length=30)
+    ips_recipient_name: Optional[str] = Field(default=None, max_length=70)
+    ips_payment_code: Optional[str] = Field(default=None, max_length=3)
+    ips_purpose: Optional[str] = Field(default=None, max_length=35)
+    ips_reference_from_number: Optional[bool] = None
+    issuer_name: Optional[str] = Field(default=None, max_length=120)
+    issuer_address: Optional[str] = Field(default=None, max_length=200)
+    issuer_pib: Optional[str] = Field(default=None, max_length=20)
+    issuer_account: Optional[str] = Field(default=None, max_length=30)
+    issuer_note: Optional[str] = Field(default=None, max_length=300)
+    billing_from_email: Optional[str] = Field(default=None, max_length=254)
+    billing_from_name: Optional[str] = Field(default=None, max_length=80)
+    billing_reply_to: Optional[str] = Field(default=None, max_length=254)
+    bilingual_emails: Optional[bool] = None
+
+
+class SettingsOut(BaseModel):
+    values: Dict[str, Any]  # what is in effect
+    defaults: Dict[str, Any]  # what applies when a value is reset (env, else code)
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def normalize_bank_account(value: str) -> str:
+    """Serbian current account: 3-13-2 digits (dashes optional, the middle part may
+    be shortened) -> 18 digits; the control number must be valid (ISO 7064 mod 97)."""
+    raw = value.strip().replace(" ", "")
+    if "-" in raw:
+        parts = raw.split("-")
+        if len(parts) != 3 or not all(p.isdigit() for p in parts) or len(parts[0]) != 3 or len(parts[2]) != 2 or not 1 <= len(parts[1]) <= 13:
+            raise ValueError("Account must look like 160-0000000000000-00")
+        raw = parts[0] + parts[1].zfill(13) + parts[2]
+    if not (raw.isdigit() and len(raw) == 18):
+        raise ValueError("Account must have 18 digits")
+    if int(raw) % 97 != 1:
+        raise ValueError("Account control number is not valid")
+    return raw
+
+
+def _validated_settings(inp: SettingsInput) -> Dict[str, Any]:
+    changes: Dict[str, Any] = {}
+    for field in inp.model_fields_set:
+        value = getattr(inp, field)
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                value = None  # empty text = back to the default
+        if value is None:
+            changes[field] = None
+            continue
+        try:
+            if field in ("ips_account", "issuer_account"):
+                value = normalize_bank_account(value)
+            elif field == "ips_payment_code" and not (value.isdigit() and len(value) == 3):
+                raise ValueError("Payment code must have 3 digits")
+            elif field == "issuer_pib" and not (value.isdigit() and len(value) == 9):
+                raise ValueError("PIB must have 9 digits")
+            elif field in ("billing_from_email", "billing_reply_to"):
+                value = value.lower()
+                if not _EMAIL_RE.match(value):
+                    raise ValueError("Not a valid email address")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"{field}: {exc}")
+        if field == "expiry_alert_days":
+            value = _validated_alert_days(value)
+        changes[field] = value
+    merged = {**effective_settings(), **{k: (SETTINGS_DEFAULTS[k] if v is None else v) for k, v in changes.items()}}
+    if merged["block_after_day"] < merged["due_day"]:
+        raise HTTPException(status_code=400, detail="block_after_day must not be before due_day")
+    return changes
+
+
+@api_router.get("/settings", response_model=SettingsOut)
+async def get_settings(current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    await refresh_settings(force=True)
+    return SettingsOut(values=effective_settings(), defaults=SETTINGS_DEFAULTS)
+
+
+@api_router.put("/settings", response_model=SettingsOut)
+async def update_settings(inp: SettingsInput, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    await refresh_settings(force=True)
+    changes = _validated_settings(inp)
+    if changes:
+        to_set = {k: v for k, v in changes.items() if v is not None}
+        to_unset = {k: "" for k, v in changes.items() if v is None}
+        update: Dict[str, Any] = {"$set": {**to_set, "updated_at": now_iso(), "updated_by": current_user.name}}
+        if to_unset:
+            update["$unset"] = to_unset
+        await db.app_settings.update_one({"_id": "global"}, update, upsert=True)
+        await _audit(current_user, "settings.update", "settings", "global", None, None, {"fields": sorted(changes)})
+        await refresh_settings(force=True)
+    return SettingsOut(values=effective_settings(), defaults=SETTINGS_DEFAULTS)
 
 
 @api_router.get("/superadmin/system", response_model=SystemStatus)
@@ -2885,7 +3784,7 @@ class OverviewSubscriptions(BaseModel):
 class AttentionItem(BaseModel):
     client_id: str
     client_name: str
-    reason: str  # locked | grace | purge_soon | ending_soon | payment_overdue | setup_unpaid | month_not_charged
+    reason: str  # locked | blocked_debt | grace | purge_soon | ending_soon | payment_overdue | setup_unpaid | drafts_pending | debt_repeated
     date: Optional[str] = None  # the date that matters for the reason
     plan_name: Optional[str] = None
 
@@ -2908,11 +3807,10 @@ class SuperadminOverview(BaseModel):
 
 
 _ATTENTION_ORDER = {
-    "locked": 0, "purge_soon": 1, "payment_overdue": 2, "grace": 3, "setup_unpaid": 4, "month_not_charged": 5,
-    "ending_soon": 6,
+    "locked": 0, "blocked_debt": 0, "purge_soon": 1, "payment_overdue": 2, "debt_repeated": 2, "grace": 3,
+    "drafts_pending": 4, "setup_unpaid": 4, "month_not_charged": 5, "ending_soon": 6,
 }
-# From this day of the month a client that is billed monthly should have next month charged.
-CHARGE_REMINDER_DAY = 25
+# From settings.draft_day a client that is billed monthly should have next month charged.
 
 
 @api_router.get("/superadmin/overview", response_model=SuperadminOverview)
@@ -2940,8 +3838,10 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
         item = {"client_id": client["id"], "client_name": client["name"], "plan_name": (sub or {}).get("plan_name")}
         if status == "locked":
             clients.locked += 1
-            purge_at = date.fromisoformat(state["purge_at"])
-            if not sub.get("purged_at") and not sub.get("purge_paused") and (purge_at - today).days <= SUBSCRIPTION_REMINDER_DAYS:
+            purge_at = date.fromisoformat(state["purge_at"]) if state.get("purge_at") else None
+            if state.get("lock_reason") == "debt":
+                attention.append(AttentionItem(**item, reason="blocked_debt", date=state["locked_since"]))
+            elif purge_at and not sub.get("purged_at") and not sub.get("purge_paused") and (purge_at - today).days <= setting("reminder_days"):
                 attention.append(AttentionItem(**item, reason="purge_soon", date=state["purge_at"]))
             else:
                 attention.append(AttentionItem(**item, reason="locked", date=state["locked_since"]))
@@ -2950,7 +3850,7 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
         elif status == "active":
             if state["days_left"] <= 30:
                 subs.ending_30d += 1
-            if state["days_left"] <= SUBSCRIPTION_REMINDER_DAYS:
+            if state["days_left"] <= setting("reminder_days") and (sub or {}).get("billing_cycle") != "monthly":
                 attention.append(AttentionItem(**item, reason="ending_soon", date=state["ends_at"]))
     money = await _payment_figures(today)
     for client_id, oldest_due in money["overdue_by_client"].items():
@@ -2961,30 +3861,18 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
                 plan_name=(c.get("subscription") or {}).get("plan_name"),
             ))
     overdue_ids = set(money["overdue_by_client"])
-    async for pay in db.payments.find({"kind": "setup", "status": "expected"}, {"_id": 0}):
+    setup_docs = await db.payments.find({"kind": "setup", "status": "expected"}, {"_id": 0}).to_list(None)
+    open_by_id = await _ledger_open_map({p["client_id"] for p in setup_docs if p.get("ledger")})
+    for pay in setup_docs:
+        if pay.get("ledger") and open_by_id.get(pay["id"], 0) <= 0:
+            continue  # paid (calendar billing: charges stay "expected", what's open counts)
         c = active_clients.get(pay["client_id"])
         if c and pay["client_id"] not in overdue_ids:  # a late setup debt already shows as payment_overdue
             attention.append(AttentionItem(
                 client_id=c["id"], client_name=c["name"], reason="setup_unpaid", date=pay.get("due_date"),
                 plan_name=(c.get("subscription") or {}).get("plan_name"),
             ))
-    if today.day >= CHARGE_REMINDER_DAY:
-        following = (today.replace(day=1) + timedelta(days=32)).strftime("%Y-%m")
-        # Only clients already billed month by month (they have at least one monthly charge).
-        latest: Dict[str, str] = {}
-        async for p in db.payments.find(
-            {"kind": "subscription", "period": {"$ne": None}, "status": {"$ne": "canceled"}}, {"_id": 0, "client_id": 1, "period": 1}
-        ):
-            latest[p["client_id"]] = max(latest.get(p["client_id"], ""), p["period"])
-        for client_id in latest:
-            if client_id not in active_clients:
-                continue
-            c = active_clients[client_id]
-            if latest[client_id] < following and subscription_state(c.get("subscription"), today)["status"] in ("active", "grace"):
-                attention.append(AttentionItem(
-                    client_id=client_id, client_name=c["name"], reason="month_not_charged", date=following,
-                    plan_name=(c.get("subscription") or {}).get("plan_name"),
-                ))
+    attention.extend(await _billing_attention(today, active_clients))
     by_role: Dict[str, int] = {}
     async for row in db.users.aggregate([
         {"$match": {"client_id": {"$in": list(active_ids)}, "active": {"$ne": False}}},
@@ -4997,7 +5885,7 @@ async def stock_expiring(current_user: User = Depends(require_module(Module.EXPI
     (default 30/15/5 days). For the client's admin and warehouse only: no
     superadmin (not tied to a warehouse), no sales reps."""
     client = await db.clients.find_one({"id": current_user.client_id}, {"_id": 0, "expiry_alert_days": 1}) or {}
-    thresholds = sorted(client.get("expiry_alert_days") or DEFAULT_EXPIRY_ALERT_DAYS)
+    thresholds = sorted(client.get("expiry_alert_days") or setting("expiry_alert_days"))
     limit = (_today() + timedelta(days=thresholds[-1])).isoformat()
     batches = await db.stock_batches.find(
         {"client_id": current_user.client_id, "qty": {"$gt": 0}, "expiry_date": {"$ne": None, "$lte": limit}},
