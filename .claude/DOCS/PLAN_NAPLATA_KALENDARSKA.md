@@ -72,7 +72,7 @@ Zamenjuje ručno „Zaduži mesec“ i trenutni model u kome zaduženje vidi sam
 
 ### N2 — Kalendarski ciklus, saldo i nacrti (backend) (urađeno)
 - Odstupanja od plana pri implementaciji:
-  - Nema automatske migracije postojećih klijenata pri pokretanju: klijent prelazi na kalendarsku naplatu akcijom `POST /billing/clients/{id}/enroll` (`cycle` monthly/annual) - istek se poravna na kraj meseca, uz `first_month_free` nastaje zaduženje 0 din „Besplatan mesec“. Tako se podaci u produkciji ne menjaju sami.
+  - Automatska migracija (odluka korisnika, da ne ostanu dva modela): pri pokretanju `_migrate_calendar_billing` prebacuje sve klijente sa paketom bez `billing_cycle` na mesečnu naplatu (godišnju ako paket ima samo cenu za 12 meseci); istek se pomera na kraj svog meseca, niko se ne otključava niti skraćuje, bez besplatnog meseca; ponovno pokretanje ne menja ništa. Novi klijenti i dodela paketa idu odmah na kalendarsku naplatu (prvi započeti mesec besplatan uz `first_month_free`). Uklonjeni su „Uplata i produženje“ (`POST /subscriptions/{id}/pay`) i „Zaduži mesec“ (`/clients/{id}/charge-month`) i podsetnik `month_not_charged`; ručno zaduženje/uplata na stranici Uplate ulazi u saldo. `POST /billing/clients/{id}/enroll` sada samo menja ciklus.
   - U saldo ulaze samo novi zapisi (`ledger: true`: odobreni nacrti i uplate preko `POST /billing/payments`); stara ručna zaduženja i „Uplata i produženje“ rade kao pre i ne ulaze u saldo (njihov saldo bi bio pogrešan, npr. uplata bez zaduženja bi izgledala kao preplata).
   - Blokada zbog duga računa samo dug kome je rok prošao (inače bi zaduženje za sledeći mesec odmah blokiralo klijenta).
   - Blokada zbog duga i ručna blokada ne vode u brisanje podataka (brisanje ostaje vezano za istek/otkaz).
