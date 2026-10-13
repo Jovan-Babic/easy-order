@@ -1,35 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ROLE_KEYS } from "@/components/SeatsPanel";
-import { BillingMe, ChargeLine, formatAccount, formatDate } from "@/lib/billing";
+import { ChargeLinesTable } from "@/components/ChargeLines";
+import { BillingMe, formatAccount, formatDate } from "@/lib/billing";
 import { localizedDetail } from "@/lib/errors";
-import { TranslationKey, useLanguage } from "@/lib/i18n";
+import { useLanguage } from "@/lib/i18n";
 import { money } from "@/lib/payments";
-import type { SeatRole } from "@/lib/seats";
 
 const card = "rounded-lg bg-surfaceSecondary p-6 shadow-sm";
-
-function useLineLabel() {
-  const { t } = useLanguage();
-  return (line: ChargeLine) => {
-    if (line.kind === "seats" || line.kind === "seats_prorated") {
-      const role = t(ROLE_KEYS[(line.role ?? "operator") as SeatRole] ?? ("userRoleOperator" as TranslationKey));
-      const months = line.months && line.months > 1 ? ` × ${line.months} ${t("billingMonths")}` : "";
-      const what = line.kind === "seats_prorated" ? t("billingSeatsToYearEnd") : t("billingExtraSeats");
-      return `${what}: ${role} ${line.qty} × ${money(line.unit_price ?? 0)}${months}`;
-    }
-    if (line.kind === "discount") return `${t("seatsDiscount")} ${line.label}`;
-    if (line.kind === "free") return t("billingFreeMonth");
-    return line.label;
-  };
-}
 
 // The client's admin: what is owed, the charges (pro-forma number, lines, due date),
 // payment details with the IPS QR code, and the history. Reachable while blocked.
 export default function BillingPage() {
   const { t, lang } = useLanguage();
-  const lineLabel = useLineLabel();
   const [data, setData] = useState<BillingMe | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,35 +82,7 @@ export default function BillingPage() {
                     {t("payDueDate")}: {formatDate(c.due_date)}
                   </p>
                 </div>
-                <table className="w-full text-sm">
-                  <tbody>
-                    {c.lines.map((line, i) => (
-                      <tr key={i}>
-                        <td className="py-1 text-onSurfaceSecondary">{lineLabel(line)}</td>
-                        <td className="py-1 text-right text-onSurface">{money(line.amount)}</td>
-                      </tr>
-                    ))}
-                    {c.note && (
-                      <tr>
-                        <td colSpan={2} className="py-1 text-xs text-muted">{c.note}</td>
-                      </tr>
-                    )}
-                    <tr className="border-t border-border font-bold">
-                      <td className="py-1">{t("billingChargeTotal")}</td>
-                      <td className="py-1 text-right">{money(c.amount)}</td>
-                    </tr>
-                    {c.paid > 0 && (
-                      <tr>
-                        <td className="py-1 text-success">{t("billingPaid")}</td>
-                        <td className="py-1 text-right text-success">−{money(c.paid)}</td>
-                      </tr>
-                    )}
-                    <tr className="font-bold">
-                      <td className="py-1">{t("billingOpenAmount")}</td>
-                      <td className="py-1 text-right">{money(c.open)}</td>
-                    </tr>
-                  </tbody>
-                </table>
+                <ChargeLinesTable charge={c} />
               </div>
             ))}
           </div>

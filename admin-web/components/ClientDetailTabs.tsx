@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { BillingPanel } from "@/components/BillingPanel";
 import { ClientEditForm } from "@/components/ClientEditForm";
 import { PaymentsPanel } from "@/components/PaymentsPanel";
 import { ROLE_KEYS, SeatsEditDialog, SeatsSummary } from "@/components/SeatsPanel";
@@ -22,7 +23,7 @@ import { SeatsOut } from "@/lib/seats";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
 
 type Stats = { order_count: number; customer_count: number; product_count: number; total_grand: number } | null;
-type Tab = "overview" | "users" | "subscription" | "payments" | "activity" | "notes";
+type Tab = "overview" | "users" | "subscription" | "billing" | "payments" | "activity" | "notes";
 type ClientUser = { id: string; name: string; email: string; phone?: string; role: string; active: boolean };
 
 // Superadmin's page for one client: company data, its users, its subscription.
@@ -33,6 +34,7 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
     ["overview", t("clientOverview")],
     ["users", t("users")],
     ["subscription", t("subscription")],
+    ["billing", t("billingTab")],
     ["payments", t("payments")],
     ["activity", t("activity")],
     ["notes", t("notes")],
@@ -67,6 +69,7 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
       )}
       {tab === "users" && <ClientUsers clientId={client.id} />}
       {tab === "subscription" && <ClientSubscription clientId={client.id} />}
+      {tab === "billing" && <BillingPanel clientId={client.id} />}
       {tab === "payments" && <PaymentsPanel clientId={client.id} />}
       {tab === "activity" && <ClientActivity clientId={client.id} />}
       {tab === "notes" && <ClientNotes clientId={client.id} />}
@@ -213,9 +216,13 @@ function ClientSubscription({ clientId }: { clientId: string }) {
         )}
       </dl>
       <div className="mt-5 flex flex-wrap gap-4">
-        <button className={primary} onClick={() => setDialog("pay")}>
-          {t("payAndExtend")}
-        </button>
+        {row.state.billing_cycle ? (
+          <span className="text-sm text-muted">{t("billingUseTab")}</span>
+        ) : (
+          <button className={primary} onClick={() => setDialog("pay")}>
+            {t("payAndExtend")}
+          </button>
+        )}
         <button className={link} onClick={() => setDialog("assign")}>
           {has ? t("changePlan") : t("assignPlan")}
         </button>

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -150,13 +151,22 @@ export default function SubscriptionsPage() {
                         {r.modules.length ? MODULES.filter((m) => r.modules.includes(m.key)).map((m) => t(m.labelKey)).join(", ") : "-"}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-right">
-                        <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "pay", row: r })}>
-                          {t("payAndExtend")}
-                        </button>
-                        {has && (
-                          <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "charge", row: r })}>
-                            {t("chargeMonth")}
-                          </button>
+                        {r.state.billing_cycle ? (
+                          // Calendar billing: drafts and payments live on the client's "Naplata" tab.
+                          <Link href={`/clients/${r.client_id}`} className={`${link} mr-3`}>
+                            {t("billingTab")}
+                          </Link>
+                        ) : (
+                          <>
+                            <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "pay", row: r })}>
+                              {t("payAndExtend")}
+                            </button>
+                            {has && (
+                              <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "charge", row: r })}>
+                                {t("chargeMonth")}
+                              </button>
+                            )}
+                          </>
                         )}
                         <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "assign", row: r })}>
                           {has ? t("changePlan") : t("assignPlan")}

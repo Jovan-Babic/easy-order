@@ -100,7 +100,9 @@ Zamenjuje ručno „Zaduži mesec“ i trenutni model u kome zaduženje vidi sam
 - Portal: adresa računovodstva i „bez emailova“ na klijentu; pri evidentiranju uplate „pošalji potvrdu“ i „bez emailova“.
 - Testovi (bez SMTP-a u CI): ko bi dobio email (primaoci, duplikat), oznake slanja, preskakanje kad je isključeno.
 
-### N5 — Portal superadmina za naplatu
+### N5 — Portal superadmina za naplatu (urađeno)
+- Stranica „Nacrti zaduženja“ (`/billing-drafts`): napravi sada, izmena iznosa/napomene, besplatan mesec, odbaci, odobri izabrane/sve. Tab „Naplata“ na klijentu: prebacivanje na kalendarsku naplatu, saldo/preplata/mesečni iznos/istek, zaduženja sa stavkama, uplate, evidentiranje uplate, produži rok, blokada/deblokada, pregled IPS QR. Za klijente na kalendarskoj naplati su sakriveni „Zaduži mesec“ i „Uplata i produženje“ (ostaju za ostale klijente).
+- Mobilna: adminu se jednom po prijavi prikaže poruka sa iznosom i rokom i da su podaci za uplatu i QR na portalu.
 - Stranica „Nacrti“ (pregled, izmena iznosa/napomene, besplatan mesec, odobri izabrane/sve), saldo i kartica na stranici klijenta, evidentiranje uplate bez izbora zaduženja (prikaz kako će se rasporediti), dugmad blokada/deblokada/produži rok, uklanjanje ručnog „Zaduži mesec“.
 - i18n sr/en, `tsc`, `next build`.
 

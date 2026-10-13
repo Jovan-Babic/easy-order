@@ -16,6 +16,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/clients", labelKey: "clients", roles: ["superadmin"] },
   { href: "/subscriptions", labelKey: "subscriptions", roles: ["superadmin"] },
   { href: "/payments", labelKey: "payments", roles: ["superadmin"] },
+  { href: "/billing-drafts", labelKey: "draftsTitle", roles: ["superadmin"] },
   { href: "/users", labelKey: "users", roles: ["superadmin", "admin"] },
   { href: "/seats", labelKey: "seatsTitle", roles: ["admin"] },
   { href: "/billing", labelKey: "billingTitle", roles: ["admin"] },

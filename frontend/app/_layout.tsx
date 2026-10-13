@@ -93,6 +93,23 @@ function RouteGuard({
     checkForUpdate();
   }, [status, t]);
 
+  // Calendar billing: once per sign-in, tell the client's admin there is something
+  // to pay and that the details / IPS QR are on the portal (a QR on the same phone
+  // can't be scanned).
+  const billingShownFor = useRef<string | null>(null);
+  useEffect(() => {
+    const billing = user?.billing;
+    if (status !== "authenticated" || !user || user.role !== "admin" || mustChangePassword) return;
+    if (!billing || !(billing.to_pay && billing.to_pay > 0) || user.subscription?.status === "locked") return;
+    if (billingShownFor.current === user.id) return;
+    billingShownFor.current = user.id;
+    const due = billing.next_due_date ? billing.next_due_date.split("-").reverse().join(".") + "." : "";
+    Alert.alert(
+      t("billingMobileTitle"),
+      `${t("billingToPay")}: ${billing.to_pay.toFixed(2)} RSD${due ? `, ${t("billingDueShort")} ${due}` : ""}.\n\n${t("billingSeePortal")}`,
+    );
+  }, [status, user, mustChangePassword, t]);
+
   useEffect(() => {
     if (!isUpdatePending || otaPrompted.current) return;
     otaPrompted.current = true;

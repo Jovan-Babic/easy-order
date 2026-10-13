@@ -47,6 +47,15 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
   const [dialog, setDialog] = useState<Dialog>(null);
 
   const effectiveClient = clientId ?? clientFilter;
+  // A client on calendar billing gets its charges from drafts, not "Zaduži mesec".
+  const [calendar, setCalendar] = useState(false);
+  useEffect(() => {
+    if (!clientId) return;
+    fetch(`/api/subscriptions/${clientId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => setCalendar(!!body?.row?.state?.billing_cycle))
+      .catch(() => {});
+  }, [clientId]);
 
   useEffect(() => {
     if (clientId) return;
@@ -138,7 +147,7 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
           <button className={secondary} onClick={exportCsv} disabled={items.length === 0}>
             {t("payExportCsv")}
           </button>
-          {clientId && (
+          {clientId && !calendar && (
             <button className={secondary} onClick={() => setDialog({ kind: "month" })}>
               {t("chargeMonth")}
             </button>
