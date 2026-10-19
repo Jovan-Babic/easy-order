@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext } from "react";
+import type { BillingNotice } from "@/lib/billing";
 
 export type SessionUser = {
   id: string;
@@ -13,7 +14,9 @@ export type SessionUser = {
   // Live announcements from the system owner.
   announcements?: Array<{ id: string; level: "info" | "warning"; message_sr: string; message_en: string }>;
   // Only when the client has a subscription.
-  subscription?: { status: "active" | "grace"; ends_at: string; days_left: number; grace_ends_at: string } | null;
+  subscription?: { status: "active" | "grace" | "locked"; ends_at: string; days_left: number; grace_ends_at: string; billing_cycle?: string; lock_reason?: string | null } | null;
+  // Calendar billing: earliest unpaid due date, blocking day, amounts (admin only).
+  billing?: BillingNotice | null;
 };
 
 const SessionContext = createContext<SessionUser | null>(null);

@@ -1,7 +1,9 @@
-"""Plans and subscriptions (PLAN_PRETPLATE.md): packages, validity, lock, purge."""
+"""Plans and subscriptions (PLAN_PRETPLATE.md): packages, validity, lock, purge. Every
+client with a plan is on calendar billing (PLAN_NAPLATA_KALENDARSKA.md): end dates sit at
+a month end and the grace period runs to settings.block_after_day of the next month."""
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 import requests
@@ -17,6 +19,18 @@ def _today():
 
 def _day(offset):
     return (_today() + timedelta(days=offset)).isoformat()
+
+
+def _month_end(d):
+    first_next = date(d.year + d.month // 12, d.month % 12 + 1, 1)
+    return first_next - timedelta(days=1)
+
+
+def _set_end(sa, cid, iso):
+    """Exact end date (extend with a date keeps it as given)."""
+    r = sa.post(f"{API}/subscriptions/{cid}/extend", json={"ends_at": iso})
+    assert r.status_code == 200, r.text
+    return r.json()["state"]
 
 
 class S:
@@ -77,15 +91,17 @@ def test_only_superadmin_manages_subscriptions(api_client):
 
 def test_new_client_on_a_plan(superadmin_client):
     plan = _plan(superadmin_client, ["warehouse", "reports"])
-    assert superadmin_client.post(
-        f"{API}/clients", json={"name": "TEST_Sub_x", "admin_name": "x", "admin_email": f"x-{uuid.uuid4().hex[:6]}@easyorder.dev", "plan_id": plan["id"]}
-    ).status_code == 400  # a date is required with a plan
-    client, admin, _ = _client(superadmin_client, plan, _day(60))
+    # no date: valid to the end of this month (the first partial month)
+    client, admin, _ = _client(superadmin_client, plan)
     assert client["modules"] == ["warehouse", "reports"]
     assert client["subscription"]["plan_name"] == plan["name"]
     me = admin.get(f"{API}/auth/me").json()
     assert me["modules"] == ["warehouse", "reports"]
-    assert me["subscription"]["status"] == "active" and me["subscription"]["days_left"] == 60
+    assert me["subscription"]["status"] == "active" and me["subscription"]["ends_at"] == _month_end(_today()).isoformat()
+    assert me["subscription"]["billing_cycle"] == "monthly"
+    # a later date goes to the end of its month
+    later, _, _ = _client(superadmin_client, plan, _day(60))
+    assert _state(superadmin_client, later["id"])["ends_at"] == _month_end(_today() + timedelta(days=60)).isoformat()
     # a client without a plan has no subscription block at all
     plain, plain_admin, _ = _client(superadmin_client)
     assert plain_admin.get(f"{API}/auth/me").json()["subscription"] is None
@@ -101,7 +117,8 @@ def test_assign_changes_plan_and_modules(superadmin_client):
     assert r.status_code == 200 and r.json()["plan_name"] == big["name"] and r.json()["modules"] == big["modules"]
     assert admin.get(f"{API}/reports/orders").status_code == 200
     events = superadmin_client.get(f"{API}/subscriptions/{client['id']}").json()["events"]
-    assert [e["type"] for e in events][:2] == ["assigned", "assigned"] and events[0]["note"] == "upgrade"
+    assert events[0]["type"] == "assigned" and events[0]["note"] == "upgrade"
+    assert "billing_enrolled" in [e["type"] for e in events]  # on calendar billing since it was created
     row = next(x for x in superadmin_client.get(f"{API}/subscriptions").json() if x["client_id"] == client["id"])
     assert row["state"]["status"] == "active"
     # inactive plans can't be assigned; plans in use can't be deleted
@@ -136,22 +153,28 @@ def test_grace_then_lock_then_extend(superadmin_client):
     plan = _plan(superadmin_client, ["reports"])
     client, admin, email = _client(superadmin_client, plan, _day(30))
     cid = client["id"]
+    last_month_end = date(_today().year, _today().month, 1) - timedelta(days=1)
 
-    # ended yesterday: grace - everything still works, the user is told
-    superadmin_client.post(f"{API}/subscriptions/{cid}/assign", json={"plan_id": plan["id"], "ends_at": _day(-1)})
-    assert _state(superadmin_client, cid)["status"] == "grace"
-    me = admin.get(f"{API}/auth/me").json()
-    assert me["subscription"]["status"] == "grace" and me["subscription"]["days_left"] == -1
-    assert admin.get(f"{API}/reports/orders").status_code == 200
+    # paid to the end of last month, not past the block day: grace - everything still works
+    superadmin_client.put(f"{API}/settings", json={"block_after_day": 28})
+    try:
+        if _today().day <= 28:
+            state = _set_end(superadmin_client, cid, last_month_end.isoformat())
+            assert state["status"] == "grace"
+            me = admin.get(f"{API}/auth/me").json()
+            assert me["subscription"]["status"] == "grace"
+            assert admin.get(f"{API}/reports/orders").status_code == 200
+    finally:
+        superadmin_client.put(f"{API}/settings", json={"block_after_day": None})
 
-    # past the grace period: the whole account is locked
-    superadmin_client.post(f"{API}/subscriptions/{cid}/assign", json={"plan_id": plan["id"], "ends_at": _day(-20)})
-    state = _state(superadmin_client, cid)
+    # long past: locked - the admin only reaches the billing page, others can't log in
+    state = _set_end(superadmin_client, cid, _day(-80))
     assert state["status"] == "locked" and state["locked_since"] and state["purge_at"]
     r = admin.get(f"{API}/reports/orders")
-    assert r.status_code == 401 and r.json()["detail"] == "Subscription expired"
+    assert r.status_code == 403 and r.json()["detail"] == "Subscription blocked"
+    assert admin.get(f"{API}/billing/me").status_code == 200
     r = requests.post(f"{API}/auth/login", json={"email": email, "password": TEST_PASSWORD})
-    assert r.status_code == 403 and r.json()["detail"] == "Subscription expired"
+    assert r.status_code == 200  # the admin still gets in (to see what to pay)
 
     # extending by months counts from today and unlocks
     r = superadmin_client.post(f"{API}/subscriptions/{cid}/extend", json={"months": 1, "note": "paid"})
@@ -170,7 +193,7 @@ def test_cancel_locks_immediately(superadmin_client):
     client, admin, _ = _client(superadmin_client, plan, _day(200))
     r = superadmin_client.post(f"{API}/subscriptions/{client['id']}/cancel", json={"note": "left"})
     assert r.status_code == 200 and r.json()["state"]["status"] == "locked"
-    assert admin.get(f"{API}/auth/me").status_code == 401
+    assert admin.get(f"{API}/reports/orders").status_code == 403
     assert superadmin_client.post(f"{API}/subscriptions/{client['id']}/extend", json={"months": 1}).json()["state"]["status"] == "active"
     plain, _, _ = _client(superadmin_client)
     assert superadmin_client.post(f"{API}/subscriptions/{plain['id']}/cancel", json={}).status_code == 400
@@ -203,14 +226,19 @@ class TestCron:
         client, product = self._stocked_client(superadmin_client, plan)
         cid = client["id"]
 
-        # locked 85 days: deletion is 5 days away -> warning only
-        superadmin_client.post(f"{API}/subscriptions/{cid}/assign", json={"plan_id": plan["id"], "ends_at": _day(-100)})
-        run = self._run().json()
-        assert client["name"] in run["purge_warnings"] and not run["purged"]
-        assert client["name"] not in self._run().json()["purge_warnings"]  # warned once
+        # locked for a while; set the purge 5 days ahead -> warning only
+        state = _set_end(superadmin_client, cid, _day(-120))
+        locked_days = (_today() - date.fromisoformat(state["locked_since"])).days
+        superadmin_client.put(f"{API}/settings", json={"purge_after_days": locked_days + 5})
+        try:
+            run = self._run().json()
+            assert client["name"] in run["purge_warnings"] and not [x for x in run["purged"] if x["client"] == client["name"]]
+            assert client["name"] not in self._run().json()["purge_warnings"]  # warned once
+        finally:
+            superadmin_client.put(f"{API}/settings", json={"purge_after_days": None})
 
-        # now past the deadline
-        superadmin_client.post(f"{API}/subscriptions/{cid}/assign", json={"plan_id": plan["id"], "ends_at": _day(-110)})
+        # now past the deadline (default 90 days)
+        _set_end(superadmin_client, cid, _day(-200))
         dry = self._run(dry_run="true").json()
         assert dry["live"] is False
         assert any(x["client"] == client["name"] and x["stock_movements"] == 1 for x in dry["would_purge"])
@@ -234,7 +262,7 @@ class TestCron:
         order = admin.post(
             f"{API}/orders", json={"customer_id": customer["id"], "items": [{"product_id": product["id"], "ordered_qty": 1}]}
         ).json()
-        superadmin_client.post(f"{API}/subscriptions/{client['id']}/assign", json={"plan_id": plan["id"], "ends_at": _day(-120)})
+        _set_end(superadmin_client, client["id"], _day(-200))
         assert client["name"] in [x["client"] for x in self._run().json()["purged"]]
         # the account is locked, but the data is all still there
         sa_products = superadmin_client.get(f"{API}/products").json()
@@ -246,7 +274,7 @@ class TestCron:
         plan = _plan(superadmin_client, ["warehouse", "stock"])
         client, product = self._stocked_client(superadmin_client, plan)
         cid = client["id"]
-        superadmin_client.post(f"{API}/subscriptions/{cid}/assign", json={"plan_id": plan["id"], "ends_at": _day(-120)})
+        _set_end(superadmin_client, cid, _day(-200))
         paused = superadmin_client.post(f"{API}/subscriptions/{cid}/purge-pause", json={"paused": True, "note": "talking to them"})
         assert paused.json()["purge_paused"] is True
         assert client["name"] not in [x["client"] for x in self._run().json()["purged"]]
@@ -258,7 +286,7 @@ class TestCron:
         plan = _plan(superadmin_client, ["warehouse", "stock"])
         client, product = self._stocked_client(superadmin_client, plan)
         cid = client["id"]
-        superadmin_client.post(f"{API}/subscriptions/{cid}/assign", json={"plan_id": plan["id"], "ends_at": _day(-120)})
+        _set_end(superadmin_client, cid, _day(-200))
         superadmin_client.post(f"{API}/subscriptions/{cid}/extend", json={"months": 1})
         assert client["name"] not in [x["client"] for x in self._run().json()["purged"]]
         assert len(superadmin_client.get(f"{API}/subscriptions/{cid}/export").json()["stock_movements"]) == 1

@@ -21,6 +21,9 @@ const REASON_KEYS: Record<string, TranslationKey> = {
   grace: "attentionGrace",
   setup_unpaid: "attentionSetupUnpaid",
   month_not_charged: "attentionMonthNotCharged",
+  drafts_pending: "attentionDraftsPending",
+  debt_repeated: "attentionDebtRepeated",
+  blocked_debt: "attentionBlockedDebt",
   ending_soon: "attentionEndingSoon",
 };
 
@@ -31,6 +34,9 @@ const REASON_STYLES: Record<string, string> = {
   grace: "bg-amber-100 text-warning",
   setup_unpaid: "bg-amber-100 text-warning",
   month_not_charged: "bg-amber-100 text-warning",
+  drafts_pending: "bg-brandSecondary text-brand",
+  debt_repeated: "bg-red-100 text-error",
+  blocked_debt: "bg-red-100 text-error",
   ending_soon: "bg-amber-100 text-warning",
 };
 
