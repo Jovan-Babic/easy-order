@@ -1,16 +1,11 @@
 "use client";
 
+import { Field, fieldInput } from "@/components/FormField";
 import { useLanguage } from "@/lib/i18n";
 import { ClientFormFields } from "@/lib/clientForm";
 import { MODULES, toggleModule } from "@/lib/modules";
 
-const input = "rounded-md border border-border px-3 py-2";
-const field = `${input} mt-1 block w-full font-normal text-onSurface`;
-
-// A label above every input, so a filled-in form still says what each value is.
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <label className="block text-sm font-semibold text-onSurfaceSecondary">{label}{children}</label>;
-}
+const field = fieldInput;
 
 // Company + invoice settings inputs shared by the create and edit forms.
 export function ClientFields({

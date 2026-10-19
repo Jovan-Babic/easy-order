@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { Field, fieldInput } from "@/components/FormField";
 import { ImportModal } from "@/components/ImportModal";
 
 type Customer = {
@@ -118,51 +119,32 @@ export default function CustomersPage() {
 
       {showForm && (
         <form onSubmit={submit} className="mb-8 grid max-w-lg gap-3 rounded-lg bg-surfaceSecondary p-6 shadow-sm">
-          <input
-            required
-            placeholder={t("name")}
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
-          <input
-            placeholder={t("address")}
-            value={form.address}
-            onChange={(e) => setForm({ ...form, address: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
-          <input
-            placeholder={t("email")}
-            value={form.email}
-            onChange={(e) => setForm({ ...form, email: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
-          <input
-            placeholder={t("phone")}
-            value={form.phone}
-            onChange={(e) => setForm({ ...form, phone: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
-          <input
-            placeholder={t("taxIdPib")}
-            value={form.pib}
-            onChange={(e) => setForm({ ...form, pib: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
+          <Field label={t("name")}>
+            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={fieldInput} />
+          </Field>
+          <Field label={t("address")}>
+            <input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={fieldInput} />
+          </Field>
+          <Field label={t("email")}>
+            <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className={fieldInput} />
+          </Field>
+          <Field label={t("phone")}>
+            <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className={fieldInput} />
+          </Field>
+          <Field label={t("taxIdPib")}>
+            <input value={form.pib} onChange={(e) => setForm({ ...form, pib: e.target.value })} className={fieldInput} />
+          </Field>
           {isSuperAdmin && (
-            <select
-              required
-              value={form.client_id}
-              onChange={(e) => setForm({ ...form, client_id: e.target.value })}
-              className="rounded-md border border-border px-3 py-2"
-            >
-              <option value="">{t("selectClient")}</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            <Field label={t("client")}>
+              <select required value={form.client_id} onChange={(e) => setForm({ ...form, client_id: e.target.value })} className={fieldInput}>
+                <option value="">{t("selectClient")}</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
           )}
 
           {error && <p className="text-sm text-error">{error}</p>}

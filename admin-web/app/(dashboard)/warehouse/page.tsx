@@ -3,6 +3,7 @@
 import { lineQtyLabel, lineUnit, parseQty, qtyInputValue } from "@/lib/units";
 import { useCallback, useEffect, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
+import { Field } from "@/components/FormField";
 import { useSession } from "@/lib/session-provider";
 import { OrderPrintModal } from "@/components/OrderPrintModal";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -224,12 +225,13 @@ export default function WarehousePage() {
 
               {rejecting ? (
                 <div className="mb-4 grid gap-2">
-                  <textarea
-                    value={rejectNote}
-                    onChange={(e) => setRejectNote(e.target.value)}
-                    placeholder={t("rejectReason")}
-                    className="rounded-md border border-border px-3 py-2 text-sm"
-                  />
+                  <Field label={t("rejectReason")}>
+                    <textarea
+                      value={rejectNote}
+                      onChange={(e) => setRejectNote(e.target.value)}
+                      className="mt-1 block w-full rounded-md border border-border px-3 py-2 text-sm font-normal"
+                    />
+                  </Field>
                   <div className="flex gap-2">
                     <button
                       type="button"
@@ -255,12 +257,14 @@ export default function WarehousePage() {
                   ) : (
                     <>
                       {manualNumbering && (
-                        <input
-                          value={invoiceNumber}
-                          onChange={(e) => setInvoiceNumber(e.target.value)}
-                          placeholder={t("invoiceNumber")}
-                          className="w-44 rounded-md border border-border px-3 py-2 text-sm"
-                        />
+                        <label className="flex items-center gap-2 text-sm font-semibold text-onSurfaceSecondary">
+                          {t("invoiceNumber")}
+                          <input
+                            value={invoiceNumber}
+                            onChange={(e) => setInvoiceNumber(e.target.value)}
+                            className="w-44 rounded-md border border-border px-3 py-2 text-sm font-normal"
+                          />
+                        </label>
                       )}
                       <button
                         type="button"

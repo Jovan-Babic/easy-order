@@ -2,6 +2,7 @@
 
 import { localizedDetail } from "@/lib/errors";
 import Link from "next/link";
+import { Field, FieldGroup, fieldInput } from "@/components/FormField";
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
@@ -344,21 +345,13 @@ export default function UsersPage() {
 
       {showForm && (
         <form onSubmit={submit} className="mb-8 grid max-w-lg gap-3 rounded-lg bg-surfaceSecondary p-6 shadow-sm">
-          <input
-            required
-            placeholder={t("name")}
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
-          <input
-            required
-            type="email"
-            placeholder={t("email")}
-            value={form.email}
-            onChange={(e) => setForm({ ...form, email: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
+          <Field label={t("name")}>
+            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={fieldInput} />
+          </Field>
+          <Field label={t("email")}>
+            <input required type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className={fieldInput} />
+          </Field>
+          <FieldGroup label={t("phone")}>
           <div className="grid gap-3 sm:grid-cols-[120px_1fr]">
             <select
               value={form.countryCode}
@@ -380,25 +373,29 @@ export default function UsersPage() {
               className="rounded-md border border-border px-3 py-2"
             />
           </div>
+          </FieldGroup>
           <p className="text-sm text-muted">{t("inviteInfo")}</p>
           {isSuperAdmin ? (
             <>
+              <Field label={t("role")}>
               <select
                 value={form.role}
                 onChange={(e) => setForm({ ...form, role: e.target.value as Role })}
-                className="rounded-md border border-border px-3 py-2"
+                className={fieldInput}
               >
                 <option value="operator">{t("userRoleOperator")}</option>
                 {hasWarehouse && <option value="warehouse">{t("userRoleWarehouse")}</option>}
                 <option value="admin">{t("userRoleAdmin")}</option>
                 <option value="superadmin">{t("userRoleSuperAdmin")}</option>
               </select>
+              </Field>
               {form.role !== "superadmin" && (
+                <Field label={t("client")}>
                 <select
                   required
                   value={form.client_id}
                   onChange={(e) => setForm({ ...form, client_id: e.target.value })}
-                  className="rounded-md border border-border px-3 py-2"
+                  className={fieldInput}
                 >
                   <option value="">{t("selectClient")}</option>
                   {clients.map((c) => (
@@ -407,18 +404,21 @@ export default function UsersPage() {
                     </option>
                   ))}
                 </select>
+                </Field>
               )}
             </>
           ) : (
             <>
+              <Field label={t("role")}>
               <select
                 value={form.role}
                 onChange={(e) => setForm({ ...form, role: e.target.value as Role })}
-                className="rounded-md border border-border px-3 py-2"
+                className={fieldInput}
               >
                 <option value="operator">{t("userRoleOperator")}</option>
                 {hasWarehouse && <option value="warehouse">{t("userRoleWarehouse")}</option>}
               </select>
+              </Field>
               <p className="text-sm text-muted">{t("accountScope")}</p>
             </>
           )}
@@ -449,13 +449,10 @@ export default function UsersPage() {
             </div>
 
             <form onSubmit={submitEdit} className="grid gap-3">
-              <input
-                required
-                placeholder={t("name")}
-                value={editForm.name}
-                onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                className="rounded-md border border-border px-3 py-2"
-              />
+              <Field label={t("name")}>
+                <input required value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className={fieldInput} />
+              </Field>
+              <FieldGroup label={t("phone")}>
               <div className="grid gap-3 sm:grid-cols-[120px_1fr]">
                 <select
                   value={editForm.countryCode}
@@ -477,41 +474,47 @@ export default function UsersPage() {
                   className="rounded-md border border-border px-3 py-2"
                 />
               </div>
+              </FieldGroup>
               {editingUser.id === session.id ? (
                 <p className="text-sm text-muted">{t("ownPasswordHint")}</p>
               ) : (
                 <>
-                  <input
-                    type="password"
-                    placeholder={t("newPasswordOptional")}
-                    value={editForm.password}
-                    onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
-                    className="rounded-md border border-border px-3 py-2"
-                  />
+                  <Field label={t("newPasswordOptional")}>
+                    <input
+                      type="password"
+                      value={editForm.password}
+                      onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                      className={fieldInput}
+                    />
+                  </Field>
                   <p className="-mt-2 text-xs text-muted">{t("adminSetPasswordHint")}</p>
                 </>
               )}
               {editingUser.id !== session.id && (
+                <Field label={t("role")}>
                 <select
                   value={editForm.role}
                   onChange={(e) => setEditForm({ ...editForm, role: e.target.value as Role })}
-                  className="rounded-md border border-border px-3 py-2"
+                  className={fieldInput}
                 >
                   <option value="operator">{t("userRoleOperator")}</option>
                   {hasWarehouse && <option value="warehouse">{t("userRoleWarehouse")}</option>}
                   {isSuperAdmin && <option value="admin">{t("userRoleAdmin")}</option>}
                   {isSuperAdmin && <option value="superadmin">{t("userRoleSuperAdmin")}</option>}
                 </select>
+                </Field>
               )}
               {editingUser.id !== session.id && (
+                <Field label={t("status")}>
                 <select
                   value={editForm.active}
                   onChange={(e) => setEditForm({ ...editForm, active: e.target.value as "true" | "false" })}
-                  className="rounded-md border border-border px-3 py-2"
+                  className={fieldInput}
                 >
                   <option value="true">{t("active")}</option>
                   <option value="false">{t("inactive")}</option>
                 </select>
+                </Field>
               )}
 
               {editError && <p className="text-sm text-error">{editError}</p>}

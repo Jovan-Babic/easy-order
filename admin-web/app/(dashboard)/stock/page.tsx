@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
+import { Field, FieldGroup } from "@/components/FormField";
 import { errorDetail } from "@/lib/orders";
 import { formatQty, formatQtyWithUnit, isCountUnit, parseQty, qtyInputValue, unitOf, useUnits } from "@/lib/units";
 
@@ -355,6 +356,10 @@ export default function StockPage() {
                 {panel.kind === "count" && tracked ? (
                   <div className="grid gap-2">
                     <p className="text-xs text-muted">{t("stockBatchCounts")}</p>
+                    <div className="flex gap-2 text-xs font-semibold text-onSurfaceSecondary">
+                      <span className="flex-1">{t("stockExpiryDate")}</span>
+                      <span className="w-32">{t("stockCounted")}</span>
+                    </div>
                     {countRows.map((row, i) => (
                       <div key={i} className="flex items-center gap-2">
                         {row.undated ? (
@@ -387,6 +392,7 @@ export default function StockPage() {
                     </button>
                   </div>
                 ) : (
+                <FieldGroup label={panel.kind === "count" ? t("stockCounted") : t("stockQty")}>
                 <div className="flex gap-2">
                   <input
                     type="number"
@@ -394,7 +400,6 @@ export default function StockPage() {
                     step={countUnit ? 1 : "any"}
                     value={qty}
                     onChange={(e) => setQty(e.target.value)}
-                    placeholder={panel.kind === "count" ? t("stockCounted") : t("stockQty")}
                     className={`${input} flex-1`}
                   />
                   {!countUnit && <span className="self-center text-sm font-semibold text-onSurface">{pu.symbol}</span>}
@@ -405,6 +410,7 @@ export default function StockPage() {
                     </select>
                   )}
                 </div>
+                </FieldGroup>
                 )}
                 {panel.kind === "receipt" && tracked && (
                   <label className="text-sm font-semibold text-onSurface">
@@ -418,12 +424,9 @@ export default function StockPage() {
                     {unit === "transport" && pieces > 0 ? ` → ${pieces} ${t("stockUnitPieces")}` : ""}
                   </p>
                 )}
-                <input
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  placeholder={panel.kind === "count" ? t("stockNoteRequired") : t("stockNoteOptional")}
-                  className={input}
-                />
+                <Field label={panel.kind === "count" ? t("stockNoteRequired") : t("stockNoteOptional")}>
+                  <input value={note} onChange={(e) => setNote(e.target.value)} className={`${input} mt-1 block w-full font-normal`} />
+                </Field>
                 {message && <p className={`text-sm ${message.ok ? "text-success" : "text-error"}`}>{message.text}</p>}
                 <button
                   type="button"
