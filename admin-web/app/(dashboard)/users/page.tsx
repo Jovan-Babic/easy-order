@@ -582,7 +582,7 @@ export default function UsersPage() {
         <p className="text-muted">{t("loading")}</p>
       ) : (
         <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
-          <table className="w-full text-left text-sm">
+          <table className="rtable w-full text-left text-sm">
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
                 <th className="px-4 py-3">{t("name")}</th>
@@ -598,11 +598,11 @@ export default function UsersPage() {
               {users.map((u) => (
                 <tr key={u.id} className="border-b border-border last:border-0">
                   <td className="px-4 py-3 font-semibold text-onSurface">{u.name}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{u.email}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{u.phone || "-"}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{roleLabel(u.role)}</td>
+                  <td data-label={t("email")} className="px-4 py-3 text-onSurfaceSecondary">{u.email}</td>
+                  <td data-label={t("phone")} className="px-4 py-3 text-onSurfaceSecondary">{u.phone || "-"}</td>
+                  <td data-label={t("role")} className="px-4 py-3 text-onSurfaceSecondary">{roleLabel(u.role)}</td>
                   {isSuperAdmin && (
-                    <td className="px-4 py-3 text-onSurfaceSecondary">
+                    <td data-label={t("client")} className="px-4 py-3 text-onSurfaceSecondary">
                       {u.client_id ? (
                         <Link href={`/clients/${u.client_id}`} className="font-semibold text-brand hover:underline">
                           {u.client_name ?? u.client_id}
@@ -612,7 +612,7 @@ export default function UsersPage() {
                       )}
                     </td>
                   )}
-                  <td className="px-4 py-3">
+                  <td data-label={t("status")} className="px-4 py-3">
                     <span className={u.active ? "text-success" : "text-error"}>
                       {u.active ? t("active") : t("inactive")}
                     </span>

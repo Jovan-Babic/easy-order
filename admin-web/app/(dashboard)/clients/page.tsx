@@ -253,7 +253,7 @@ export default function ClientsPage() {
         <p className="text-muted">{t("loading")}</p>
       ) : (
         <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
-          <table className="w-full text-left text-sm">
+          <table className="rtable w-full text-left text-sm">
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
                 <th className="px-4 py-3">{t("name")}</th>
@@ -271,10 +271,10 @@ export default function ClientsPage() {
               {clients.filter(isShown).map((c) => (
                 <tr key={c.id} className="border-b border-border last:border-0">
                   <td className="px-4 py-3 font-semibold text-onSurface">{c.name}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{c.email || "-"}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{c.pib || "-"}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{c.subscription?.plan_name ?? "-"}</td>
-                  <td className="px-4 py-3">
+                  <td data-label={t("email")} className="px-4 py-3 text-onSurfaceSecondary">{c.email || "-"}</td>
+                  <td data-label={t("taxIdPib")} className="px-4 py-3 text-onSurfaceSecondary">{c.pib || "-"}</td>
+                  <td data-label={t("plan")} className="px-4 py-3 text-onSurfaceSecondary">{c.subscription?.plan_name ?? "-"}</td>
+                  <td data-label={t("subscription")} className="px-4 py-3">
                     {(() => {
                       const state = c.subscription_state ?? { status: "none" as const };
                       return (
@@ -287,11 +287,11 @@ export default function ClientsPage() {
                       );
                     })()}
                   </td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{c.user_count ?? 0}</td>
-                  <td className="whitespace-nowrap px-4 py-3 text-xs text-onSurfaceSecondary">
+                  <td data-label={t("users")} className="px-4 py-3 text-onSurfaceSecondary">{c.user_count ?? 0}</td>
+                  <td data-label={t("lastActivity")} className="whitespace-nowrap px-4 py-3 text-xs text-onSurfaceSecondary">
                     {c.last_activity_at ? new Date(c.last_activity_at).toLocaleDateString() : t("never")}
                   </td>
-                  <td className="px-4 py-3">
+                  <td data-label={t("status")} className="px-4 py-3">
                     <span className={c.active ? "text-success" : "text-error"}>
                       {c.active ? t("active") : t("inactive")}
                     </span>

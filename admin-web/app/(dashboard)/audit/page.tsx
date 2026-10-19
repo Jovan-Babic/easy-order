@@ -68,7 +68,7 @@ export default function AuditPage() {
         <p className="text-muted">{t("loading")}</p>
       ) : (
         <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
-          <table className="w-full text-left text-sm">
+          <table className="rtable w-full text-left text-sm">
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
                 <th className="px-4 py-3">{t("date")}</th>
@@ -82,9 +82,9 @@ export default function AuditPage() {
               {entries.map((e) => (
                 <tr key={e.id} className="border-b border-border align-top last:border-0">
                   <td className="whitespace-nowrap px-4 py-3 text-onSurfaceSecondary">{new Date(e.created_at).toLocaleString()}</td>
-                  <td className="px-4 py-3 text-onSurface">{e.actor_name ?? "-"}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-onSurface">{e.action}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">
+                  <td data-label={t("auditActor")} className="px-4 py-3 text-onSurface">{e.actor_name ?? "-"}</td>
+                  <td data-label={t("auditAction")} className="px-4 py-3 font-mono text-xs text-onSurface">{e.action}</td>
+                  <td data-label={t("auditTarget")} className="px-4 py-3 text-onSurfaceSecondary">
                     {e.client_id && e.target_type === "client" ? (
                       <Link href={`/clients/${e.client_id}`} className="font-semibold text-brand hover:underline">
                         {e.target_name ?? e.client_id}
@@ -94,7 +94,7 @@ export default function AuditPage() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-xs text-muted">
-                    {e.data ? Object.entries(e.data).map(([k, v]) => `${k}: ${String(v)}`).join(" · ") : ""}
+                    {e.data ? Object.entries(e.data).map(([k, v]) => `${k}: ${v !== null && typeof v === "object" ? JSON.stringify(v) : String(v)}`).join(" · ") : ""}
                   </td>
                 </tr>
               ))}

@@ -46,7 +46,7 @@ export default function UnitsPage() {
       <p className="mb-6 max-w-2xl text-sm text-muted">{t("unitsHint")}</p>
       {error && <p className="mb-3 text-sm text-error">{error}</p>}
       <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
-        <table className="w-full text-left text-sm">
+        <table className="rtable w-full text-left text-sm">
           <thead className="border-b border-border text-xs uppercase text-muted">
             <tr>
               <th className="px-4 py-3">{t("unitCode")}</th>
@@ -62,13 +62,13 @@ export default function UnitsPage() {
             {units.map((u) => (
               <tr key={u.code} className="border-b border-border last:border-0">
                 <td className="px-4 py-3 font-semibold text-onSurface">{u.code}</td>
-                <td className="px-4 py-3 text-onSurfaceSecondary">{lang === "en" ? u.name_en : u.name_sr}</td>
-                <td className="px-4 py-3 text-onSurfaceSecondary">{u.symbol}</td>
-                <td className="px-4 py-3 text-onSurfaceSecondary">{GROUP_KEYS[u.group] ? t(GROUP_KEYS[u.group]) : u.group}</td>
-                <td className="px-4 py-3 text-right text-onSurfaceSecondary">
+                <td data-label={t("name")} className="px-4 py-3 text-onSurfaceSecondary">{lang === "en" ? u.name_en : u.name_sr}</td>
+                <td data-label={t("unitSymbol")} className="px-4 py-3 text-onSurfaceSecondary">{u.symbol}</td>
+                <td data-label={t("unitGroup")} className="px-4 py-3 text-onSurfaceSecondary">{GROUP_KEYS[u.group] ? t(GROUP_KEYS[u.group]) : u.group}</td>
+                <td data-label={t("unitFactor")} className="px-4 py-3 text-right text-onSurfaceSecondary">
                   {u.base_code === u.code ? t("unitBaseMark") : `1 ${u.symbol} = ${u.factor.toLocaleString("sr-RS")} ${u.base_code}`}
                 </td>
-                <td className="px-4 py-3">
+                <td data-label={t("status")} className="px-4 py-3">
                   <span className={u.active ? "text-success" : "text-error"}>{u.active ? t("active") : t("inactive")}</span>
                 </td>
                 <td className="px-4 py-3 text-right">

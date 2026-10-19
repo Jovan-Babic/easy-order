@@ -21,7 +21,7 @@ export function SeatsSummary({ data }: { data: SeatsOut }) {
   return (
     <div>
       <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
-        <table className="w-full text-left text-sm">
+        <table className="rtable w-full text-left text-sm">
           <thead className="border-b border-border text-xs uppercase text-muted">
             <tr>
               <th className="px-4 py-3">{t("role")}</th>
@@ -36,13 +36,13 @@ export function SeatsSummary({ data }: { data: SeatsOut }) {
             {data.seats.map((r) => (
               <tr key={r.role} className="border-b border-border last:border-0">
                 <td className="px-4 py-3 font-semibold text-onSurface">{t(ROLE_KEYS[r.role])}</td>
-                <td className={`px-4 py-3 text-right ${r.limit !== null && r.used >= r.limit ? "font-bold text-warning" : "text-onSurface"}`}>
+                <td data-label={t("seatsUsed")} className={`px-4 py-3 text-right ${r.limit !== null && r.used >= r.limit ? "font-bold text-warning" : "text-onSurface"}`}>
                   {r.used}
                 </td>
-                <td className="px-4 py-3 text-right text-onSurfaceSecondary">{r.included ?? "-"}</td>
-                <td className="px-4 py-3 text-right text-onSurfaceSecondary">{r.extra}</td>
-                <td className="px-4 py-3 text-right text-onSurface">{r.limit ?? t("seatsUnlimited")}</td>
-                <td className="px-4 py-3 text-right text-onSurfaceSecondary">{r.price !== null ? money(r.price, data.currency) : "-"}</td>
+                <td data-label={t("seatsIncluded")} className="px-4 py-3 text-right text-onSurfaceSecondary">{r.included ?? "-"}</td>
+                <td data-label={t("seatsExtra")} className="px-4 py-3 text-right text-onSurfaceSecondary">{r.extra}</td>
+                <td data-label={t("seatsLimit")} className="px-4 py-3 text-right text-onSurface">{r.limit ?? t("seatsUnlimited")}</td>
+                <td data-label={t("seatsPrice")} className="px-4 py-3 text-right text-onSurfaceSecondary">{r.price !== null ? money(r.price, data.currency) : "-"}</td>
               </tr>
             ))}
           </tbody>

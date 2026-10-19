@@ -17,6 +17,7 @@ import {
 } from "@/components/SubscriptionDialogs";
 import { useLanguage } from "@/lib/i18n";
 import { MODULES } from "@/lib/modules";
+import { money } from "@/lib/payments";
 import { ClientInfo } from "@/lib/orders";
 import { SeatsOut } from "@/lib/seats";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
@@ -57,10 +58,10 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
         <>
           {stats && (
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-              <StatCard label="Orders" value={stats.order_count} />
-              <StatCard label="Customers" value={stats.customer_count} />
-              <StatCard label="Products" value={stats.product_count} />
-              <StatCard label="Revenue (incl. VAT)" value={stats.total_grand.toFixed(2)} />
+              <StatCard label={t("orders")} value={stats.order_count} />
+              <StatCard label={t("customers")} value={stats.customer_count} />
+              <StatCard label={t("products")} value={stats.product_count} />
+              <StatCard label={t("revenueInclVat")} value={money(stats.total_grand)} />
             </div>
           )}
           <ClientEditForm client={client} />
@@ -115,7 +116,7 @@ function ClientUsers({ clientId }: { clientId: string }) {
         <p className="text-muted">{t("loading")}</p>
       ) : (
         <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
-          <table className="w-full text-left text-sm">
+          <table className="rtable w-full text-left text-sm">
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
                 <th className="px-4 py-3">{t("name")}</th>
@@ -129,10 +130,10 @@ function ClientUsers({ clientId }: { clientId: string }) {
               {users.map((u) => (
                 <tr key={u.id} className="border-b border-border last:border-0">
                   <td className="px-4 py-3 font-semibold text-onSurface">{u.name}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{u.email}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{u.phone || "-"}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{roleLabel[u.role] ?? u.role}</td>
-                  <td className="px-4 py-3">
+                  <td data-label={t("email")} className="px-4 py-3 text-onSurfaceSecondary">{u.email}</td>
+                  <td data-label={t("phone")} className="px-4 py-3 text-onSurfaceSecondary">{u.phone || "-"}</td>
+                  <td data-label={t("role")} className="px-4 py-3 text-onSurfaceSecondary">{roleLabel[u.role] ?? u.role}</td>
+                  <td data-label={t("status")} className="px-4 py-3">
                     <span className={u.active ? "text-success" : "text-error"}>{u.active ? t("active") : t("inactive")}</span>
                   </td>
                 </tr>
@@ -287,7 +288,7 @@ function ClientActivity({ clientId }: { clientId: string }) {
         <StatCard label={t("ordersTotal")} value={data.orders_total} />
       </div>
       <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
-        <table className="w-full text-left text-sm">
+        <table className="rtable w-full text-left text-sm">
           <thead className="border-b border-border text-xs uppercase text-muted">
             <tr>
               <th className="px-4 py-3">{t("name")}</th>
@@ -303,9 +304,9 @@ function ClientActivity({ clientId }: { clientId: string }) {
                   {u.name}
                   {!u.active && <span className="ml-2 text-xs text-muted">({t("inactive")})</span>}
                 </td>
-                <td className="px-4 py-3 text-onSurfaceSecondary">{u.role}</td>
-                <td className="px-4 py-3 text-onSurfaceSecondary">{when(u.last_login_at, t("never"))}</td>
-                <td className="px-4 py-3 text-onSurfaceSecondary">{when(u.last_seen_at, t("never"))}</td>
+                <td data-label={t("role")} className="px-4 py-3 text-onSurfaceSecondary">{u.role}</td>
+                <td data-label={t("lastLogin")} className="px-4 py-3 text-onSurfaceSecondary">{when(u.last_login_at, t("never"))}</td>
+                <td data-label={t("lastSeen")} className="px-4 py-3 text-onSurfaceSecondary">{when(u.last_seen_at, t("never"))}</td>
               </tr>
             ))}
           </tbody>

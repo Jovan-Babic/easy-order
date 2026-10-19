@@ -161,7 +161,7 @@ export function SuperadminDashboard() {
           {attention.length === 0 ? (
             <p className="p-5 text-sm text-muted">{t("needsAttentionEmpty")}</p>
           ) : (
-            <table className="w-full text-left text-sm">
+            <table className="rtable w-full text-left text-sm">
               <tbody>
                 {attention.map((a) => (
                   <tr key={`${a.client_id}-${a.reason}`} className="border-b border-border last:border-0">
@@ -176,7 +176,7 @@ export function SuperadminDashboard() {
                         {t(REASON_KEYS[a.reason])}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-onSurfaceSecondary">{a.date ?? "-"}</td>
+                    <td className={`px-4 py-3 text-onSurfaceSecondary ${a.date ? "" : "max-md:hidden"}`}>{a.date ?? "-"}</td>
                   </tr>
                 ))}
               </tbody>
