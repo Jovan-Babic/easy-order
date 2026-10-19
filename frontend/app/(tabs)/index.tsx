@@ -108,8 +108,9 @@ function OrderCatalogScreen() {
     [customers, search]
   );
 
+  // "2,5" (kg) counts too - the same parsing as the confirmation list and the submit.
   const orderedCount = useMemo(
-    () => Object.values(drafts).filter((q) => Number(q) > 0).length,
+    () => Object.values(drafts).filter((q) => Number(String(q ?? "").replace(",", ".")) > 0).length,
     [drafts]
   );
 
@@ -586,9 +587,9 @@ function OrderCatalogScreen() {
           <Pressable style={styles.confirmModal} onPress={() => {}}>
             <Text style={styles.confirmModalTitle}>{t("confirm")}</Text>
             <Text style={styles.confirmModalText}>
-              {selected ? `Da li želite da potvrdite porudžbinu za ${selected.name}?` : ""}
+              {selected ? t("confirmOrderQuestion").replace("{name}", selected.name) : ""}
             </Text>
-            <Text style={styles.confirmModalMeta}>{orderedCount} artikala u porudžbini</Text>
+            <Text style={styles.confirmModalMeta}>{t("itemsInOrder").replace("{n}", String(orderedCount))}</Text>
             {confirmationItems.length > 0 && (
               <View style={styles.confirmItemsList}>
                 {confirmationItems.map((it) => (
