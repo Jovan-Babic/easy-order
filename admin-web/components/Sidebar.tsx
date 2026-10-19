@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Lang, TranslationKey, useLanguage } from "@/lib/i18n";
 
@@ -42,6 +43,8 @@ export function Sidebar({ user }: { user: NavUser }) {
   const pathname = usePathname();
   const router = useRouter();
   const { lang, setLang, t } = useLanguage();
+  // Phones: the menu is a drawer behind the ☰ button in a top bar; from md up it is always shown.
+  const [open, setOpen] = useState(false);
 
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -49,64 +52,101 @@ export function Sidebar({ user }: { user: NavUser }) {
     router.refresh();
   };
 
+  const items = NAV_ITEMS.filter((item) => {
+    if (item.href === "/app" && !showAppMenu && user.role !== "superadmin") {
+      return false;
+    }
+    if (item.module && user.role !== "superadmin" && !(user.modules ?? []).includes(item.module)) {
+      return false;
+    }
+    return item.roles.includes(user.role);
+  });
+  const current = items.find((item) => pathname.startsWith(item.href));
+
   return (
-    <aside className="flex h-screen w-60 flex-shrink-0 flex-col border-r border-border bg-surfaceSecondary">
-      <div className="px-5 py-6">
-        <p className="text-lg font-extrabold text-brand">Easy Order</p>
-        <p className="text-xs text-muted">{t("adminPortal")}</p>
-      </div>
-      <nav className="flex-1 px-3">
-        {NAV_ITEMS.filter((item) => {
-          if (item.href === "/app" && !showAppMenu && user.role !== "superadmin") {
-            return false;
-          }
-          if (item.module && user.role !== "superadmin" && !(user.modules ?? []).includes(item.module)) {
-            return false;
-          }
-          return item.roles.includes(user.role);
-        }).map((item) => {
-          const active = pathname.startsWith(item.href);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`mb-1 block rounded-md px-3 py-2 text-sm font-semibold ${
-                active ? "bg-brandSecondary text-brand" : "text-onSurfaceSecondary hover:bg-surfaceTertiary"
-              }`}
-            >
-              {t(item.labelKey)}
-            </Link>
-          );
-        })}
-      </nav>
-      <div className="border-t border-border px-5 py-4">
-        <div className="mb-3">
-          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted">{t("language")}</label>
-          <select
-            value={lang}
-            onChange={(event) => setLang(event.target.value as Lang)}
-            className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-sm text-onSurface"
-          >
-            <option value="sr">SR</option>
-            <option value="en">EN</option>
-          </select>
-        </div>
-        <p className="truncate text-sm font-semibold text-onSurface">{user.name}</p>
-        <p className="truncate text-xs text-muted">{user.email}</p>
-        <p className="mb-3 text-xs uppercase text-muted">{user.role}</p>
-        <Link
-          href="/change-password"
-          className="mb-2 block w-full rounded-md border border-border px-3 py-1.5 text-center text-sm font-semibold text-onSurfaceSecondary hover:bg-surfaceTertiary"
-        >
-          {t("changePassword")}
-        </Link>
+    <>
+      <header className="no-print sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-surfaceSecondary px-4 py-3 md:hidden">
         <button
-          onClick={logout}
-          className="w-full rounded-md border border-border px-3 py-1.5 text-sm font-semibold text-onSurfaceSecondary hover:bg-surfaceTertiary"
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label={t("menu")}
+          className="-ml-1 rounded-md p-1.5 text-onSurface hover:bg-surfaceTertiary"
         >
-          {t("logout")}
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
         </button>
-      </div>
-    </aside>
+        <p className="truncate text-base font-extrabold text-brand">{current ? t(current.labelKey) : "Easy Order"}</p>
+      </header>
+      {open && <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={() => setOpen(false)} aria-hidden="true" />}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-surfaceSecondary transition-transform duration-200 md:static md:z-auto md:h-screen md:w-60 md:flex-shrink-0 md:translate-x-0 ${
+          open ? "translate-x-0 shadow-xl" : "-translate-x-full"
+        }`}
+      >
+        <div className="flex items-start justify-between px-5 py-6">
+          <div>
+            <p className="text-lg font-extrabold text-brand">Easy Order</p>
+            <p className="text-xs text-muted">{t("adminPortal")}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            aria-label={t("close")}
+            className="-mr-2 rounded-md p-1.5 text-muted hover:bg-surfaceTertiary md:hidden"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+        <nav className="flex-1 overflow-y-auto px-3">
+          {items.map((item) => {
+            const active = pathname.startsWith(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={() => setOpen(false)}
+                className={`mb-1 block rounded-md px-3 py-2 text-sm font-semibold ${
+                  active ? "bg-brandSecondary text-brand" : "text-onSurfaceSecondary hover:bg-surfaceTertiary"
+                }`}
+              >
+                {t(item.labelKey)}
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="border-t border-border px-5 py-4">
+          <div className="mb-3">
+            <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted">{t("language")}</label>
+            <select
+              value={lang}
+              onChange={(event) => setLang(event.target.value as Lang)}
+              className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-sm text-onSurface"
+            >
+              <option value="sr">SR</option>
+              <option value="en">EN</option>
+            </select>
+          </div>
+          <p className="truncate text-sm font-semibold text-onSurface">{user.name}</p>
+          <p className="truncate text-xs text-muted">{user.email}</p>
+          <p className="mb-3 text-xs uppercase text-muted">{user.role}</p>
+          <Link
+            href="/change-password"
+            onClick={() => setOpen(false)}
+            className="mb-2 block w-full rounded-md border border-border px-3 py-1.5 text-center text-sm font-semibold text-onSurfaceSecondary hover:bg-surfaceTertiary"
+          >
+            {t("changePassword")}
+          </Link>
+          <button
+            onClick={logout}
+            className="w-full rounded-md border border-border px-3 py-1.5 text-sm font-semibold text-onSurfaceSecondary hover:bg-surfaceTertiary"
+          >
+            {t("logout")}
+          </button>
+        </div>
+      </aside>
+    </>
   );
 }

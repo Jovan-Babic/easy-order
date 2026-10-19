@@ -22,9 +22,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   return (
     <SessionProvider user={user}>
-      <div className="flex">
+      <div className="md:flex">
         <Sidebar user={user} />
-        <main className="min-h-screen flex-1 bg-surface p-8">
+        <main className="min-h-screen min-w-0 flex-1 bg-surface p-4 md:p-8">
           <AnnouncementBanner />
           <SubscriptionBanner />
           {children}

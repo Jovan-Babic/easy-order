@@ -40,12 +40,12 @@ export function ClientDetailTabs({ client, stats }: { client: ClientInfo; stats:
   ];
   return (
     <div>
-      <div className="mb-6 flex gap-2">
+      <div className="-mx-4 mb-6 flex gap-2 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:px-0">
         {tabs.map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`rounded-md border px-3 py-1.5 text-sm font-semibold ${
+            className={`shrink-0 whitespace-nowrap rounded-md border px-3 py-1.5 text-sm font-semibold ${
               tab === key ? "border-brand bg-brandSecondary text-brand" : "border-border text-onSurfaceSecondary"
             }`}
           >

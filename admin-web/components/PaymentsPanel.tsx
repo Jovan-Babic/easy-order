@@ -113,7 +113,7 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
 
       <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg bg-surfaceSecondary p-4 shadow-sm">
         {!clientId && (
-          <select value={clientFilter} onChange={(e) => setClientFilter(e.target.value)} className="rounded-md border border-border px-3 py-2 text-sm">
+          <select value={clientFilter} onChange={(e) => setClientFilter(e.target.value)} className="w-full rounded-md border border-border px-3 py-2 text-sm md:w-auto">
             <option value="">{t("allClientsFilter")}</option>
             {clients.map((c) => (
               <option key={c.id} value={c.id}>
@@ -122,7 +122,7 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
             ))}
           </select>
         )}
-        <select value={status} onChange={(e) => setStatus(e.target.value as "" | PaymentStatus)} className="rounded-md border border-border px-3 py-2 text-sm">
+        <select value={status} onChange={(e) => setStatus(e.target.value as "" | PaymentStatus)} className="w-full rounded-md border border-border px-3 py-2 text-sm md:w-auto">
           <option value="">{t("payAllStatuses")}</option>
           {(["received", "expected", "canceled"] as PaymentStatus[]).map((s) => (
             <option key={s} value={s}>
@@ -130,8 +130,8 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
             </option>
           ))}
         </select>
-        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded-md border border-border px-3 py-2 text-sm" />
-        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded-md border border-border px-3 py-2 text-sm" />
+        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="min-w-0 flex-1 rounded-md border border-border px-3 py-2 text-sm md:flex-none" />
+        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="min-w-0 flex-1 rounded-md border border-border px-3 py-2 text-sm md:flex-none" />
         <div className="ml-auto flex flex-wrap gap-3">
           <button className={secondary} onClick={exportCsv} disabled={items.length === 0}>
             {t("payExportCsv")}
@@ -149,7 +149,56 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
       {loading ? (
         <p className="text-muted">{t("loading")}</p>
       ) : (
-        <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
+        <>
+        {/* Phones: one card per entry; from md up the table below. */}
+        <div className="grid gap-3 md:hidden">
+          {items.map((p) => (
+            <div key={p.id} className="rounded-lg bg-surfaceSecondary p-4 text-sm shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  {!clientId && (
+                    <Link href={`/clients/${p.client_id}`} className="block font-semibold text-brand hover:underline">
+                      {p.client_name ?? p.client_id}
+                    </Link>
+                  )}
+                  <p className="text-onSurfaceSecondary">
+                    {p.paid_at ?? p.due_date}
+                    {p.status === "expected" && <span className="ml-1 text-xs text-muted">({t("payDueDate")})</span>}
+                  </p>
+                </div>
+                <p className={`whitespace-nowrap text-base font-bold ${p.status === "canceled" ? "text-muted line-through" : "text-onSurface"}`}>
+                  {money(p.amount, p.currency)}
+                </p>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${PAYMENT_STATUS_STYLES[p.status]}`}>
+                  {t(PAYMENT_STATUS_KEYS[p.status])}
+                </span>
+                {p.overdue && <span className="text-xs font-bold text-error">{t("payOverdue")}</span>}
+                {p.number && <span className="text-xs text-onSurfaceSecondary">{p.number}</span>}
+                <span className="text-xs text-onSurfaceSecondary">
+                  {p.kind !== "subscription" ? t(KIND_KEYS[p.kind]) : (p.plan_name ?? "")}
+                  {p.method ? ` · ${t(METHOD_KEYS[p.method as PaymentMethod])}` : ""}
+                </span>
+              </div>
+              {p.note && <p className="mt-1 text-xs text-muted">{p.note}</p>}
+              {p.status !== "canceled" && (
+                <div className="mt-3 flex gap-4">
+                  {p.status === "expected" && !p.ledger && (
+                    <button className={link} onClick={() => setDialog({ kind: "receive", payment: p })}>
+                      {t("payReceive")}
+                    </button>
+                  )}
+                  <button className="font-semibold text-error hover:underline" onClick={() => setDialog({ kind: "cancel", payment: p })}>
+                    {t("payCancel")}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {items.length === 0 && <p className="rounded-lg bg-surfaceSecondary p-6 text-center text-muted shadow-sm">{t("payNone")}</p>}
+        </div>
+        <div className="hidden overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm md:block">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
@@ -216,6 +265,7 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
             </tbody>
           </table>
         </div>
+        </>
       )}
 
       {dialog?.kind === "new" && (
