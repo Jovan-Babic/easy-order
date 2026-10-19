@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { backendFetch } from "@/lib/backend";
 import { Sidebar } from "@/components/Sidebar";
+import { DesktopOnlyNotice } from "@/components/DesktopOnlyNotice";
 import { SessionProvider } from "@/lib/session-provider";
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
 import { SubscriptionBanner } from "@/components/SubscriptionBanner";
@@ -20,9 +21,13 @@ export default async function DashboardLayout({ children }: { children: React.Re
     redirect("/change-password?required=1");
   }
 
+  const phoneAllowed = user.role === "superadmin";
+
   return (
     <SessionProvider user={user}>
-      <div className="md:flex">
+      {/* On phones the portal is for the superadmin only (PWA); the others use it on a computer and the Android app on the phone. */}
+      {!phoneAllowed && <DesktopOnlyNotice />}
+      <div className={phoneAllowed ? "md:flex" : "hidden md:flex"}>
         <Sidebar user={user} />
         <main className="min-h-screen min-w-0 flex-1 bg-surface p-4 md:p-8">
           <AnnouncementBanner />
