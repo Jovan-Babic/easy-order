@@ -18,8 +18,8 @@ export const inDays = (days: number) => {
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   const { t } = useLanguage();
   return (
-    <div className="fixed inset-0 z-30 overflow-y-auto bg-black/40 p-4 sm:p-6">
-      <div className="mx-auto mt-10 w-full max-w-lg rounded-2xl bg-surfaceSecondary p-6 shadow-xl">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-3 sm:p-6">
+      <div className="mx-auto mt-2 w-full max-w-lg rounded-2xl bg-surfaceSecondary p-5 shadow-xl sm:mt-10 sm:p-6">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-extrabold text-onSurface">{title}</h2>
           <button onClick={onClose} className="rounded-md px-3 py-2 text-sm font-semibold text-onSurfaceSecondary hover:bg-surface">

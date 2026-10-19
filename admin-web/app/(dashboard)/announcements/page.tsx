@@ -85,7 +85,7 @@ export default function AnnouncementsPage() {
         <p className="text-muted">{t("loading")}</p>
       ) : (
         <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
-          <table className="w-full text-left text-sm">
+          <table className="rtable w-full text-left text-sm">
             <tbody>
               {items.map((a) => (
                 <tr key={a.id} className="border-b border-border align-top last:border-0">

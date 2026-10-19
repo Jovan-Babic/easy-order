@@ -21,7 +21,7 @@ export default async function ClientDetailPage({
   return (
     <div>
       <h1 className="mb-1 text-2xl font-extrabold text-onSurface">{client.name}</h1>
-      <p className="mb-6 text-sm text-muted">{client.email || "No contact email"}</p>
+      <p className="mb-6 text-sm text-muted">{client.email || "\u00a0"}</p>
 
       <ClientDetailTabs client={client} stats={stats} />
     </div>

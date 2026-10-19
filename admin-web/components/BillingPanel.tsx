@@ -323,14 +323,15 @@ function EmailsCard({ clientId, emails, onSaved }: { clientId: string; emails: E
       {emails.log.length === 0 ? (
         <p className="text-sm text-muted">{t("billingEmailNone")}</p>
       ) : (
-        <table className="w-full text-left text-sm">
-          <tbody>
-            {emails.log.map((x) => (
-              <tr key={x.id} className="border-b border-border align-top last:border-0">
-                <td className="whitespace-nowrap py-2 pr-3 text-onSurfaceSecondary">{formatDate(x.created_at.slice(0, 10))}</td>
-                <td className="py-2 pr-3 font-semibold text-onSurface">{EVENT_KEYS[x.event] ? t(EVENT_KEYS[x.event]) : x.event}</td>
-                <td className="py-2 pr-3 text-xs text-muted">{x.subject}</td>
-                <td className="py-2 text-right text-xs">
+        <ul className="text-sm">
+          {emails.log.map((x) => (
+            <li key={x.id} className="border-b border-border py-2 last:border-0">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+                <p className="font-semibold text-onSurface">
+                  <span className="mr-2 font-normal text-onSurfaceSecondary">{formatDate(x.created_at.slice(0, 10))}</span>
+                  {EVENT_KEYS[x.event] ? t(EVENT_KEYS[x.event]) : x.event}
+                </p>
+                <p className="text-xs">
                   {x.sent ? (
                     <span className="text-success" title={x.sent_to.join(", ")}>{t("billingEmailSent")}</span>
                   ) : x.skipped ? (
@@ -338,11 +339,12 @@ function EmailsCard({ clientId, emails, onSaved }: { clientId: string; emails: E
                   ) : (
                     <span className="text-error" title={x.errors.join("\n")}>{t("billingEmailFailed")}</span>
                   )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                </p>
+              </div>
+              <p className="mt-0.5 break-words text-xs text-muted">{x.subject}</p>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

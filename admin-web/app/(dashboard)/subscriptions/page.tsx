@@ -112,7 +112,7 @@ export default function SubscriptionsPage() {
           </label>
           {plans.filter((p) => p.active).length === 0 && <p className="mb-3 text-sm text-muted">{t("noPlans")}</p>}
           <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
-            <table className="w-full text-left text-sm">
+            <table className="rtable w-full text-left text-sm">
               <thead className="border-b border-border text-xs uppercase text-muted">
                 <tr>
                   <th className="px-4 py-3">{t("client")}</th>
@@ -133,8 +133,8 @@ export default function SubscriptionsPage() {
                         {r.client_name}
                         {!r.client_active && <span className="ml-2 text-xs text-muted">({t("inactive")})</span>}
                       </td>
-                      <td className="px-4 py-3 text-onSurfaceSecondary">{r.plan_name ?? "-"}</td>
-                      <td className="px-4 py-3">
+                      <td data-label={t("plan")} className="px-4 py-3 text-onSurfaceSecondary">{r.plan_name ?? "-"}</td>
+                      <td data-label={t("status")} className="px-4 py-3">
                         <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${STATUS_STYLES[r.state.status]}`}>
                           {t(STATUS_KEYS[r.state.status])}
                         </span>
@@ -144,9 +144,9 @@ export default function SubscriptionsPage() {
                           </p>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-onSurfaceSecondary">{has ? r.state.ends_at : t("subscriptionNeverEnds")}</td>
-                      <td className="px-4 py-3 text-onSurfaceSecondary">{has && r.state.days_left != null ? r.state.days_left : "-"}</td>
-                      <td className="px-4 py-3 text-xs text-onSurfaceSecondary">
+                      <td data-label={t("validUntil")} className="px-4 py-3 text-onSurfaceSecondary">{has ? r.state.ends_at : t("subscriptionNeverEnds")}</td>
+                      <td data-label={t("daysLeft")} className="px-4 py-3 text-onSurfaceSecondary">{has && r.state.days_left != null ? r.state.days_left : "-"}</td>
+                      <td data-label={t("modules")} className="px-4 py-3 text-xs text-onSurfaceSecondary">
                         {r.modules.length ? MODULES.filter((m) => r.modules.includes(m.key)).map((m) => t(m.labelKey)).join(", ") : "-"}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-right">
@@ -182,7 +182,7 @@ export default function SubscriptionsPage() {
         </>
       ) : (
         <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
-          <table className="w-full text-left text-sm">
+          <table className="rtable w-full text-left text-sm">
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
                 <th className="px-4 py-3">{t("plan")}</th>
@@ -199,15 +199,15 @@ export default function SubscriptionsPage() {
                     <p className="font-semibold text-onSurface">{p.name}</p>
                     {p.description && <p className="text-xs text-muted">{p.description}</p>}
                   </td>
-                  <td className="px-4 py-3 text-xs text-onSurfaceSecondary">
+                  <td data-label={t("modules")} className="px-4 py-3 text-xs text-onSurfaceSecondary">
                     {p.modules.length ? MODULES.filter((m) => p.modules.includes(m.key)).map((m) => t(m.labelKey)).join(", ") : "-"}
                   </td>
-                  <td className="px-4 py-3 text-xs text-onSurfaceSecondary">
+                  <td data-label={t("planPrices")} className="px-4 py-3 text-xs text-onSurfaceSecondary">
                     {Object.entries(p.prices ?? {}).length
                       ? Object.entries(p.prices ?? {}).map(([months, amount]) => `${months} ${t("payPeriodShort")}: ${amount}`).join(" · ")
                       : "-"}
                   </td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{p.active ? t("active") : t("inactive")}</td>
+                  <td data-label={t("status")} className="px-4 py-3 text-onSurfaceSecondary">{p.active ? t("active") : t("inactive")}</td>
                   <td className="px-4 py-3 text-right">
                     <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "plan", plan: p })}>
                       {t("edit")}
