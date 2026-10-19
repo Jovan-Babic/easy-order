@@ -5,12 +5,25 @@ import { ChargeLinesTable } from "@/components/ChargeLines";
 import { Modal, input, link, primary, secondary, useSubmit } from "@/components/SubscriptionDialogs";
 import { LedgerCharge, LedgerPayment, formatDate } from "@/lib/billing";
 import { localizedDetail } from "@/lib/errors";
-import { useLanguage } from "@/lib/i18n";
+import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { METHOD_KEYS, PaymentMethod, money, todayIso } from "@/lib/payments";
 
 type Balance = { balance_due: number; credit: number; monthly_amount: number; charges: LedgerCharge[]; payments: LedgerPayment[] };
 type State = { status: string; ends_at?: string; billing_cycle?: string; lock_reason?: string | null; due_extension_until?: string | null };
 type Dialog = "enroll" | "pay" | "extend" | null;
+type EmailLog = {
+  id: string; event: string; subject: string; recipients: string[]; sent_to: string[]; sent: boolean;
+  skipped: string | null; errors: string[]; created_at: string;
+};
+type Emails = { billing_emails: boolean; accounting_email: string | null; recipients: string[]; log: EmailLog[] };
+
+const EVENT_KEYS: Record<string, TranslationKey> = {
+  issued: "billingEventIssued", reminder: "billingEventReminder", warning: "billingEventWarning",
+  blocked: "billingEventBlocked", paid: "billingEventPaid", annual_expiry: "billingEventAnnual",
+};
+const SKIP_KEYS: Record<string, TranslationKey> = {
+  disabled: "billingEmailSkipDisabled", no_recipients: "billingEmailSkipNoRecipients", smtp_off: "billingEmailSkipSmtp",
+};
 
 // Superadmin, one client: calendar billing (enroll, balance, charges, payments, block).
 export function BillingPanel({ clientId }: { clientId: string }) {
@@ -20,9 +33,12 @@ export function BillingPanel({ clientId }: { clientId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [qr, setQr] = useState(false);
+  const [emails, setEmails] = useState<Emails | null>(null);
 
   const load = useCallback(async () => {
-    const [s, b] = await Promise.all([fetch(`/api/subscriptions/${clientId}`), fetch(`/api/billing/clients/${clientId}`)]);
+    const [s, b, m] = await Promise.all([
+      fetch(`/api/subscriptions/${clientId}`), fetch(`/api/billing/clients/${clientId}`), fetch(`/api/billing/clients/${clientId}/emails`),
+    ]);
     if (!s.ok) {
       const body = await s.json().catch(() => ({}));
       setError(localizedDetail(body.detail, t, t("loadFailed")));
@@ -30,6 +46,7 @@ export function BillingPanel({ clientId }: { clientId: string }) {
     }
     setState((await s.json()).row.state);
     setBalance(b.ok ? await b.json() : null);
+    setEmails(m.ok ? await m.json() : null);
   }, [clientId, t]);
 
   useEffect(() => {
@@ -155,10 +172,12 @@ export function BillingPanel({ clientId }: { clientId: string }) {
             </table>
             {(balance?.payments ?? []).length === 0 && <p className="text-sm text-muted">{t("payNone")}</p>}
           </div>
+
+          {emails && <EmailsCard clientId={clientId} emails={emails} onSaved={setEmails} />}
         </>
       )}
       {dialog === "enroll" && <EnrollDialog clientId={clientId} onClose={() => setDialog(null)} onDone={done} />}
-      {dialog === "pay" && <LedgerPayDialog clientId={clientId} onClose={() => setDialog(null)} onDone={done} />}
+      {dialog === "pay" && <LedgerPayDialog clientId={clientId} emailsOn={emails?.billing_emails ?? true} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "extend" && <ExtendDueDialog clientId={clientId} current={state.due_extension_until ?? null} onClose={() => setDialog(null)} onDone={done} />}
     </div>
   );
@@ -206,8 +225,10 @@ function EnrollDialog({ clientId, onClose, onDone }: { clientId: string; onClose
   );
 }
 
-function LedgerPayDialog({ clientId, onClose, onDone }: { clientId: string; onClose: () => void; onDone: () => void }) {
+function LedgerPayDialog({ clientId, emailsOn, onClose, onDone }: { clientId: string; emailsOn: boolean; onClose: () => void; onDone: () => void }) {
   const { t } = useLanguage();
+  const [receipt, setReceipt] = useState(false);
+  const [emailsEnabled, setEmailsEnabled] = useState(emailsOn);
   const [amount, setAmount] = useState("");
   const [day, setDay] = useState(todayIso());
   const [method, setMethod] = useState<PaymentMethod>("bank");
@@ -215,7 +236,10 @@ function LedgerPayDialog({ clientId, onClose, onDone }: { clientId: string; onCl
   const { busy, error, send } = useSubmit(onDone);
   return (
     <Modal title={t("billingRecordPayment")} onClose={onClose}>
-      <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); send("/api/billing/payments", "POST", { client_id: clientId, amount: Number(amount), paid_at: day, method, note: note || null }); }}>
+      <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); send("/api/billing/payments", "POST", {
+        client_id: clientId, amount: Number(amount), paid_at: day, method, note: note || null,
+        send_receipt: receipt && emailsEnabled, billing_emails: emailsEnabled === emailsOn ? null : emailsEnabled,
+      }); }}>
         <p className="text-xs text-muted">{t("billingRecordPaymentHint")}</p>
         <label className="text-sm font-semibold text-onSurface">
           {t("payAmount")}
@@ -237,10 +261,90 @@ function LedgerPayDialog({ clientId, onClose, onDone }: { clientId: string; onCl
           {t("subNote")}
           <input value={note} onChange={(e) => setNote(e.target.value)} className={`${input} mt-1`} />
         </label>
+        <label className="flex items-center gap-2 text-sm text-onSurface">
+          <input type="checkbox" checked={emailsEnabled} onChange={(e) => setEmailsEnabled(e.target.checked)} />
+          {t("billingEmailsOn")}
+        </label>
+        <label className={`flex items-center gap-2 text-sm ${emailsEnabled ? "text-onSurface" : "text-muted"}`}>
+          <input type="checkbox" disabled={!emailsEnabled} checked={receipt && emailsEnabled} onChange={(e) => setReceipt(e.target.checked)} />
+          {t("billingSendReceipt")}
+        </label>
         {error && <p className="text-sm text-error">{localizedDetail(error, t, error)}</p>}
         <Buttons busy={busy} onClose={onClose} />
       </form>
     </Modal>
+  );
+}
+
+function EmailsCard({ clientId, emails, onSaved }: { clientId: string; emails: Emails; onSaved: (e: Emails) => void }) {
+  const { t } = useLanguage();
+  const [accounting, setAccounting] = useState(emails.accounting_email ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async (body: { billing_emails?: boolean; accounting_email?: string }) => {
+    setBusy(true);
+    const res = await fetch(`/api/billing/clients/${clientId}/emails`, { method: "PUT", body: JSON.stringify(body) });
+    const out = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (!res.ok) {
+      setError(localizedDetail(out.detail, t, t("saveFailed")));
+      return;
+    }
+    setError(null);
+    setAccounting(out.accounting_email ?? "");
+    onSaved(out);
+  };
+
+  return (
+    <div className="rounded-lg bg-surfaceSecondary p-6 shadow-sm">
+      <h3 className="mb-3 text-base font-extrabold text-onSurface">{t("billingEmails")}</h3>
+      <div className="grid gap-3">
+        <label className="flex items-center gap-2 text-sm font-semibold text-onSurface">
+          <input type="checkbox" disabled={busy} checked={emails.billing_emails} onChange={(e) => save({ billing_emails: e.target.checked })} />
+          {t("billingEmailsOn")}
+        </label>
+        <p className="text-xs text-muted">{t("billingEmailsHint")}</p>
+        <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); save({ accounting_email: accounting.trim() }); }}>
+          <label className="grow text-sm font-semibold text-onSurface">
+            {t("billingAccountingEmail")}
+            <input type="email" value={accounting} onChange={(e) => setAccounting(e.target.value)} className={`${input} mt-1`} />
+          </label>
+          <button type="submit" disabled={busy || accounting.trim() === (emails.accounting_email ?? "")} className={secondary}>
+            {t("save")}
+          </button>
+        </form>
+        <p className="text-sm text-onSurfaceSecondary">
+          {t("billingRecipients")}: {emails.recipients.length ? emails.recipients.join(", ") : t("billingNoRecipients")}
+        </p>
+        {error && <p className="text-sm text-error">{error}</p>}
+      </div>
+      <h4 className="mb-2 mt-5 text-sm font-bold text-onSurface">{t("billingEmailLog")}</h4>
+      {emails.log.length === 0 ? (
+        <p className="text-sm text-muted">{t("billingEmailNone")}</p>
+      ) : (
+        <table className="w-full text-left text-sm">
+          <tbody>
+            {emails.log.map((x) => (
+              <tr key={x.id} className="border-b border-border align-top last:border-0">
+                <td className="whitespace-nowrap py-2 pr-3 text-onSurfaceSecondary">{formatDate(x.created_at.slice(0, 10))}</td>
+                <td className="py-2 pr-3 font-semibold text-onSurface">{EVENT_KEYS[x.event] ? t(EVENT_KEYS[x.event]) : x.event}</td>
+                <td className="py-2 pr-3 text-xs text-muted">{x.subject}</td>
+                <td className="py-2 text-right text-xs">
+                  {x.sent ? (
+                    <span className="text-success" title={x.sent_to.join(", ")}>{t("billingEmailSent")}</span>
+                  ) : x.skipped ? (
+                    <span className="text-muted">{SKIP_KEYS[x.skipped] ? t(SKIP_KEYS[x.skipped]) : x.skipped}</span>
+                  ) : (
+                    <span className="text-error" title={x.errors.join("\n")}>{t("billingEmailFailed")}</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 

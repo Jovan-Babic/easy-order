@@ -94,7 +94,9 @@ Zamenjuje ručno „Zaduži mesec“ i trenutni model u kome zaduženje vidi sam
 - IPS QR: biblioteka za QR u `requirements.txt`; sadržaj po NBS standardu (provera formata pri implementaciji).
 - Testovi: šta vidi admin, a šta ostali; blokiran admin vidi samo zaduženja; QR za odobreno zaduženje; nacrt se ne vidi.
 
-### N4 — Emailovi
+### N4 — Emailovi (urađeno)
+- Urađeno: HTML + tekst, QR kao slika u telu poruke, pošiljalac/reply-to iz podešavanja, primaoci (aktivni admini + adresa računovodstva, bez duplih), sr ili sr+en. Događaji: predračun (pri odobrenju i ručnom zaduženju; 0 din se ne šalje), podsetnik od dana roka, upozorenje 2 dana pred blokadu (samo ako bi klijent zaista bio blokiran), blokada (jednom po blokadi), potvrda uplate (štiklira se pri evidentiranju), ističe godišnja (šalje se i kad su emailovi isključeni), nacrti napravljeni (superadminima). Svaki email se beleži (`billing_emails`, i kad nije poslat - razlog), oznake `notified` na zaduženju sprečavaju duplo slanje. Portal: kartica „Emailovi za naplatu“ na tabu Naplata (uključi/isključi, adresa računovodstva, primaoci, istorija) i u prozoru za uplatu „pošalji potvrdu“ i uključi/isključi emailove.
+- Plan:
 - Slanje HTML + tekst + slika u prilogu (QR), pošiljalac i reply-to iz podešavanja, primaoci (admini + računovodstvo, bez duplih), dvojezično ili samo srpski, „bez emailova za naplatu“ po klijentu.
 - Događaji: nacrti napravljeni (superadmini), odobreno (klijent), 1. podsetnik, 4. upozorenje, 6. blokada, potvrda uplate (opciono), godišnji istek (samo godišnji); oznake da se ne šalje dvaput.
 - Portal: adresa računovodstva i „bez emailova“ na klijentu; pri evidentiranju uplate „pošalji potvrdu“ i „bez emailova“.

@@ -27,6 +27,8 @@ import bcrypt
 import jwt
 from datetime import date, datetime, timezone, timedelta
 from email.message import EmailMessage
+from email.utils import formataddr
+import html as html_lib
 from urllib.parse import quote
 import cloudinary
 import cloudinary.uploader
@@ -412,6 +414,7 @@ class Client(BaseModel):
     # Subscription (superadmin manages it in /subscriptions): plan_id, plan_name,
     # starts_at, ends_at, note, source, canceled_at, purge_paused, purged_at.
     subscription: Optional[Dict[str, Any]] = None
+    accounting_email: Optional[str] = None  # also gets the billing emails (PUT /billing/clients/{id}/emails)
     subscription_state: Optional[Dict[str, Any]] = None  # computed
     user_count: Optional[int] = None  # computed in GET /clients: active users of the client
     last_activity_at: Optional[str] = None  # computed in GET /clients: last time a user was active / ordered
@@ -2313,11 +2316,14 @@ async def _email_client_admins(client_id: str, subject: str, body: str) -> int:
 
 
 @api_router.get("/internal/cron/subscriptions")
-async def cron_subscriptions(dry_run: bool = Query(False), authorization: Optional[str] = Header(None)):
+async def cron_subscriptions(
+    dry_run: bool = Query(False), as_of: Optional[str] = Query(None), authorization: Optional[str] = Header(None),
+):
     """Daily job (Vercel Cron sends `Authorization: Bearer $CRON_SECRET`):
-    expiry reminders, purge warnings and the purge itself. The purge deletes
-    only when AUTO_PURGE_ENABLED=true and dry_run is not set; otherwise it
-    reports what it would delete."""
+    expiry reminders, purge warnings and the purge itself, calendar billing drafts
+    and billing emails. The purge deletes only when AUTO_PURGE_ENABLED=true and
+    dry_run is not set; otherwise it reports what it would delete. `as_of` (not in
+    production) runs the billing emails as if it were that day - for tests."""
     if not CRON_SECRET:
         raise HTTPException(status_code=503, detail="CRON_SECRET is not configured")
     if not hmac.compare_digest(authorization or "", f"Bearer {CRON_SECRET}"):
@@ -2325,17 +2331,25 @@ async def cron_subscriptions(dry_run: bool = Query(False), authorization: Option
     await refresh_settings(force=True)
     live = AUTO_PURGE_ENABLED and not dry_run
     today = _today()
+    notify_day = today
+    if as_of:
+        if IS_PRODUCTION:
+            raise HTTPException(status_code=400, detail="as_of is not allowed in production")
+        notify_day = date.fromisoformat(_valid_day(as_of, "as_of"))
     result: Dict[str, Any] = {"live": live, "reminders": [], "purge_warnings": [], "purged": [], "would_purge": []}
     async for client in db.clients.find({"subscription": {"$ne": None}}, {"_id": 0}):
         sub, cid = client["subscription"], client["id"]
         state = subscription_state(sub, today)
         # Monthly calendar billing gets its charge every month; the end-date reminder is for the rest.
         if sub.get("billing_cycle") != "monthly" and state["status"] == "active" and state["days_left"] <= setting("reminder_days") and sub.get("reminder_for") != sub["ends_at"]:
-            await _email_client_admins(
-                cid, "Easy Order - pretplata uskoro ističe / subscription ends soon",
-                f"Pretplata za {client['name']} ističe {sub['ends_at']} (za {state['days_left']} dana).\n\n"
-                f"Your subscription for {client['name']} ends on {sub['ends_at']}.",
-            )
+            if sub.get("billing_cycle") == "annual":
+                await _notify_annual_expiry(client, state)
+            else:
+                await _email_client_admins(
+                    cid, "Easy Order - pretplata uskoro ističe / subscription ends soon",
+                    f"Pretplata za {client['name']} ističe {sub['ends_at']} (za {state['days_left']} dana).\n\n"
+                    f"Your subscription for {client['name']} ends on {sub['ends_at']}.",
+                )
             await db.clients.update_one({"id": cid}, {"$set": {"subscription.reminder_for": sub["ends_at"]}})
             result["reminders"].append(client["name"])
         if state["status"] != "locked" or not state.get("purge_at") or sub.get("purged_at") or sub.get("purge_paused"):
@@ -2363,7 +2377,10 @@ async def cron_subscriptions(dry_run: bool = Query(False), authorization: Option
     # Calendar billing: drafts for next month from the draft day on (one per client and period).
     result["drafts"] = []
     if today.day >= int(setting("draft_day")):
-        result["drafts"] = [d["client_id"] for d in await _make_drafts(today)]
+        made = await _make_drafts(today)
+        result["drafts"] = [d["client_id"] for d in made]
+        await _notify_drafts_ready(made)
+    result["billing_emails"] = await _billing_notifications(notify_day)
     await db.system_runs.replace_one(
         {"_id": "subscriptions_cron"},
         {
@@ -2553,6 +2570,8 @@ async def _ledger_entry(client: dict, inp: "PaymentInput", user: User) -> "Payme
         data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "kind": inp.kind},
     )
     await _apply_ledger(client["id"], user)
+    if doc["status"] == "expected":
+        await _notify_issued(client["id"], [doc])
     return _payment_out(doc, {client["id"]: client["name"]})
 
 
@@ -2692,7 +2711,7 @@ async def _ledger_open_map(client_ids) -> Dict[str, float]:
 # working as before but stay out of the balance.
 _BILLING_KEPT_FIELDS = (
     "billing_cycle", "balance_due", "credit", "open_charges", "monthly_amount", "extra_seats_billed", "manual_block",
-    "due_extension_until", "billing_emails",
+    "due_extension_until", "billing_emails", "block_notified",
 )
 
 
@@ -3073,8 +3092,13 @@ async def approve_drafts(inp: DraftApproveInput, current_user: User = Depends(re
             data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY, "number": update["number"], "period": doc.get("period")},
         )
         await _apply_ledger(doc["client_id"], current_user)
-        approved.append(_charge_out({**doc, **update}))
-    return approved
+        approved.append({**doc, **update})
+    by_client: Dict[str, List[dict]] = {}
+    for doc in approved:
+        by_client.setdefault(doc["client_id"], []).append(doc)
+    for client_id, charges in by_client.items():
+        await _notify_issued(client_id, charges)
+    return [_charge_out(doc) for doc in approved]
 
 
 class LedgerPaymentInput(BaseModel):
@@ -3083,6 +3107,8 @@ class LedgerPaymentInput(BaseModel):
     paid_at: Optional[str] = None
     method: Literal["bank", "card", "cash", "other"] = "bank"
     note: Optional[str] = Field(default=None, max_length=500)
+    send_receipt: bool = False  # email a payment confirmation to the client
+    billing_emails: Optional[bool] = None  # also switch the client's billing emails on/off
 
 
 class LedgerPaymentResult(BaseModel):
@@ -3111,6 +3137,10 @@ async def record_ledger_payment(inp: LedgerPaymentInput, current_user: User = De
         data={"amount": doc["amount"], "currency": PAYMENT_CURRENCY},
     )
     await _apply_ledger(client["id"], current_user)
+    if inp.billing_emails is not None:
+        await db.clients.update_one({"id": client["id"]}, {"$set": {"subscription.billing_emails": inp.billing_emails}})
+    if inp.send_receipt:
+        await _notify_paid(client["id"], doc)
     return LedgerPaymentResult(
         payment=LedgerPayment(**doc), balance=await _balance_out(client["id"]),
         subscription=await _subscription_row(await _client_or_404(client["id"])),
@@ -3394,6 +3424,537 @@ async def client_billing_qr(client_id: str, current_user: User = Depends(require
     if not payload:
         raise HTTPException(status_code=404, detail="Nothing to pay or payment details are not set")
     return _png_response(_qr_png(payload))
+
+
+# ---------------- Billing emails (PLAN_NAPLATA_KALENDARSKA.md, N4) ----------------
+# Sent to the client's active admins + its accounting address (one email per
+# address). Every email is logged in `billing_emails` (also when it isn't sent:
+# `skipped` = disabled / no_recipients / smtp_off) and charge emails are marked
+# on the charge (`notified.<event>`), so the daily cron never sends one twice.
+_ROLE_NAMES = {
+    "sr": {"admin": "administrator", "operator": "komercijalista", "warehouse": "magacioner"},
+    "en": {"admin": "admin", "operator": "sales rep", "warehouse": "warehouse"},
+}
+_MONTHS = {
+    "sr": ["januar", "februar", "mart", "april", "maj", "jun", "jul", "avgust", "septembar", "oktobar", "novembar", "decembar"],
+    "en": ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+}
+
+
+def _money(amount: float, lang: str = "sr") -> str:
+    """10800 -> 10.800,00 RSD (sr) / 10,800.00 RSD (en)."""
+    text = f"{float(amount):,.2f}"
+    if lang == "sr":
+        text = text.replace(",", " ").replace(".", ",").replace(" ", ".")
+    return f"{text} {PAYMENT_CURRENCY}"
+
+
+def _day_text(value: Optional[str]) -> str:
+    return date.fromisoformat(value).strftime("%d.%m.%Y") if value else ""
+
+
+def _period_text(charge: dict, lang: str) -> str:
+    if not charge.get("period_start"):
+        return ""
+    start, end = date.fromisoformat(charge["period_start"]), date.fromisoformat(charge["period_end"])
+    if (start.year, start.month) == (end.year, end.month):
+        return f"{_MONTHS[lang][start.month - 1]} {start.year}"
+    return f"{_day_text(charge['period_start'])} - {_day_text(charge['period_end'])}"
+
+
+def _line_text(line: dict, lang: str) -> str:
+    kind = line.get("kind")
+    if kind in ("seats", "seats_prorated"):
+        role = _ROLE_NAMES[lang].get(line.get("role") or "", line.get("role") or "")
+        months = line.get("months") or 1
+        head = "Dodatni nalozi" if lang == "sr" else "Extra accounts"
+        text = f"{head}: {role} × {line.get('qty')}"
+        if months > 1:
+            text += f" × {months} {'mes.' if lang == 'sr' else 'mo.'}"
+        return text
+    if kind == "discount":
+        return f"{'Popust' if lang == 'sr' else 'Discount'} {line.get('label')}"
+    return line.get("label") or ""
+
+
+def _blocks_on(due_date: str) -> date:
+    due = date.fromisoformat(due_date)
+    return date(due.year, due.month, int(setting("block_after_day"))) + timedelta(days=1)
+
+
+class _Mail:
+    """One email in one language: paragraphs, an optional table and payment details."""
+
+    def __init__(self, lang: str):
+        self.lang = lang
+        self.text: List[str] = []
+        self.html: List[str] = []
+
+    def p(self, value: str, bold: bool = False):
+        self.text.append(value)
+        body = html_lib.escape(value)
+        self.html.append(f"<p style=\"margin:0 0 12px\">{'<b>' + body + '</b>' if bold else body}</p>")
+
+    def table(self, rows: List[Tuple[str, str]], total: Optional[Tuple[str, str]] = None):
+        width = max([len(r[0]) for r in rows + ([total] if total else [])] + [10])
+        self.text.append("\n".join(f"{label.ljust(width)}  {value}" for label, value in rows + ([total] if total else [])))
+        cells = "".join(
+            f"<tr><td style=\"padding:4px 12px 4px 0\">{html_lib.escape(a)}</td><td style=\"padding:4px 0;text-align:right;white-space:nowrap\">{html_lib.escape(b)}</td></tr>"
+            for a, b in rows
+        )
+        if total:
+            cells += (
+                f"<tr><td style=\"padding:6px 12px 4px 0;border-top:1px solid #ccc\"><b>{html_lib.escape(total[0])}</b></td>"
+                f"<td style=\"padding:6px 0 4px;border-top:1px solid #ccc;text-align:right;white-space:nowrap\"><b>{html_lib.escape(total[1])}</b></td></tr>"
+            )
+        self.html.append(f"<table style=\"border-collapse:collapse;margin:0 0 12px\">{cells}</table>")
+
+    def details(self, me: "BillingMe", with_qr: bool):
+        sr = self.lang == "sr"
+        ips = me.ips
+        rows = [
+            ("Primalac" if sr else "Recipient", ips.recipient or ""),
+            ("Račun" if sr else "Account", ips.account or ""),
+            ("Šifra plaćanja" if sr else "Payment code", ips.payment_code or ""),
+            ("Svrha" if sr else "Purpose", ips.purpose or ""),
+            ("Poziv na broj" if sr else "Reference", ips.reference or ""),
+        ]
+        rows = [r for r in rows if r[1]]
+        if rows:
+            self.p("Podaci za uplatu" if sr else "Payment details", bold=True)
+            self.table(rows)
+        extra = me.instructions_sr if sr else (me.instructions_en or me.instructions_sr)
+        if extra:
+            self.p(extra)
+        if with_qr:
+            self.p(
+                "Možete platiti i skeniranjem IPS QR koda u aplikaciji vaše banke." if sr
+                else "You can also pay by scanning the IPS QR code in your banking app."
+            )
+            self.html.append("<p style=\"margin:0 0 12px\"><img src=\"cid:ips-qr\" alt=\"IPS QR\" width=\"180\" height=\"180\"></p>")
+
+    def link(self, label: str, url: str):
+        self.text.append(f"{label}: {url}")
+        self.html.append(f"<p style=\"margin:0 0 12px\">{html_lib.escape(label)}: <a href=\"{html_lib.escape(url)}\">{html_lib.escape(url)}</a></p>")
+
+    def footer(self):
+        sr = self.lang == "sr"
+        self.p("Srdačan pozdrav,\nEasy Order" if sr else "Kind regards,\nEasy Order")
+        note = (
+            "Ovo je automatska poruka. Za pitanja odgovorite na ovaj email." if sr
+            else "This is an automated message. Reply to this email with any questions."
+        )
+        self.text.append(note)
+        self.html.append(f"<p style=\"margin:0 0 12px;color:#777;font-size:12px\">{html_lib.escape(note)}</p>")
+
+
+def _compose(build, subjects: Dict[str, str]) -> Tuple[str, str, str]:
+    """Serbian, plus English under it when `bilingual_emails` is on."""
+    langs = ["sr", "en"] if setting("bilingual_emails") else ["sr"]
+    mails = []
+    for lang in langs:
+        mail = _Mail(lang)
+        build(mail)
+        mail.footer()
+        mails.append(mail)
+    subject = " / ".join(subjects[lang] for lang in langs)
+    text = "\n\n----------\n\n".join("\n\n".join(m.text) for m in mails)
+    body = "<hr style=\"border:0;border-top:1px solid #ddd;margin:24px 0\">".join("".join(m.html) for m in mails)
+    html_out = (
+        "<div style=\"font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.45;color:#222;max-width:600px\">"
+        + body.replace("\n", "<br>") + "</div>"
+    )
+    return subject, text, html_out
+
+
+def _send_billing_email_sync(
+    to_email: str, sender: Tuple[str, str], reply_to: Optional[str], subject: str, text: str, html_body: str,
+    qr_png: Optional[bytes], qr_name: str,
+) -> None:
+    msg = EmailMessage()
+    msg["From"] = formataddr(sender)
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    msg.set_content(text)
+    msg.add_alternative(html_body, subtype="html")
+    if qr_png:
+        msg.get_payload()[1].add_related(qr_png, maintype="image", subtype="png", cid="<ips-qr>", filename=qr_name)
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
+        if SMTP_USE_TLS:
+            smtp.starttls()
+        smtp.login(SMTP_USER, SMTP_PASSWORD)
+        smtp.send_message(msg)
+
+
+async def _billing_recipients(client: dict) -> List[str]:
+    """Active admins of the client + the accounting address; each address once."""
+    out: List[str] = []
+    async for user in db.users.find(
+        {"client_id": client["id"], "role": Role.ADMIN.value, "active": {"$ne": False}}, {"_id": 0, "email": 1}
+    ).sort("created_at", 1):
+        email = normalize_email(user.get("email") or "")
+        if email and email not in out:
+            out.append(email)
+    accounting = normalize_email(client.get("accounting_email") or "")
+    if accounting and accounting not in out:
+        out.append(accounting)
+    return out
+
+
+async def _send_billing_email(
+    event: str, subject: str, text: str, html_body: str, *, client: Optional[dict] = None,
+    recipients: Optional[List[str]] = None, charge_ids: Optional[List[str]] = None, qr_payload: Optional[str] = None,
+    qr_name: str = "ips-qr.png", ignore_opt_out: bool = False,
+) -> dict:
+    """Sends (best effort) and logs one billing email; marks `notified.<event>` on the charges."""
+    skipped = None
+    if recipients is None:
+        recipients = await _billing_recipients(client) if client else []
+        if client and not ignore_opt_out and ((client.get("subscription") or {}).get("billing_emails") is False):
+            skipped = "disabled"
+    if not skipped and not recipients:
+        skipped = "no_recipients"
+    if not skipped and not _smtp_is_configured():
+        skipped = "smtp_off"
+    sent_to: List[str] = []
+    errors: List[str] = []
+    if not skipped:
+        sender = (setting("billing_from_name") or "Easy Order", setting("billing_from_email") or SMTP_FROM)
+        qr_png = _qr_png(qr_payload) if qr_payload else None
+        for email in recipients:
+            try:
+                await asyncio.to_thread(
+                    _send_billing_email_sync, email, sender, setting("billing_reply_to") or None, subject, text, html_body, qr_png, qr_name,
+                )
+                sent_to.append(email)
+            except Exception as exc:
+                logger.warning("Billing email %s to %s failed: %s", event, email, exc)
+                errors.append(f"{email}: {exc}"[:300])
+    log = {
+        "id": str(uuid.uuid4()), "client_id": (client or {}).get("id"), "event": event, "subject": subject,
+        "text": text, "recipients": recipients, "sent_to": sent_to, "sent": bool(sent_to), "skipped": skipped,
+        "errors": errors, "charge_ids": charge_ids or [], "with_qr": bool(qr_payload), "created_at": now_iso(),
+    }
+    await db.billing_emails.insert_one({**log, "_id": log["id"]})
+    if charge_ids:
+        await db.payments.update_many({"id": {"$in": charge_ids}}, {"$set": {f"notified.{event}": log["created_at"]}})
+    return log
+
+
+async def _charge_email(client: dict, event: str, charges: List[dict], today: date) -> dict:
+    """issued / reminder / warning: the charge(s), what is owed in total, payment details and the IPS QR."""
+    me, payload = await _billing_for_client(client["id"])
+    charge = charges[0]
+    number = charge.get("number") or ""
+    due = charge.get("due_date")
+    blocks_on = _blocks_on(due).isoformat() if due else None
+    this_amount = round(sum(float(c["amount"]) for c in charges), 2) if event == "issued" else None
+
+    def build(m: _Mail):
+        sr = m.lang == "sr"
+        name = client["name"]
+        if event == "issued":
+            period = _period_text(charge, m.lang)
+            m.p("Poštovani," if sr else "Hello,")
+            if period:
+                m.p(
+                    f"izdat je predračun {number} za korišćenje aplikacije Easy Order ({name}) za period {period}." if sr
+                    else f"pro-forma invoice {number} has been issued for using Easy Order ({name}) for {period}."
+                )
+            else:
+                m.p(f"izdat je predračun {number} ({name})." if sr else f"pro-forma invoice {number} has been issued ({name}).")
+            rows = [(_line_text(line, m.lang), _money(line["amount"], m.lang)) for c in charges for line in (c.get("lines") or [])]
+            if not rows:
+                rows = [(number, _money(this_amount, m.lang))]
+            if len(charges) == 1 and charge.get("note") and abs(sum(line["amount"] for line in charge.get("lines") or []) - charge["amount"]) > 0.005:
+                rows.append((charge["note"], _money(charge["amount"] - sum(line["amount"] for line in charge.get("lines") or []), m.lang)))
+            previous = round(me.to_pay - this_amount, 2)
+            if previous > 0.005:
+                rows.append(("Dug iz prethodnog perioda" if sr else "Unpaid from earlier", _money(previous, m.lang)))
+            elif previous < -0.005:
+                rows.append(("Preplata iz prethodnog perioda" if sr else "Credit from earlier", _money(previous, m.lang)))
+            m.table(rows, ("Ukupno za uplatu" if sr else "Total to pay", _money(me.to_pay, m.lang)))
+            if me.to_pay > 0 and due:
+                m.p((f"Rok plaćanja: {_day_text(due)}." if sr else f"Due date: {_day_text(due)}."), bold=True)
+        elif event == "reminder":
+            m.p("Poštovani," if sr else "Hello,")
+            m.p(
+                f"podsećamo da je rok za uplatu po predračunu {number} ({name}) {_day_text(due)}, a uplata još nije evidentirana." if sr
+                else f"a reminder that payment for pro-forma invoice {number} ({name}) was due on {_day_text(due)} and has not been recorded yet."
+            )
+            m.p((f"Za uplatu: {_money(me.to_pay, m.lang)}" if sr else f"To pay: {_money(me.to_pay, m.lang)}"), bold=True)
+        else:  # warning
+            m.p("Poštovani," if sr else "Hello,")
+            m.p(
+                f"uplata po predračunu {number} ({name}) još nije evidentirana. Ako uplata ne stigne, pristup aplikaciji biće ograničen od {_day_text(blocks_on)}." if sr
+                else f"payment for pro-forma invoice {number} ({name}) has not been recorded yet. Without it, access to the app will be limited from {_day_text(blocks_on)}."
+            )
+            m.p((f"Za uplatu: {_money(me.to_pay, m.lang)}" if sr else f"To pay: {_money(me.to_pay, m.lang)}"), bold=True)
+        if me.to_pay > 0:
+            m.details(me, with_qr=bool(payload))
+        if event == "issued" and me.to_pay > 0 and blocks_on:
+            m.p(
+                f"Ako uplata ne stigne do {_day_text((date.fromisoformat(blocks_on) - timedelta(days=1)).isoformat())}, pristup aplikaciji može biti privremeno ograničen." if sr
+                else f"If payment does not arrive by {_day_text((date.fromisoformat(blocks_on) - timedelta(days=1)).isoformat())}, access to the app may be limited."
+            )
+        if event != "issued":
+            m.p("Ako ste već platili, zanemarite ovu poruku." if sr else "If you have already paid, please ignore this message.")
+        m.link("Pregled zaduženja i uplata" if sr else "Charges and payments", f"{ADMIN_WEB_URL}/billing")
+
+    period_sr, period_en = _period_text(charge, "sr"), _period_text(charge, "en")
+    subjects = {
+        "issued": {
+            "sr": f"Predračun {number}" + (f" za {period_sr}" if period_sr else "") + " - Easy Order",
+            "en": f"Pro-forma invoice {number}" + (f" for {period_en}" if period_en else ""),
+        },
+        "reminder": {"sr": f"Podsetnik za uplatu - predračun {number}", "en": f"Payment reminder - {number}"},
+        "warning": {
+            "sr": f"Uplata nije evidentirana - pristup se ograničava {_day_text(blocks_on)}",
+            "en": f"Payment not recorded - access will be limited on {_day_text(blocks_on)}",
+        },
+    }[event]
+    subject, text, html_body = _compose(build, subjects)
+    return await _send_billing_email(
+        event, subject, text, html_body, client=client, charge_ids=[c["id"] for c in charges],
+        qr_payload=payload if me.to_pay > 0 else None, qr_name=f"ips-qr-{number or 'uplata'}.png",
+    )
+
+
+async def _notify_issued(client_id: str, charges: List[dict]) -> Optional[dict]:
+    """After approval: one email per client with its new charges (free months are skipped)."""
+    priced = [c for c in charges if float(c.get("amount") or 0) > 0]
+    if not priced:
+        return None
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        return None
+    try:
+        return await _charge_email(client, "issued", priced, _today())
+    except Exception as exc:  # never fail the approval because of an email
+        logger.warning("Billing email (issued) for %s failed: %s", client_id, exc)
+        return None
+
+
+async def _notify_paid(client_id: str, payment: dict) -> Optional[dict]:
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        return None
+    me, _ = await _billing_for_client(client_id)
+
+    def build(m: _Mail):
+        sr = m.lang == "sr"
+        m.p("Poštovani," if sr else "Hello,")
+        m.p(
+            f"primili smo uplatu od {_money(payment['amount'], m.lang)} ({_day_text(payment.get('paid_at'))}) za {client['name']}. Hvala!" if sr
+            else f"we have received your payment of {_money(payment['amount'], m.lang)} ({_day_text(payment.get('paid_at'))}) for {client['name']}. Thank you!"
+        )
+        if me.to_pay > 0:
+            m.p((f"Preostalo za uplatu: {_money(me.to_pay, m.lang)}" if sr else f"Still to pay: {_money(me.to_pay, m.lang)}"), bold=True)
+        elif me.credit > 0:
+            m.p(
+                f"Preplata od {_money(me.credit, m.lang)} biće uračunata u sledeće zaduženje." if sr
+                else f"The overpayment of {_money(me.credit, m.lang)} will be applied to the next charge."
+            )
+        else:
+            m.p("Trenutno nemate dugovanja." if sr else "You have nothing left to pay.")
+        m.link("Pregled zaduženja i uplata" if sr else "Charges and payments", f"{ADMIN_WEB_URL}/billing")
+
+    subject, text, html_body = _compose(build, {"sr": "Potvrda uplate - Easy Order", "en": "Payment received"})
+    return await _send_billing_email("paid", subject, text, html_body, client=client)
+
+
+async def _notify_blocked(client: dict, state: dict) -> dict:
+    me, payload = await _billing_for_client(client["id"])
+
+    def build(m: _Mail):
+        sr = m.lang == "sr"
+        m.p("Poštovani," if sr else "Hello,")
+        m.p(
+            f"pristup aplikaciji Easy Order za {client['name']} je privremeno ograničen jer uplata nije evidentirana." if sr
+            else f"access to Easy Order for {client['name']} has been limited because payment has not been recorded."
+        )
+        m.p(
+            "Administrator i dalje može da se prijavi na portal i vidi zaduženja i podatke za uplatu. Pristup se vraća čim se uplata evidentira." if sr
+            else "Your admin can still sign in to the portal to see the charges and payment details. Access returns as soon as the payment is recorded."
+        )
+        if me.to_pay > 0:
+            m.p((f"Za uplatu: {_money(me.to_pay, m.lang)}" if sr else f"To pay: {_money(me.to_pay, m.lang)}"), bold=True)
+            m.details(me, with_qr=bool(payload))
+        m.link("Zaduženja" if sr else "Charges", f"{ADMIN_WEB_URL}/billing")
+
+    subject, text, html_body = _compose(
+        build, {"sr": "Pristup aplikaciji je ograničen - Easy Order", "en": "Access to the app is limited"}
+    )
+    return await _send_billing_email(
+        "blocked", subject, text, html_body, client=client,
+        qr_payload=payload if me.to_pay > 0 else None, qr_name="ips-qr.png",
+    )
+
+
+async def _notify_annual_expiry(client: dict, state: dict) -> dict:
+    sub = client["subscription"]
+
+    def build(m: _Mail):
+        sr = m.lang == "sr"
+        m.p("Poštovani," if sr else "Hello,")
+        m.p(
+            f"godišnja pretplata za {client['name']} ističe {_day_text(sub['ends_at'])} (za {state['days_left']} dana). Predračun za sledeću godinu stiže krajem meseca." if sr
+            else f"the annual subscription for {client['name']} ends on {_day_text(sub['ends_at'])} (in {state['days_left']} days). The pro-forma invoice for the next year will follow at the end of the month."
+        )
+        m.link("Zaduženja" if sr else "Charges", f"{ADMIN_WEB_URL}/billing")
+
+    subject, text, html_body = _compose(
+        build, {"sr": "Godišnja pretplata uskoro ističe - Easy Order", "en": "Annual subscription ends soon"}
+    )
+    return await _send_billing_email("annual_expiry", subject, text, html_body, client=client, ignore_opt_out=True)
+
+
+async def _notify_drafts_ready(drafts: List[dict]) -> Optional[dict]:
+    """To every active superadmin: how many drafts the cron made and the total."""
+    if not drafts:
+        return None
+    recipients = [
+        normalize_email(u["email"]) async for u in db.users.find(
+            {"role": Role.SUPERADMIN.value, "active": {"$ne": False}}, {"_id": 0, "email": 1}
+        ) if u.get("email")
+    ]
+    total = round(sum(float(d["amount"]) for d in drafts), 2)
+    month = date.fromisoformat(drafts[0]["period_start"])
+
+    def build(m: _Mail):
+        sr = m.lang == "sr"
+        label = f"{_MONTHS[m.lang][month.month - 1]} {month.year}"
+        m.p(
+            f"Napravljeno je {len(drafts)} nacrta zaduženja za {label}, ukupno {_money(total, m.lang)}. Pregledaj ih i odobri." if sr
+            else f"{len(drafts)} charge drafts were made for {label}, {_money(total, m.lang)} in total. Review and approve them."
+        )
+        m.link("Nacrti zaduženja" if sr else "Charge drafts", f"{ADMIN_WEB_URL}/billing-drafts")
+
+    subject, text, html_body = _compose(
+        build, {"sr": f"Nacrti zaduženja: {len(drafts)}", "en": f"Charge drafts: {len(drafts)}"}
+    )
+    return await _send_billing_email("drafts_ready", subject, text, html_body, recipients=sorted(set(recipients)))
+
+
+async def _billing_notifications(today: date) -> Dict[str, List[str]]:
+    """Daily: reminder on/after the due date, warning two days before the block
+    (only when the client would really be blocked), blocked notice once per block.
+    Each one once per charge (`notified`), one email per client and event."""
+    out: Dict[str, List[str]] = {"reminder": [], "warning": [], "blocked": []}
+    query = {"subscription.billing_cycle": {"$in": ["monthly", "annual"]}, "active": {"$ne": False}}
+    async for client in db.clients.find(query, {"_id": 0}):
+        try:
+            await _client_notifications(client, today, out)
+        except Exception as exc:  # one client's problem must not stop the rest of the cron
+            logger.warning("Billing notifications for %s failed: %s", client.get("id"), exc)
+    return out
+
+
+async def _client_notifications(client: dict, today: date, out: Dict[str, List[str]]) -> None:
+    sub = client["subscription"]
+    state = subscription_state(sub, today)
+    blocked = state["status"] == "locked" and state.get("lock_reason") in ("debt", "expired")
+    if blocked:
+        if not sub.get("block_notified"):
+            await _notify_blocked(client, state)
+            await db.clients.update_one({"id": client["id"]}, {"$set": {"subscription.block_notified": today.isoformat()}})
+            out["blocked"].append(client["name"])
+        return
+    if sub.get("block_notified"):
+        await db.clients.update_one({"id": client["id"]}, {"$set": {"subscription.block_notified": None}})
+    if state["status"] == "locked" or not float(sub.get("balance_due") or 0):
+        return
+    charges, payments = await _ledger(client["id"])
+    allocated, _, _ = _allocate(charges, payments)
+    due_now: Dict[str, List[dict]] = {"reminder": [], "warning": []}
+    for charge in allocated:
+        if charge["open"] <= 0 or not charge.get("due_date"):
+            continue
+        due = date.fromisoformat(charge["due_date"])
+        blocks_on = _blocks_on(charge["due_date"])
+        if today < due or today >= blocks_on:
+            continue
+        notified = charge.get("notified") or {}
+        if today >= blocks_on - timedelta(days=2):
+            if not notified.get("warning") and subscription_state(sub, blocks_on)["status"] == "locked":
+                due_now["warning"].append(charge)
+        elif not notified.get("reminder"):
+            due_now["reminder"].append(charge)
+    for event in ("warning", "reminder"):
+        if due_now[event]:
+            await _charge_email(client, event, due_now[event], today)
+            out[event].append(client["name"])
+            return  # one email a day is enough
+
+
+class BillingEmailLog(BaseModel):
+    id: str
+    client_id: Optional[str] = None
+    event: str
+    subject: str
+    text: str = ""
+    recipients: List[str] = Field(default_factory=list)
+    sent_to: List[str] = Field(default_factory=list)
+    sent: bool = False
+    skipped: Optional[str] = None
+    errors: List[str] = Field(default_factory=list)
+    charge_ids: List[str] = Field(default_factory=list)
+    with_qr: bool = False
+    created_at: str
+
+
+class BillingEmailSettings(BaseModel):
+    billing_emails: bool
+    accounting_email: Optional[str] = None
+    recipients: List[str]
+    log: List[BillingEmailLog]
+
+
+class BillingEmailSettingsInput(BaseModel):
+    billing_emails: Optional[bool] = None
+    accounting_email: Optional[str] = Field(default=None, max_length=254)  # "" = remove
+
+
+async def _email_settings_out(client_id: str) -> BillingEmailSettings:
+    client = await _client_or_404(client_id)
+    log = await db.billing_emails.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return BillingEmailSettings(
+        billing_emails=(client.get("subscription") or {}).get("billing_emails") is not False,
+        accounting_email=client.get("accounting_email") or None,
+        recipients=await _billing_recipients(client),
+        log=[BillingEmailLog(**x) for x in log],
+    )
+
+
+@api_router.get("/billing/clients/{client_id}/emails", response_model=BillingEmailSettings)
+async def client_billing_emails(client_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    return await _email_settings_out(client_id)
+
+
+@api_router.put("/billing/clients/{client_id}/emails", response_model=BillingEmailSettings)
+async def update_client_billing_emails(
+    client_id: str, inp: BillingEmailSettingsInput, current_user: User = Depends(require_roles(Role.SUPERADMIN)),
+):
+    """Billing emails on/off for the client (the banners stay) and its accounting address."""
+    client = await _client_or_404(client_id)
+    changes: Dict[str, Any] = {}
+    if inp.billing_emails is not None:
+        if not client.get("subscription"):
+            raise HTTPException(status_code=400, detail="Client has no subscription")
+        changes["subscription.billing_emails"] = inp.billing_emails
+    if inp.accounting_email is not None:
+        value = normalize_email(inp.accounting_email)
+        if value and not _EMAIL_RE.match(value):
+            raise HTTPException(status_code=400, detail="accounting_email: Not a valid email address")
+        changes["accounting_email"] = value or None
+    if changes:
+        await db.clients.update_one({"id": client_id}, {"$set": changes})
+        await _audit(current_user, "billing.emails_updated", "client", client_id, client["name"], client_id, {
+            k.split(".")[-1]: v for k, v in changes.items()
+        })
+    return await _email_settings_out(client_id)
 
 
 # ---------------- Superadmin tools (PLAN_SUPERADMIN.md, phase D) ----------------
