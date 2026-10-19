@@ -1,10 +1,11 @@
 "use client";
 
+import { Field, fieldInput } from "@/components/FormField";
 import { useLanguage } from "@/lib/i18n";
 import { ClientFormFields } from "@/lib/clientForm";
 import { MODULES, toggleModule } from "@/lib/modules";
 
-const input = "rounded-md border border-border px-3 py-2";
+const field = fieldInput;
 
 // Company + invoice settings inputs shared by the create and edit forms.
 export function ClientFields({
@@ -30,11 +31,21 @@ export function ClientFields({
   return (
     <>
       <h2 className="font-bold text-onSurface">{t("company")}</h2>
-      <input required placeholder={t("companyName")} value={form.name} onChange={(e) => set({ name: e.target.value })} className={input} />
-      <input placeholder={t("address")} value={form.address} onChange={(e) => set({ address: e.target.value })} className={input} />
-      <input placeholder={t("companyEmail")} value={form.email} onChange={(e) => set({ email: e.target.value })} className={input} />
-      <input placeholder={t("companyPhone")} value={form.phone} onChange={(e) => set({ phone: e.target.value })} className={input} />
-      <input placeholder={t("taxIdPib")} value={form.pib} onChange={(e) => set({ pib: e.target.value })} className={input} />
+      <Field label={t("companyName")}>
+        <input required value={form.name} onChange={(e) => set({ name: e.target.value })} className={field} />
+      </Field>
+      <Field label={t("address")}>
+        <input value={form.address} onChange={(e) => set({ address: e.target.value })} className={field} />
+      </Field>
+      <Field label={t("companyEmail")}>
+        <input value={form.email} onChange={(e) => set({ email: e.target.value })} className={field} />
+      </Field>
+      <Field label={t("companyPhone")}>
+        <input value={form.phone} onChange={(e) => set({ phone: e.target.value })} className={field} />
+      </Field>
+      <Field label={t("taxIdPib")}>
+        <input value={form.pib} onChange={(e) => set({ pib: e.target.value })} className={field} />
+      </Field>
 
       {!hideModules && <h2 className="mt-2 font-bold text-onSurface">{t("modules")}</h2>}
       {!hideModules && <p className="-mt-2 text-xs text-muted">{t("modulesHint")}</p>}
@@ -54,49 +65,54 @@ export function ClientFields({
       ))}
 
       <h2 className="mt-2 font-bold text-onSurface">{t("invoiceSettings")}</h2>
-      <input placeholder={t("registrationNumber")} value={form.registration_number} onChange={(e) => set({ registration_number: e.target.value })} className={input} />
-      <input placeholder={t("bankAccount")} value={form.bank_account} onChange={(e) => set({ bank_account: e.target.value })} className={input} />
-      <label className="text-sm font-semibold text-onSurfaceSecondary">
-        {t("invoiceNumbering")}
+      <Field label={t("registrationNumber")}>
+        <input value={form.registration_number} onChange={(e) => set({ registration_number: e.target.value })} className={field} />
+      </Field>
+      <Field label={t("bankAccount")}>
+        <input value={form.bank_account} onChange={(e) => set({ bank_account: e.target.value })} className={field} />
+      </Field>
+      <Field label={t("invoiceNumbering")}>
         <select
           value={form.invoice_numbering}
           onChange={(e) => set({ invoice_numbering: e.target.value as "auto" | "manual" })}
-          className={`${input} mt-1 block w-full`}
+          className={field}
         >
           <option value="auto">{t("numberingAuto")}</option>
           <option value="manual">{t("numberingManual")}</option>
         </select>
-      </label>
+      </Field>
       {form.invoice_numbering === "auto" && (
         <>
-          <input
-            placeholder={t("invoicePrefix")}
-            maxLength={10}
-            value={form.invoice_prefix}
-            onChange={(e) => set({ invoice_prefix: e.target.value.toUpperCase() })}
-            className={input}
-          />
-          <p className="text-xs text-muted">{t("invoicePrefixHint")}</p>
-          <input
-            type="number"
-            min={1}
-            placeholder={`${t("nextInvoiceNumber")}${nextSeqHint ? ` (${nextSeqHint})` : ""}`}
-            value={form.invoice_next_seq}
-            onChange={(e) => set({ invoice_next_seq: e.target.value })}
-            className={input}
-          />
+          <Field label={t("invoicePrefix")}>
+            <input
+              maxLength={10}
+              value={form.invoice_prefix}
+              onChange={(e) => set({ invoice_prefix: e.target.value.toUpperCase() })}
+              className={field}
+            />
+          </Field>
+          <p className="-mt-2 text-xs text-muted">{t("invoicePrefixHint")}</p>
+          <Field label={t("nextInvoiceNumber")}>
+            <input
+              type="number"
+              min={1}
+              placeholder={nextSeqHint ? String(nextSeqHint) : undefined}
+              value={form.invoice_next_seq}
+              onChange={(e) => set({ invoice_next_seq: e.target.value })}
+              className={field}
+            />
+          </Field>
         </>
       )}
 
-      <label className="block text-sm font-semibold text-onSurface">
-        {t("expiryAlertDays")}
+      <Field label={t("expiryAlertDays")}>
         <input
           placeholder="30, 15, 5"
           value={form.expiry_alert_days}
           onChange={(e) => set({ expiry_alert_days: e.target.value })}
-          className={`${input} mt-1 block w-full`}
+          className={field}
         />
-      </label>
+      </Field>
       <p className="-mt-2 text-xs text-muted">{t("expiryAlertDaysHint")}</p>
 
       <div className="flex items-center gap-3">

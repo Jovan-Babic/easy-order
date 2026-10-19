@@ -80,7 +80,7 @@ export function Sidebar({ user }: { user: NavUser }) {
       </header>
       {open && <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={() => setOpen(false)} aria-hidden="true" />}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-surfaceSecondary transition-transform duration-200 md:static md:z-auto md:h-screen md:w-60 md:flex-shrink-0 md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-surfaceSecondary transition-transform duration-200 md:sticky md:top-0 md:z-auto md:h-screen md:w-60 md:flex-shrink-0 md:translate-x-0 ${
           open ? "translate-x-0 shadow-xl" : "-translate-x-full"
         }`}
       >
