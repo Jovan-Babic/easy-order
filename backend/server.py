@@ -134,6 +134,9 @@ async def lifespan(app: FastAPI):
     await db.customers.create_index("client_id")
     await db.products.create_index("client_id")
     await db.focus_items.create_index([("client_id", 1), ("product_id", 1)], unique=True)
+    await db.targets.create_index(
+        [("client_id", 1), ("user_id", 1), ("period_type", 1), ("period", 1), ("metric", 1)], unique=True
+    )
     await db.orders.create_index("client_id")
     await db.orders.create_index([("client_id", 1), ("status", 1), ("created_at", -1)])
     await db.orders.create_index([("client_id", 1), ("created_by_user_id", 1), ("created_at", -1)])
@@ -6802,6 +6805,266 @@ async def remove_focus(
     await get_scoped_or_404("focus_items", focus_id, current_user)
     await db.focus_items.delete_one({"id": focus_id})
     return {"ok": True}
+
+
+# ---------------- Sales targets (PLAN_FOKUS_I_CILJEVI.md) ----------------
+# Targets per sales rep and period (month / quarter / year). Progress is never
+# stored: it is computed from the orders when asked (same rules as the sales
+# statistics: canceled/rejected don't count, shipped orders count by picked_qty).
+TARGET_METRICS = ("revenue", "orders", "customers", "focus_revenue")
+TARGET_PERIOD_TYPES = ("month", "quarter", "year")
+
+
+class TargetSetInput(BaseModel):
+    user_id: str
+    period_type: str
+    period: str  # 2026-03 | 2026-Q1 | 2026
+    values: Dict[str, Optional[float]]  # metric -> target; None/0 removes it
+    client_id: Optional[str] = None  # superadmin only
+
+
+class TargetCopyInput(BaseModel):
+    period_type: str
+    from_period: str
+    to_period: str
+    client_id: Optional[str] = None
+
+
+class TargetRow(BaseModel):
+    user_id: str
+    user_name: str
+    targets: Dict[str, float] = {}
+    achieved: Dict[str, float] = {}
+    previous_year: Dict[str, float] = {}  # achieved in the same period a year earlier
+    pct: Dict[str, float] = {}  # achieved / target, for the metrics with a target
+
+
+class TargetProgress(BaseModel):
+    period_type: str
+    period: str
+    from_date: str
+    to_date: str  # inclusive
+    previous_period: str
+    rows: List[TargetRow]
+
+
+class TargetMonth(BaseModel):
+    period: str
+    targets: Dict[str, float] = {}
+    achieved: Dict[str, float] = {}
+    pct: Dict[str, float] = {}
+
+
+class TargetMe(TargetMonth):
+    days_total: int
+    days_left: int  # including today
+    daily_needed: Dict[str, float] = {}  # still to do per remaining day, for metrics below target
+    projection: Dict[str, float] = {}  # at the current pace by the end of the month
+    history: List[TargetMonth] = []  # previous months, newest first
+
+
+def _period_range(period_type: str, period: str) -> tuple[date, date]:
+    """(first day, first day AFTER the period) of a validated period string."""
+    try:
+        if period_type == "month":
+            start = datetime.strptime(period, "%Y-%m").date()
+            end = date(start.year + (start.month == 12), start.month % 12 + 1, 1)
+        elif period_type == "quarter":
+            year, q = period.split("-Q")
+            if len(year) != 4 or q not in ("1", "2", "3", "4"):
+                raise ValueError
+            start = date(int(year), (int(q) - 1) * 3 + 1, 1)
+            end = date(start.year + (start.month == 10), (start.month + 2) % 12 + 1, 1)
+        elif period_type == "year":
+            if len(period) != 4:
+                raise ValueError
+            start = date(int(period), 1, 1)
+            end = date(start.year + 1, 1, 1)
+        else:
+            raise HTTPException(status_code=400, detail="period_type must be month, quarter or year")
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid period: {period}")
+    return start, end
+
+
+def _year_before(period_type: str, period: str) -> str:
+    if period_type == "year":
+        return str(int(period) - 1)
+    year, rest = period[:4], period[4:]
+    return f"{int(year) - 1}{rest}"
+
+
+def _period_of(day: date, period_type: str) -> str:
+    if period_type == "month":
+        return day.strftime("%Y-%m")
+    if period_type == "quarter":
+        return f"{day.year}-Q{(day.month - 1) // 3 + 1}"
+    return str(day.year)
+
+
+async def _target_achieved(client_id: str, user_ids: List[str], start: date, end: date) -> Dict[str, Dict[str, float]]:
+    """Per sales rep: revenue (net, RSD), orders, distinct customers, focus_revenue for [start, end)."""
+    out: Dict[str, Dict[str, float]] = {u: {m: 0.0 for m in TARGET_METRICS} for u in user_ids}
+    customers: Dict[str, set] = {u: set() for u in user_ids}
+    query = {
+        "client_id": client_id,
+        "created_by_user_id": {"$in": user_ids},
+        "created_at": {"$gte": start.isoformat(), "$lt": end.isoformat()},
+        "status": {"$nin": [OrderStatus.CANCELED.value, OrderStatus.REJECTED.value]},
+    }
+    async for order in db.orders.find(query, {"_id": 0, "created_by_user_id": 1, "customer_id": 1, "status": 1, "items": 1}):
+        row = out[order["created_by_user_id"]]
+        shipped = _status_value(order) == OrderStatus.SHIPPED.value
+        row["orders"] += 1
+        customers[order["created_by_user_id"]].add(order.get("customer_id"))
+        for item in order.get("items", []):
+            net = line_net(item, shipped)
+            row["revenue"] += net
+            if item.get("focus"):
+                row["focus_revenue"] += net
+    for u, row in out.items():
+        row["customers"] = float(len(customers[u]))
+        row["revenue"] = round(row["revenue"], 2)
+        row["focus_revenue"] = round(row["focus_revenue"], 2)
+    return out
+
+
+def _target_pct(targets: Dict[str, float], achieved: Dict[str, float]) -> Dict[str, float]:
+    return {m: round(achieved.get(m, 0) / v * 100, 1) for m, v in targets.items() if v > 0}
+
+
+async def _targets_of(client_id: str, user_ids: List[str], period_type: str, period: str) -> Dict[str, Dict[str, float]]:
+    found: Dict[str, Dict[str, float]] = {u: {} for u in user_ids}
+    async for t in db.targets.find(
+        {"client_id": client_id, "user_id": {"$in": user_ids}, "period_type": period_type, "period": period}, {"_id": 0}
+    ):
+        found[t["user_id"]][t["metric"]] = t["value"]
+    return found
+
+
+async def _sales_reps(client_id: str) -> List[dict]:
+    return await db.users.find(
+        {"client_id": client_id, "role": Role.OPERATOR.value, "active": {"$ne": False}}, {"_id": 0, "id": 1, "name": 1}
+    ).sort("name", 1).to_list(None)
+
+
+def _manager_client(user: User, client_id: Optional[str]) -> str:
+    if user.role == Role.SUPERADMIN:
+        if not client_id:
+            raise HTTPException(status_code=400, detail="client_id is required")
+        return client_id
+    return user.client_id
+
+
+@api_router.get("/targets/progress", response_model=TargetProgress)
+async def targets_progress(
+    period_type: str = "month",
+    period: Optional[str] = None,
+    client_id: Optional[str] = None,
+    current_user: User = Depends(require_module(Module.TARGETS, Role.SUPERADMIN, Role.ADMIN)),
+):
+    """Targets and achievement of every sales rep for one period, plus what the
+    same period a year earlier achieved (to set the next target)."""
+    cid = _manager_client(current_user, client_id)
+    period = period or _period_of(_today(), period_type)
+    start, end = _period_range(period_type, period)
+    reps = await _sales_reps(cid)
+    ids = [r["id"] for r in reps]
+    previous = _year_before(period_type, period)
+    prev_start, prev_end = _period_range(period_type, previous)
+    targets = await _targets_of(cid, ids, period_type, period)
+    achieved = await _target_achieved(cid, ids, start, end)
+    before = await _target_achieved(cid, ids, prev_start, prev_end)
+    rows = [
+        TargetRow(
+            user_id=r["id"], user_name=r["name"], targets=targets[r["id"]], achieved=achieved[r["id"]],
+            previous_year=before[r["id"]], pct=_target_pct(targets[r["id"]], achieved[r["id"]]),
+        )
+        for r in reps
+    ]
+    return TargetProgress(
+        period_type=period_type, period=period, from_date=start.isoformat(),
+        to_date=(end - timedelta(days=1)).isoformat(), previous_period=previous, rows=rows,
+    )
+
+
+@api_router.put("/targets")
+async def set_targets(
+    inp: TargetSetInput, current_user: User = Depends(require_module(Module.TARGETS, Role.SUPERADMIN, Role.ADMIN))
+):
+    cid = _manager_client(current_user, inp.client_id)
+    _period_range(inp.period_type, inp.period)
+    rep = await db.users.find_one({"id": inp.user_id, "client_id": cid, "role": Role.OPERATOR.value}, {"_id": 0, "id": 1})
+    if not rep:
+        raise HTTPException(status_code=404, detail="Not found")
+    for metric, value in inp.values.items():
+        if metric not in TARGET_METRICS:
+            raise HTTPException(status_code=400, detail=f"Unknown metric: {metric}")
+        if value is not None and (value < 0 or value > 1_000_000_000_000):
+            raise HTTPException(status_code=400, detail="Target must be a positive number")
+    key = {"client_id": cid, "user_id": inp.user_id, "period_type": inp.period_type, "period": inp.period}
+    for metric, value in inp.values.items():
+        if not value:
+            await db.targets.delete_one({**key, "metric": metric})
+        else:
+            await db.targets.update_one(
+                {**key, "metric": metric},
+                {"$set": {"value": float(value), "updated_at": now_iso(), "updated_by": current_user.id},
+                 "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now_iso()}},
+                upsert=True,
+            )
+    return {"ok": True}
+
+
+@api_router.post("/targets/copy")
+async def copy_targets(
+    inp: TargetCopyInput, current_user: User = Depends(require_module(Module.TARGETS, Role.SUPERADMIN, Role.ADMIN))
+):
+    """Copies the targets of one period into another; values already set there stay."""
+    cid = _manager_client(current_user, inp.client_id)
+    _period_range(inp.period_type, inp.from_period)
+    _period_range(inp.period_type, inp.to_period)
+    if inp.from_period == inp.to_period:
+        raise HTTPException(status_code=400, detail="Periods must differ")
+    copied = 0
+    async for t in db.targets.find(
+        {"client_id": cid, "period_type": inp.period_type, "period": inp.from_period}, {"_id": 0}
+    ):
+        key = {"client_id": cid, "user_id": t["user_id"], "period_type": inp.period_type, "period": inp.to_period, "metric": t["metric"]}
+        if await db.targets.find_one(key):
+            continue
+        await db.targets.insert_one({**key, "id": str(uuid.uuid4()), "value": t["value"], "created_at": now_iso(), "updated_by": current_user.id})
+        copied += 1
+    return {"copied": copied}
+
+
+@api_router.get("/targets/me", response_model=TargetMe)
+async def my_targets(current_user: User = Depends(require_module(Module.TARGETS, Role.OPERATOR))):
+    """The sales rep's own monthly targets and progress (no other reps, no quarter/year)."""
+    today = _today()
+    period = _period_of(today, "month")
+    start, end = _period_range("month", period)
+    cid, uid = current_user.client_id, current_user.id
+    targets = (await _targets_of(cid, [uid], "month", period))[uid]
+    achieved = (await _target_achieved(cid, [uid], start, end))[uid]
+    days_total = (end - start).days
+    days_left = (end - today).days
+    elapsed = days_total - days_left + 1
+    daily_needed = {m: round((v - achieved[m]) / days_left, 2) for m, v in targets.items() if v > achieved[m] and days_left > 0}
+    projection = {m: round(achieved[m] / elapsed * days_total, 2) for m in TARGET_METRICS}
+    history = []
+    month_start = start
+    for _ in range(3):
+        month_start = (month_start - timedelta(days=1)).replace(day=1)
+        label = _period_of(month_start, "month")
+        h_start, h_end = _period_range("month", label)
+        h_targets = (await _targets_of(cid, [uid], "month", label))[uid]
+        h_achieved = (await _target_achieved(cid, [uid], h_start, h_end))[uid]
+        history.append(TargetMonth(period=label, targets=h_targets, achieved=h_achieved, pct=_target_pct(h_targets, h_achieved)))
+    return TargetMe(
+        period=period, targets=targets, achieved=achieved, pct=_target_pct(targets, achieved),
+        days_total=days_total, days_left=days_left, daily_needed=daily_needed, projection=projection, history=history,
+    )
 
 
 # ---------------- Reports ----------------

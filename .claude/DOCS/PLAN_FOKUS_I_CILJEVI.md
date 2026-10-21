@@ -25,7 +25,8 @@ Admin bira artikle koje komercijalisti treba više da nude.
 
 ## Status
 - Fokus: gotovo (backend `/focus*`, portal `/focus`, mobilna oznaka/filter/napomena pri potvrdi, testovi `tests/test_focus.py`).
-- Ciljevi: u planu.
+- Ciljevi: gotovo (backend `/targets*`, portal `/targets`, mobilni tab "Moj učinak", testovi `tests/test_targets.py`).
+- Veza (`focus_revenue` metrika) je već u ciljevima; izveštaj o fokusu (`GET /focus/report`) nije urađen.
 
 ## Redosled
 1. Fokus: backend, testovi, portal, mobilna.
