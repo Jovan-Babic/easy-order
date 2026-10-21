@@ -22,12 +22,20 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
 import { api, ApiError, Customer, Order, Product, OrderLineInput } from "@/src/api";
+import { isoToDisplay } from "@/src/utils/expiry";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { LangToggle } from "@/src/components/LangToggle";
 import { Button } from "@/src/components/Button";
 import { BarcodeScanner } from "@/src/components/BarcodeScanner";
 import { LOGOUT } from "@/constants/testIds";
 import { cleanQtyInput, formatQty, formatQtyWithUnit, isCountUnit, lineUnit, parseQty, unitOf, useUnits } from "@/src/utils/units";
+
+const FOCUS_REASON_KEY = {
+  stock: "focusReasonStock",
+  expiry: "focusReasonExpiry",
+  promo: "focusReasonPromo",
+  other: "focusReasonOther",
+} as const;
 
 function OrderCatalogScreen() {
   const { t, showToast } = useApp();
@@ -57,6 +65,7 @@ function OrderCatalogScreen() {
   const [confirmingOrder, setConfirmingOrder] = useState(false);
   const [search, setSearch] = useState("");
   const [productSearch, setProductSearch] = useState("");
+  const [focusOnly, setFocusOnly] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
   const [manuFilter, setManuFilter] = useState<string>("__all__");
 
@@ -121,10 +130,17 @@ function OrderCatalogScreen() {
     return Array.from(set).sort();
   }, [products]);
 
+  const focusCount = useMemo(() => products.filter((p) => p.active !== false && !!p.focus).length, [products]);
+  const focusInOrder = useMemo(
+    () => products.some((p) => !!p.focus && Number(String(drafts[p.id] ?? "").replace(",", ".")) > 0),
+    [products, drafts]
+  );
+
   const filteredProducts = useMemo(() => {
     const q = productSearch.trim().toLowerCase();
-    return products.filter((p) => {
+    const list = products.filter((p) => {
       if (p.active === false) return false;
+      if (focusOnly && !p.focus) return false;
       const matchManu = manuFilter === "__all__" || (p.manufacturer || "") === manuFilter;
       const matchSearch =
         !q ||
@@ -133,7 +149,9 @@ function OrderCatalogScreen() {
         (p.barcode || "").toLowerCase() === q;
       return matchManu && matchSearch;
     });
-  }, [products, manuFilter, productSearch]);
+    // Goods in focus first (the sort is stable, so the rest keeps its order).
+    return [...list].sort((a, b) => Number(!!b.focus) - Number(!!a.focus));
+  }, [products, manuFilter, productSearch, focusOnly]);
 
   const stopEditing = (clearDrafts = true) => {
     setEditingOrder(null);
@@ -284,13 +302,28 @@ function OrderCatalogScreen() {
             setScanOpen(false);
           }}
         />
-        {manufacturers.length > 0 && (
+        {(manufacturers.length > 0 || focusCount > 0) && (
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
             style={styles.chipRow}
             contentContainerStyle={styles.chipRowContent}
           >
+            {focusCount > 0 && (
+              <Pressable
+                testID="focus-chip"
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setFocusOnly((v) => !v);
+                }}
+                style={[styles.chip, styles.focusChip, focusOnly && styles.focusChipActive]}
+              >
+                <Ionicons name="star" size={14} color={focusOnly ? "#fff" : colors.warning} />
+                <Text style={[styles.chipText, { color: focusOnly ? "#fff" : colors.warning }]}>
+                  {" "}{t("focusFilter")} ({focusCount})
+                </Text>
+              </Pressable>
+            )}
             {[{ key: "__all__", label: t("allManufacturers") }, ...manufacturers.map((m) => ({ key: m, label: m }))].map(
               (c) => {
                 const active = manuFilter === c.key;
@@ -371,7 +404,46 @@ function OrderCatalogScreen() {
               const overStock =
                 tracked && Number(String(drafts[p.id] ?? "").replace(",", ".")) * unit.factor > available;
               return (
-                <View style={styles.card} testID={`product-card-${p.id}`}>
+                <View style={[styles.card, p.focus && styles.cardFocus]} testID={`product-card-${p.id}`}>
+                  {p.focus && (
+                    <View style={styles.focusBox} testID={`focus-${p.id}`}>
+                      <View style={styles.focusHead}>
+                        <Ionicons name="star" size={14} color={colors.warning} />
+                        <Text style={styles.focusBadgeText}>
+                          {t("focusBadge")} · {t(FOCUS_REASON_KEY[p.focus.reason] ?? "focusReasonOther")}
+                        </Text>
+                      </View>
+                      {!!p.focus.note && <Text style={styles.focusNote}>{p.focus.note}</Text>}
+                      {p.focus.expiry_date && (
+                        <Text style={styles.focusExpiry}>
+                          {t("focusExpires")
+                            .replace("{date}", isoToDisplay(p.focus.expiry_date))
+                            .replace("{qty}", formatQtyWithUnit(p.focus.expiry_qty ?? 0, unit))}
+                        </Text>
+                      )}
+                      {!!p.focus.recommended_discount && (
+                        <View style={styles.focusRecRow}>
+                          <Text style={styles.focusRec}>
+                            {t("focusRecommended").replace("{pct}", String(p.focus.recommended_discount))}
+                          </Text>
+                          {selectedAdditionalDiscount === p.focus.recommended_discount ? (
+                            <Text style={styles.focusApplied}>{t("focusApplied")}</Text>
+                          ) : (
+                            <Pressable
+                              testID={`focus-apply-${p.id}`}
+                              hitSlop={8}
+                              onPress={() => {
+                                Haptics.selectionAsync().catch(() => {});
+                                setAdditionalDiscountSel((prev) => ({ ...prev, [p.id]: p.focus!.recommended_discount ?? 0 }));
+                              }}
+                            >
+                              <Text style={styles.focusApply}>{t("focusApply")}</Text>
+                            </Pressable>
+                          )}
+                        </View>
+                      )}
+                    </View>
+                  )}
                   <View style={styles.cardTop}>
                     <Pressable
                       testID={`product-image-${p.id}`}
@@ -600,6 +672,9 @@ function OrderCatalogScreen() {
                   </View>
                 ))}
               </View>
+            )}
+            {focusCount > 0 && !focusInOrder && (
+              <Text style={styles.confirmFocusHint}>{t("focusNoneInOrder").replace("{n}", String(focusCount))}</Text>
             )}
             <View style={styles.confirmModalActions}>
               <Button
@@ -986,6 +1061,25 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   footerHint: { textAlign: "center", color: colors.brand, fontWeight: "700", marginBottom: spacing.xs },
+  focusChip: { flexDirection: "row", borderColor: colors.warning },
+  focusChipActive: { backgroundColor: colors.warning, borderColor: colors.warning },
+  cardFocus: { borderWidth: 1.5, borderColor: colors.warning },
+  focusBox: {
+    backgroundColor: "#FFF7E6",
+    borderRadius: radius.md,
+    padding: spacing.sm,
+    marginBottom: spacing.sm,
+    gap: 2,
+  },
+  focusHead: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  focusBadgeText: { fontSize: font.sm, fontWeight: "800", color: colors.warning },
+  focusNote: { fontSize: font.sm, color: colors.onSurface },
+  focusExpiry: { fontSize: font.sm, fontWeight: "700", color: colors.error },
+  focusRecRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
+  focusRec: { flex: 1, fontSize: font.sm, color: colors.onSurface },
+  focusApply: { fontSize: font.sm, fontWeight: "800", color: colors.brand },
+  focusApplied: { fontSize: font.sm, fontWeight: "700", color: colors.success },
+  confirmFocusHint: { fontSize: font.sm, color: colors.warning, fontWeight: "700", marginTop: spacing.sm },
   stockLine: { fontSize: font.sm, color: colors.muted, marginTop: spacing.xs },
   footerWarn: { textAlign: "center", color: colors.warning, fontSize: font.sm, marginTop: spacing.sm },
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },

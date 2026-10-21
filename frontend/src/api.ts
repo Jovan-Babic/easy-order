@@ -76,6 +76,17 @@ export type Customer = {
   created_at?: string;
 };
 
+// Goods in focus (module `focus`): set by the admin, shown to sales reps.
+// expiry_* only when the reason is "expiry" (quantity in base units).
+export type FocusInfo = {
+  reason: "stock" | "expiry" | "promo" | "other";
+  note: string;
+  recommended_discount?: number | null; // one of the product's additional discounts
+  active_to?: string | null;
+  expiry_date?: string | null;
+  expiry_qty?: number | null;
+};
+
 export type Product = {
   id: string;
   client_id?: string;
@@ -107,6 +118,7 @@ export type Product = {
   track_expiry?: boolean;
   expired_qty?: number;
   next_expiry?: string | null;
+  focus?: FocusInfo | null;
   created_at?: string;
 };
 
