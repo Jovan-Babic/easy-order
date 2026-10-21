@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { localizedDetail } from "@/lib/errors";
 import { Field, fieldInput } from "@/components/FormField";
+import { money } from "@/lib/orders";
+import { formatQty } from "@/lib/units";
 
 type Reason = "stock" | "expiry" | "promo" | "other";
 const REASONS: Reason[] = ["stock", "expiry", "promo", "other"];
@@ -40,6 +42,14 @@ type Suggestion = {
   expiry_qty: number | null;
   days_left: number | null;
 };
+type Report = {
+  from_date: string;
+  to_date: string;
+  revenue: number;
+  orders: number;
+  products: Array<{ product_id: string; product_name: string; unit_symbol: string; unit_factor: number; qty: number; revenue: number; orders: number }>;
+  reps: Array<{ user_id: string | null; name: string; revenue: number; orders: number }>;
+};
 type Product = { id: string; name: string; active?: boolean; additional_discounts?: number[] };
 type Draft = { id?: string; product_id: string; reason: Reason; note: string; discount: string; active_to: string };
 
@@ -61,6 +71,19 @@ export default function FocusPage() {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [from, setFrom] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+  });
+  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [report, setReport] = useState<Report | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/focus/report?from_date=${from}&to_date=${to}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setReport)
+      .catch(() => setReport(null));
+  }, [from, to]);
 
   const load = useCallback(async () => {
     try {
@@ -240,6 +263,74 @@ export default function FocusPage() {
           </tbody>
         </table>
       </div>
+
+      <section className="mt-10">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-muted">{t("focusReport")}</h2>
+        <p className="mb-3 text-xs text-muted">{t("focusReportHint")}</p>
+        <div className="mb-4 flex flex-wrap items-end gap-3">
+          <label className="text-xs font-semibold text-muted">
+            {t("fromDate")}
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="ml-2 rounded-md border border-border bg-surfaceSecondary px-3 py-1.5 text-sm" />
+          </label>
+          <label className="text-xs font-semibold text-muted">
+            {t("toDate")}
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="ml-2 rounded-md border border-border bg-surfaceSecondary px-3 py-1.5 text-sm" />
+          </label>
+          {report && (
+            <p className="ml-auto text-sm text-onSurfaceSecondary">
+              {t("focusReportRevenue")}: <strong>{money(report.revenue)}</strong> · {t("focusReportOrders")}: <strong>{report.orders}</strong>
+            </p>
+          )}
+        </div>
+        {report && report.products.length === 0 ? (
+          <p className="text-sm text-muted">{t("focusReportEmpty")}</p>
+        ) : (
+          report && (
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-border text-xs uppercase text-muted">
+                    <tr>
+                      <th className="px-4 py-3">{t("focusProduct")}</th>
+                      <th className="px-4 py-3 text-right">{t("focusReportQty")}</th>
+                      <th className="px-4 py-3 text-right">{t("focusReportRevenue")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.products.map((p) => (
+                      <tr key={p.product_id} className="border-b border-border last:border-0">
+                        <td className="px-4 py-3 font-semibold text-onSurface">{p.product_name}</td>
+                        <td className="px-4 py-3 text-right">{formatQty(p.qty, { factor: p.unit_factor })} {p.unit_symbol}</td>
+                        <td className="px-4 py-3 text-right">{money(p.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="overflow-x-auto rounded-lg bg-surfaceSecondary shadow-sm">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-border text-xs uppercase text-muted">
+                    <tr>
+                      <th className="px-4 py-3">{t("focusReportByRep")}</th>
+                      <th className="px-4 py-3 text-right">{t("focusReportOrders")}</th>
+                      <th className="px-4 py-3 text-right">{t("focusReportRevenue")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.reps.map((r) => (
+                      <tr key={r.user_id ?? r.name} className="border-b border-border last:border-0">
+                        <td className="px-4 py-3 font-semibold text-onSurface">{r.name}</td>
+                        <td className="px-4 py-3 text-right">{r.orders}</td>
+                        <td className="px-4 py-3 text-right">{money(r.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )
+        )}
+      </section>
 
       {draft && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={() => setDraft(null)}>

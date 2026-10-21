@@ -160,3 +160,25 @@ def test_module_off_and_other_tenant(superadmin_client):
     other = S.products[0]
     assert admin.post(f"{API}/focus", json={"product_id": other["id"]}).status_code == 404
     superadmin_client.delete(f"{API}/clients/{r.json()['client']['id']}")
+
+
+def test_report_counts_only_focus_lines(api_client):
+    p, q = _product(api_client), _product(api_client)
+    f = api_client.post(f"{API}/focus", json={"product_id": p["id"]}).json()
+    before = api_client.get(f"{API}/focus/report").json()
+    r = S.op.post(f"{API}/orders", json={"customer_id": S.customer["id"], "items": [
+        {"product_id": p["id"], "ordered_qty": 3}, {"product_id": q["id"], "ordered_qty": 5},
+    ]})
+    S.orders.append(r.json()["id"])
+    canceled = S.op.post(f"{API}/orders", json={"customer_id": S.customer["id"], "items": [{"product_id": p["id"], "ordered_qty": 7}]})
+    S.orders.append(canceled.json()["id"])
+    S.op.post(f"{API}/orders/{canceled.json()['id']}/status", json={"status": "canceled"})
+    rep = api_client.get(f"{API}/focus/report").json()
+    assert round(rep["revenue"] - before["revenue"], 2) == 300  # 3 x 100, the other product and the canceled order don't count
+    row = next(x for x in rep["products"] if x["product_id"] == p["id"])
+    assert row["qty"] == 3 and row["revenue"] == 300 and row["orders"] == 1
+    assert all(x["product_id"] != q["id"] for x in rep["products"])
+    assert any(x["name"] == "TEST focus-op" for x in rep["reps"])
+    assert S.op.get(f"{API}/focus/report").status_code == 403
+    assert api_client.get(f"{API}/focus/report", params={"from_date": "2026-02-01", "to_date": "2026-01-01"}).status_code == 400
+    api_client.delete(f"{API}/focus/{f['id']}")

@@ -6779,6 +6779,87 @@ async def add_focus(
     )
 
 
+class FocusReportProduct(BaseModel):
+    product_id: str
+    product_name: str
+    unit_symbol: str = "kom"
+    unit_factor: int = 1
+    qty: int = 0  # base units, by picked_qty once shipped
+    revenue: float = 0
+    orders: int = 0
+
+
+class FocusReportRep(BaseModel):
+    user_id: Optional[str] = None
+    name: str
+    revenue: float = 0
+    orders: int = 0
+
+
+class FocusReport(BaseModel):
+    from_date: str
+    to_date: str
+    revenue: float = 0
+    orders: int = 0
+    products: List[FocusReportProduct]
+    reps: List[FocusReportRep]
+
+
+@api_router.get("/focus/report", response_model=FocusReport)
+async def focus_report(
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD, default: first day of this month"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD inclusive, default: today"),
+    client_id: Optional[str] = None,
+    current_user: User = Depends(require_module(Module.FOCUS, Role.SUPERADMIN, Role.ADMIN)),
+):
+    """What was sold from goods in focus: order lines flagged `focus` when the
+    order was placed (not canceled/rejected, shipped orders by picked_qty)."""
+    cid = _manager_client(current_user, client_id)
+    today = _today()
+    start = _parse_date(from_date, "from_date").date() if from_date else today.replace(day=1)
+    end = _parse_date(to_date, "to_date").date() if to_date else today
+    if end < start:
+        raise HTTPException(status_code=400, detail="to_date is before from_date")
+    query = {
+        "client_id": cid,
+        "created_at": {"$gte": start.isoformat(), "$lt": (end + timedelta(days=1)).isoformat()},
+        "status": {"$nin": [OrderStatus.CANCELED.value, OrderStatus.REJECTED.value]},
+        "items.focus": True,
+    }
+    products: Dict[str, FocusReportProduct] = {}
+    reps: Dict[str, FocusReportRep] = {}
+    total = 0.0
+    order_count = 0
+    async for order in db.orders.find(query, {"_id": 0}):
+        shipped = _status_value(order) == OrderStatus.SHIPPED.value
+        rep = reps.setdefault(
+            order.get("created_by_user_id") or "?",
+            FocusReportRep(user_id=order.get("created_by_user_id"), name=order.get("created_by_name") or "-"),
+        )
+        rep.orders += 1
+        order_count += 1
+        for item in order.get("items", []):
+            if not item.get("focus"):
+                continue
+            net = line_net(item, shipped)
+            row = products.setdefault(item["product_id"], FocusReportProduct(
+                product_id=item["product_id"], product_name=item.get("name", ""),
+                unit_symbol=item.get("unit_symbol") or "kom", unit_factor=item.get("unit_factor") or 1,
+            ))
+            row.qty += effective_qty(item, shipped)
+            row.revenue += net
+            row.orders += 1
+            rep.revenue += net
+            total += net
+    for row in (*products.values(), *reps.values()):
+        row.revenue = round(row.revenue, 2)
+    return FocusReport(
+        from_date=start.isoformat(), to_date=end.isoformat(), revenue=round(total, 2), orders=order_count,
+        products=sorted(products.values(), key=lambda r: -r.revenue),
+        reps=sorted(reps.values(), key=lambda r: -r.revenue),
+    )
+
+
 @api_router.put("/focus/{focus_id}", response_model=FocusItemOut)
 async def update_focus(
     focus_id: str, inp: FocusInput,
