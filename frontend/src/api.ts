@@ -76,6 +76,17 @@ export type Customer = {
   created_at?: string;
 };
 
+// Goods in focus (module `focus`): set by the admin, shown to sales reps.
+// expiry_* only when the reason is "expiry" (quantity in base units).
+export type FocusInfo = {
+  reason: "stock" | "expiry" | "promo" | "other";
+  note: string;
+  recommended_discount?: number | null; // one of the product's additional discounts
+  active_to?: string | null;
+  expiry_date?: string | null;
+  expiry_qty?: number | null;
+};
+
 export type Product = {
   id: string;
   client_id?: string;
@@ -107,7 +118,24 @@ export type Product = {
   track_expiry?: boolean;
   expired_qty?: number;
   next_expiry?: string | null;
+  focus?: FocusInfo | null;
   created_at?: string;
+};
+
+// Sales targets (module `targets`): the sales rep's own monthly progress.
+export type TargetMetric = "revenue" | "orders" | "customers" | "focus_revenue";
+export type TargetMonth = {
+  period: string; // YYYY-MM
+  targets: Partial<Record<TargetMetric, number>>;
+  achieved: Partial<Record<TargetMetric, number>>;
+  pct: Partial<Record<TargetMetric, number>>;
+};
+export type TargetMe = TargetMonth & {
+  days_total: number;
+  days_left: number;
+  daily_needed: Partial<Record<TargetMetric, number>>;
+  projection: Partial<Record<TargetMetric, number>>;
+  history: TargetMonth[];
 };
 
 export type StockBatch = {
@@ -330,6 +358,7 @@ export const api = {
     req<{ ok: boolean }>(`/upload-image?url=${encodeURIComponent(url)}`, { method: 'DELETE' }),
 
   // orders
+  myTargets: () => req<TargetMe>("/targets/me"),
   listOrders: (opts?: { customerId?: string; status?: OrderStatus[] }) => {
     const qs = new URLSearchParams();
     if (opts?.customerId) qs.set("customer_id", opts.customerId);
