@@ -2,7 +2,7 @@
 uloga: operator
 naslov: Uputstvo za komercijalistu
 aplikacija: Easy Order za Android
-verzija: 1.0
+verzija: 1.1
 ---
 
 # Uputstvo za komercijalistu
@@ -16,6 +16,8 @@ Easy Order je aplikacija u kojoj kod kupca primate porudžbinu: izaberete kupca,
 > 3. **Upiši količinu** i po potrebi izaberi **dodatni popust**.
 > 4. Dole pritisni **Potvrdi**, proveri spisak i ponovo **Potvrdi**.
 > 5. Na ekranu **Faktura** pošalji narudžbenicu kupcu (email, PDF ili kopiraj).
+>
+> Pazite na artikle označene kao **U fokusu** – to su artikli koje vaša firma želi da se više nude (odeljak 5). Napredak prema vašem cilju pratite na kartici **Moj učinak** (odeljak 9).
 
 Na slikama su važni delovi uokvireni narandžastim okvirom, a broj u krugu odgovara broju u tekstu ispod slike.
 
@@ -57,14 +59,14 @@ Pritisnite **Promena lozinke** i aplikacija se otvara. Sledeći put se prijavlju
 
 ## 2. Glavni ekran – Porudžbina
 
-Posle prijave otvara se ekran **Porudžbina**. Na dnu ekrana su dve kartice: **Porudžbina** (unos) i **Istorija** (vaše porudžbine).
+Posle prijave otvara se ekran **Porudžbina**. Na dnu ekrana su kartice: **Porudžbina** (unos), **Moj učinak** (vaš cilj i napredak, vidi se samo ako ga vaša firma koristi) i **Istorija** (vaše porudžbine).
 
 ![Glavni ekran](slike/komercijalista/03-glavni-ekran.png)
 
 1. **Izaberi kupca** – za koga pravite porudžbinu. Dok kupac nije izabran, porudžbina ne može da se potvrdi.
 2. **Pretraga** – kucajte deo naziva artikla ili proizvođača.
 3. **Barkod** – otvara kameru: skenirate barkod sa artikla i aplikacija odmah prikaže taj artikal.
-4. **Proizvođači** – brzi filter: dodirnite proizvođača da vidite samo njegove artikle, **Svi** vraća ceo katalog.
+4. **Proizvođači** – brzi filter: dodirnite proizvođača da vidite samo njegove artikle, **Svi** vraća ceo katalog. Ako vaša firma ističe robu u fokusu, ispred proizvođača stoji i narandžasti čip **Fokus** (odeljak 5).
 5. **Kartica artikla** – ovde unosite količinu i popust (objašnjeno u odeljku 4).
 6. **SR / EN** – jezik aplikacije.
 7. **Odjava**.
@@ -100,7 +102,46 @@ Kupca možete da promenite bilo kada pre potvrde, uneti artikli ostaju.
 
 ---
 
-## 5. Primer: porudžbina za Maxi Market
+## 5. Roba u fokusu
+
+Administrator može da označi artikle na koje želi da obratite posebnu pažnju: nešto ima previše na lageru, nekom artiklu se bliži rok trajanja ili je u akciji. Takvi artikli su u katalogu naglašeni, pa ih lako primetite i ponudite kupcu. Ova funkcija se vidi samo ako je vaša firma koristi.
+
+![Roba u fokusu u katalogu](slike/komercijalista/18-fokus-katalog.png)
+
+1. **Fokus (2)** – čip sa brojem artikala u fokusu. Dodir prikazuje samo te artikle, drugi dodir vraća ceo katalog. Artikli u fokusu su u katalogu uvek na vrhu liste.
+2. **Narandžasta traka na kartici** – kaže zašto je artikal u fokusu i šta administrator poručuje (napomena). Cela kartica ima narandžasti okvir.
+3. **Primeni** – preporučeni dodatni popust (objašnjeno niže).
+
+### Zašto je artikal u fokusu
+
+| Oznaka | Značenje |
+|---|---|
+| **Višak na lageru** | Firma ima više robe nego što se prodaje. Ponudite je kupcima. |
+| **Ističe rok** | Roku trajanja se bliži kraj. Vidite datum i količinu koja ističe. |
+| **Akcija** | Artikal je u akciji. |
+| **Preporuka** | Administrator preporučuje artikal, a razlog je u napomeni. |
+
+> **Rok trajanja – obavestite kupca.** Kod artikala sa oznakom **Ističe rok** crvenom bojom piše datum i količina (npr. „Ističe 31.10.2026: 20 kom“). Ako je rok blizu, dužni ste da kupca upozorite pre nego što on poruči. Za artikle koji nisu u fokusu rok se ne prikazuje.
+
+### Preporučeni dodatni popust
+Administrator može da preporuči dodatni popust za artikal (npr. kad robi ističe rok). Dodirnite **Primeni** i polje **Dodatni popust** se postavlja na preporučenu vrednost. Posle toga piše **Primenjeno**.
+
+![Primena preporučenog popusta](slike/komercijalista/19-fokus-primeni.png)
+
+1. **Primenjeno** – preporučeni popust je postavljen.
+2. **Dodatni popust** je sada **5%**. Možete da ga promenite na drugu ponuđenu vrednost, preporuka nije obaveza.
+3. **Ukupan popust** je zbir popusta dobavljača i dodatnog popusta (kao i inače).
+
+### Podsetnik pri potvrdi
+Ako u porudžbini nema nijednog artikla iz fokusa, pri potvrdi se pojavi narandžasta napomena. Ne sprečava vas da pošaljete porudžbinu, samo vas podseća da proverite da li ste kupcu ponudili robu iz fokusa.
+
+![Podsetnik pri potvrdi](slike/komercijalista/20-fokus-podsetnik.png)
+
+1. **U porudžbini nema artikala iz fokusa (2 u ponudi)** – broj u zagradi je koliko artikala je trenutno u fokusu.
+
+---
+
+## 6. Primer: porudžbina za Maxi Market
 
 Kupac Maxi Market d.o.o. naručuje:
 
@@ -145,7 +186,7 @@ U pretragu ukucajte **gauda**. Kod artikala koji se prodaju na kilogram (litar, 
 2. **Količina (kg)**: 2,5 znači 2,5 kg.
 
 ### Ako naručite više nego što je slobodno
-Aplikacija vas upozori, ali vas ne sprečava da pošaljete porudžbinu. Magacin će poslati koliko ima, a na porudžbini ćete videti stvarno poslatu količinu (odeljak 7).
+Aplikacija vas upozori, ali vas ne sprečava da pošaljete porudžbinu. Magacin će poslati koliko ima, a na porudžbini ćete videti stvarno poslatu količinu (odeljak 8).
 
 ![Upozorenje za stanje](slike/komercijalista/10-vise-od-stanja.png)
 
@@ -173,7 +214,7 @@ Otvara se spisak za proveru: svaki artikal sa količinom i popustima.
 
 ---
 
-## 6. Faktura (narudžbenica) – slanje kupcu
+## 7. Faktura (narudžbenica) – slanje kupcu
 
 Posle potvrde otvara se ekran **Faktura** sa svim podacima kupca, stavkama i ukupnim iznosom.
 
@@ -193,7 +234,7 @@ Strelica gore levo vraća vas nazad. Istu fakturu kasnije otvarate iz **Istorije
 
 ---
 
-## 7. Istorija – praćenje porudžbina
+## 8. Istorija – praćenje porudžbina
 
 Kartica **Istorija** (dole desno) prikazuje sve vaše porudžbine, najnovije na vrhu. Dodirom na porudžbinu otvarate njenu fakturu.
 
@@ -229,7 +270,40 @@ Promenite šta treba i pritisnite **Potvrdi**. Ako je magacin u međuvremenu pre
 
 ---
 
-## 8. Skeniranje barkoda
+## 9. Moj učinak – cilj i napredak
+
+Ako vaša firma prati ciljeve prodaje, administrator vam postavlja cilj za tekući mesec, a vi na kartici **Moj učinak** (dole u sredini) vidite koliko ste do sada ostvarili. Vidite samo svoje rezultate, ne i rezultate kolega.
+
+![Moj učinak](slike/komercijalista/21-moj-ucinak.png)
+
+1. **Prodaja (bez PDV)** – vaša prodaja u tekućem mesecu od ukupnog cilja. Ispod su:
+   - traka sa **procentom** ostvarenja,
+   - **Ostalo** – koliko još fali do cilja,
+   - **Potrebno … dnevno** – koliko dnevno treba da ostvarite do kraja meseca (uz broj dana koji je ostao),
+   - **Procena do kraja meseca** – gde ćete biti ako nastavite istim tempom.
+2. **Roba u fokusu** – koliko ste prodali artikala koje je administrator označio kao fokus. Kad je cilj dostignut, traka postaje zelena i piše **Cilj ostvaren**.
+
+Ispod su još kartice za **Porudžbine** (broj porudžbina) i **Kupci** (broj različitih kupaca kojima ste prodali), ako je za njih postavljen cilj.
+
+### Šta se računa
+- Računa se svaka porudžbina koju ste napravili u tekućem mesecu, čim je potvrdite. Ne čeka se da magacin pošalje robu.
+- **Otkazane i odbijene** porudžbine se ne računaju.
+- Kad magacin pošalje manje nego što je naručeno, računa se stvarno poslata količina.
+- Iznosi su **bez PDV-a**, sa uračunatim popustima.
+- Svakog prvog u mesecu brojači kreću od nule. Cilj za novi mesec postavlja administrator.
+
+### Prethodni meseci
+Na dnu ekrana su poslednja tri meseca, da vidite kako ste prošli.
+
+![Prethodni meseci](slike/komercijalista/22-moj-ucinak-istorija.png)
+
+1. **Prethodni meseci** – za svaki mesec ostvarenje i cilj (ako je bio postavljen) sa procentom.
+
+> Ekran osvežavate povlačenjem nadole. Ako piše da cilj još nije postavljen, javite se administratoru, a do tada vidite samo ono što ste ostvarili.
+
+---
+
+## 10. Skeniranje barkoda
 
 Dodirnite ikonicu barkoda u polju za pretragu (odeljak 2, broj 3).
 
@@ -241,7 +315,7 @@ Ako se ne prikaže nijedan artikal (**Nema proizvoda**), taj barkod još nije up
 
 ---
 
-## 9. Obaveštenja u aplikaciji
+## 11. Obaveštenja u aplikaciji
 
 - **Nova verzija aplikacije** – pri pokretanju se može pojaviti poruka **Dostupna je nova verzija**. Izaberite **Preuzmi sada** i instalirajte (podaci ostaju).
 - **Izmene su spremne** – manja izmena je preuzeta sama; izaberite restart ili sačekajte sledeće pokretanje.
@@ -249,7 +323,7 @@ Ako se ne prikaže nijedan artikal (**Nema proizvoda**), taj barkod još nije up
 
 ---
 
-## 10. Česta pitanja i problemi
+## 12. Česta pitanja i problemi
 
 **„Server nije dostupan. Proverite internet vezu.“**
 Telefon nema internet. Uključite mobilne podatke ili Wi-Fi i pokušajte ponovo. Unete količine ostaju dok ne zatvorite aplikaciju.
@@ -259,6 +333,12 @@ Pet puta je uneta pogrešna lozinka. Sačekajte 15 minuta ili koristite **Zabora
 
 **„Nalog ili firma su deaktivirani“ / „Pretplata je istekla“**
 Obratite se administratoru vaše firme.
+
+**Šta znači narandžasti okvir i oznaka „U fokusu“ na artiklu?**
+Administrator želi da taj artikal ponudite kupcu (višak, bliži rok ili akcija). Vidi odeljak 5.
+
+**Ne vidim karticu „Moj učinak“.**
+Vaša firma ne koristi praćenje ciljeva. Pitajte administratora.
 
 **Ne vidim neki artikal.**
 Artikal je neaktivan ili ne postoji u katalogu. Javite administratoru.

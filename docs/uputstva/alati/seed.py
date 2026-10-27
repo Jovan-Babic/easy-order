@@ -1,8 +1,12 @@
 """Demo data for the user-guide screenshots (in-memory test backend only)."""
 import json, os, requests
+from datetime import date, timedelta
 A = "http://localhost:8000/api"
 IMG = "http://localhost:8099/img"
 PW = "Primer2026!"
+
+def in_days(n):
+    return (date.today() + timedelta(days=n)).isoformat()
 
 def session(email, password):
     s = requests.Session()
@@ -28,6 +32,7 @@ def user(name, email, role):
     return activate(email, r.json()["temporary_password"])
 
 op = user("Marko Petrović", "marko@morava-primer.rs", "operator")
+op2 = user("Ivana Jovanović", "ivana@morava-primer.rs", "operator")
 wh = user("Nikola Magacin", "nikola@morava-primer.rs", "warehouse")
 
 customers = {}
@@ -40,6 +45,11 @@ for c in [
     r = admin.post(f"{A}/customers", json={"name": c[0], "address": c[1], "email": c[2], "pib": c[3], "phone": c[4]}); r.raise_for_status()
     customers[c[0]] = r.json()["id"]
 
+BARCODES = {"jogurt": "8600001000011", "mleko": "8600001000028", "gauda": "8600001000035", "plazma": "8600001000042",
+            "cokolada": "8600001000059", "kafa": "8600001000066", "sok": "8600001000073", "voda": "8600001000080"}
+BOX_BARCODES = {"jogurt": "8600001100018", "mleko": "8600001100025", "plazma": "8600001100049", "sok": "8600001100070"}
+# products with expiry tracking: (days from today, pieces); a negative number = already expired
+BATCHES = {"sok": [(4, 20), (6, 80), (90, 50)], "cokolada": [(-2, 10), (25, 20)]}
 products = {}
 for key, name, manu, price, ppp, bpt, disc, add, stock, unit in [
     ("jogurt", "Jogurt 1,5% 1 l", "Mlekara Zlatibor", 145.0, 12, 60, 5, [0, 2, 3, 5], 480, "kom"),
@@ -53,10 +63,14 @@ for key, name, manu, price, ppp, bpt, disc, add, stock, unit in [
 ]:
     body = {"name": name, "manufacturer": manu, "price_no_vat": price, "vat_rate": 20 if key != "voda" else 20,
             "discount": disc, "discounts": [disc], "additional_discounts": add, "pieces_per_package": ppp,
-            "boxes_per_transport": bpt, "image": f"{IMG}/{key}.png", "unit": unit, "active": True}
+            "boxes_per_transport": bpt, "image": f"{IMG}/{key}.png", "unit": unit, "active": True,
+            "barcode": BARCODES.get(key), "package_barcode": BOX_BARCODES.get(key) if ppp else None,
+            "track_expiry": key in BATCHES}
     r = admin.post(f"{A}/products", json=body); r.raise_for_status()
     products[key] = r.json()["id"]
-    if stock:
+    if key in BATCHES:  # expiry tracking: stock per expiry date
+        admin.post(f"{A}/stock/receipts", json={"items": [{"product_id": products[key], "qty": q, "expiry_date": in_days(d)} for d, q in BATCHES[key]], "note": "Početno stanje"}).raise_for_status()
+    elif stock:
         admin.post(f"{A}/stock/receipts", json={"items": [{"product_id": products[key], "qty": stock}], "note": "Početno stanje"}).raise_for_status()
 # kafa: 12 on hand, all reserved soon -> "slobodno" goes to 0
 admin.post(f"{A}/stock/receipts", json={"items": [{"product_id": products["kafa"], "qty": 12}]}).raise_for_status()
@@ -79,7 +93,18 @@ status(o2, "in_progress"); status(o2, "rejected", "Kupac traži isporuku tek u p
 o3 = order("Market Lipa", [("voda", 120, 1), ("kafa", 12, 0)])
 status(o3, "in_progress")
 o4 = order("Maxi Market d.o.o.", [("mleko", 24, 2), ("gauda", 5000, 0)])
-json.dump({"customers": customers, "products": products, "orders": [o1["id"], o2["id"], o3["id"], o4["id"]],
+
+def order2(cust, lines):
+    items = [{"product_id": products[k], "ordered_qty": q, "additional_discount": a} for k, q, a in lines]
+    r = op2.post(f"{A}/orders", json={"customer_id": customers[cust], "items": items}); r.raise_for_status()
+    return r.json()
+
+# a queue for the warehouse screenshots (the second rep, so the first rep's history stays as it was)
+o5 = order2("Delikates Sunce", [("sok", 36, 0), ("jogurt", 24, 2), ("gauda", 3000, 0)])
+o6 = order2("Market Lipa", [("plazma", 20, 0), ("cokolada", 6, 0)])
+o7 = order2("Prodavnica Kod Mike", [("voda", 48, 0), ("mleko", 12, 0)])
+json.dump({"customers": customers, "products": products, "orders": [o1["id"], o2["id"], o3["id"], o4["id"], o5["id"], o6["id"], o7["id"]],
+           "warehouse": "nikola@morava-primer.rs", "admin": "jelena@morava-primer.rs",
            "operator": "marko@morava-primer.rs", "password": PW},
           open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed.json"), "w"), indent=1)
 print("ok")
