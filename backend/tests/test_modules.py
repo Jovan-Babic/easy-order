@@ -41,7 +41,7 @@ def _invite(admin, role):
 
 def test_default_client_has_every_module(superadmin_client):
     client, admin = _new_client(superadmin_client)
-    assert client["modules"] == ["warehouse", "stock", "expiry", "reports"]
+    assert client["modules"] == ["warehouse", "stock", "expiry", "reports", "focus", "targets"]
     assert admin.get(f"{API}/auth/me").json()["modules"] == client["modules"]
 
 
@@ -50,7 +50,7 @@ def test_login_returns_modules(superadmin_client):
     assert client["modules"] == ["warehouse"]
     # superadmin is not tied to a client: every module
     me = superadmin_client.get(f"{API}/auth/me").json()
-    assert me["modules"] == ["warehouse", "stock", "expiry", "reports"]
+    assert me["modules"] == ["warehouse", "stock", "expiry", "reports", "focus", "targets"]
 
 
 def test_dependencies_are_validated(superadmin_client):

@@ -130,8 +130,14 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
             </option>
           ))}
         </select>
-        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="min-w-0 flex-1 rounded-md border border-border px-3 py-2 text-sm md:flex-none" />
-        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="min-w-0 flex-1 rounded-md border border-border px-3 py-2 text-sm md:flex-none" />
+        <label className="flex min-w-0 flex-1 items-center gap-2 text-xs font-semibold text-muted md:flex-none">
+          {t("fromDate")}
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="min-w-0 flex-1 rounded-md border border-border px-3 py-2 text-sm font-normal text-onSurface" />
+        </label>
+        <label className="flex min-w-0 flex-1 items-center gap-2 text-xs font-semibold text-muted md:flex-none">
+          {t("toDate")}
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="min-w-0 flex-1 rounded-md border border-border px-3 py-2 text-sm font-normal text-onSurface" />
+        </label>
         <div className="ml-auto flex flex-wrap gap-3">
           <button className={secondary} onClick={exportCsv} disabled={items.length === 0}>
             {t("payExportCsv")}

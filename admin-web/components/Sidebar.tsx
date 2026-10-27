@@ -32,6 +32,8 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/customers", labelKey: "customers", roles: ["admin"] },
   { href: "/warehouse", labelKey: "warehouse", roles: ["admin", "warehouse"], module: "warehouse" },
   { href: "/reports", labelKey: "reports", roles: ["admin"], module: "reports" },
+  { href: "/focus", labelKey: "focus", roles: ["admin"], module: "focus" },
+  { href: "/targets", labelKey: "targets", roles: ["admin"], module: "targets" },
   { href: "/stock", labelKey: "stock", roles: ["admin", "warehouse"], module: "stock" },
   { href: "/orders", labelKey: "orders", roles: ["admin", "warehouse"] },
   { href: "/app", labelKey: "app", roles: ["superadmin", "admin", "warehouse"] },
@@ -80,7 +82,7 @@ export function Sidebar({ user }: { user: NavUser }) {
       </header>
       {open && <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={() => setOpen(false)} aria-hidden="true" />}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-surfaceSecondary transition-transform duration-200 md:static md:z-auto md:h-screen md:w-60 md:flex-shrink-0 md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-surfaceSecondary transition-transform duration-200 md:sticky md:top-0 md:z-auto md:h-screen md:w-60 md:flex-shrink-0 md:translate-x-0 ${
           open ? "translate-x-0 shadow-xl" : "-translate-x-full"
         }`}
       >

@@ -189,21 +189,25 @@ export default function ClientsPage() {
           />
 
           <h2 className="mt-2 font-bold text-onSurface">{t("firstAdminUser")}</h2>
-          <input
-            required
-            placeholder={t("adminName")}
-            value={admin.admin_name}
-            onChange={(e) => setAdmin({ ...admin, admin_name: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
-          <input
-            required
-            type="email"
-            placeholder={t("adminEmail")}
-            value={admin.admin_email}
-            onChange={(e) => setAdmin({ ...admin, admin_email: e.target.value })}
-            className="rounded-md border border-border px-3 py-2"
-          />
+          <label className="block text-sm font-semibold text-onSurfaceSecondary">
+            {t("adminName")}
+            <input
+              required
+              value={admin.admin_name}
+              onChange={(e) => setAdmin({ ...admin, admin_name: e.target.value })}
+              className="mt-1 block w-full rounded-md border border-border px-3 py-2 font-normal text-onSurface"
+            />
+          </label>
+          <label className="block text-sm font-semibold text-onSurfaceSecondary">
+            {t("adminEmail")}
+            <input
+              required
+              type="email"
+              value={admin.admin_email}
+              onChange={(e) => setAdmin({ ...admin, admin_email: e.target.value })}
+              className="mt-1 block w-full rounded-md border border-border px-3 py-2 font-normal text-onSurface"
+            />
+          </label>
           <p className="text-sm text-muted">{t("inviteInfo")}</p>
 
           {error && <p className="text-sm text-error">{error}</p>}

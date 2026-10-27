@@ -133,6 +133,10 @@ async def lifespan(app: FastAPI):
     db = mongo_client[os.environ["DB_NAME"]]
     await db.customers.create_index("client_id")
     await db.products.create_index("client_id")
+    await db.focus_items.create_index([("client_id", 1), ("product_id", 1)], unique=True)
+    await db.targets.create_index(
+        [("client_id", 1), ("user_id", 1), ("period_type", 1), ("period", 1), ("metric", 1)], unique=True
+    )
     await db.orders.create_index("client_id")
     await db.orders.create_index([("client_id", 1), ("status", 1), ("created_at", -1)])
     await db.orders.create_index([("client_id", 1), ("created_by_user_id", 1), ("created_at", -1)])
@@ -223,6 +227,8 @@ class Module(str, Enum):
     STOCK = "stock"  # stock levels, receipts, counts, movements, deduction on shipping
     EXPIRY = "expiry"  # expiry dates, batches, FEFO, alerts
     REPORTS = "reports"  # order reports
+    FOCUS = "focus"  # goods in focus: products the sales reps should push (PLAN_FOKUS_I_CILJEVI.md)
+    TARGETS = "targets"  # sales targets and progress per sales rep
 
 
 ALL_MODULES = [m.value for m in Module]
@@ -631,8 +637,21 @@ class Product(BaseModel):
     created_at: str = Field(default_factory=now_iso)
 
 
+class FocusInfo(BaseModel):
+    """Why a product is "in focus" (module `focus`), as sales reps see it. The
+    expiry fields are the one exception to "reps never see expiry data": only
+    for focus items with reason `expiry`, so they can warn their customers."""
+    reason: str
+    note: str = ""
+    recommended_discount: Optional[float] = None
+    active_to: Optional[str] = None
+    expiry_date: Optional[str] = None
+    expiry_qty: Optional[int] = None
+
+
 class ProductOut(Product):
     """List response: stock plus what open orders (new/in_progress) reserve."""
+    focus: Optional[FocusInfo] = None
     reserved_qty: int = 0
     available_qty: Optional[int] = None  # stock_qty - reserved_qty - expired_qty; None when untracked
     # Expiry info is for warehouse/admin only; sales reps always get the defaults.
@@ -693,6 +712,9 @@ class OrderItem(BaseModel):
     unit_symbol: str = "kom"
     unit_factor: int = 1
     ordered_qty: int = 0
+    # The product was "in focus" when the order was placed (snapshot, for the
+    # focus_revenue target and the focus report).
+    focus: bool = False
     # Set by the warehouse while packing; None = not checked yet.
     picked_qty: Optional[int] = None
     # Only for products with expiry tracking, filled when packed/shipped.
@@ -4797,7 +4819,12 @@ async def list_products(current_user: User = Depends(get_current_user)):
     docs = await db.products.find(visible, {"_id": 0}).sort("created_at", 1).to_list(None)
     reserved = await _reserved_by_product(scope)
     expiry = await _expiry_info(scope)
-    return [_product_out(v, reserved.get(v["id"], 0), expiry.get(v["id"]), current_user) for v in docs]
+    out = [_product_out(v, reserved.get(v["id"], 0), expiry.get(v["id"]), current_user) for v in docs]
+    if has_module(current_user, Module.FOCUS):
+        focus = await _focus_by_product(scope)
+        for item in out:
+            item.focus = focus.get(item.id)
+    return out
 
 
 @api_router.post("/products", response_model=Product)
@@ -4898,6 +4925,7 @@ async def delete_product(product_id: str, current_user: User = Depends(require_m
     existing = await get_scoped_or_404("products", product_id, current_user)
     await db.products.delete_one({"id": product_id})
     await db.stock_batches.delete_many({"product_id": product_id})
+    await db.focus_items.delete_many({"product_id": product_id})
     await _delete_product_image(existing.get("image"))
     return {"ok": True}
 
@@ -5659,6 +5687,7 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
     unit_codes = list({p.get("unit") or "kom" for p in product_docs})
     units = {u["code"]: u async for u in db.units.find({"code": {"$in": unit_codes}}, {"_id": 0})}
 
+    focus_ids = set(await _focus_by_product({"client_id": client_id})) if await client_has_module(client_id, Module.FOCUS) else set()
     items: List[OrderItem] = []
     for line in inp.items:
         product = products.get(line.product_id)
@@ -5685,6 +5714,7 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
             discount=_allowed_supplier_discount(product, line.discount),
             additional_discount=_allowed_additional_discount(product, line.additional_discount),
             ordered_qty=line.ordered_qty,
+            focus=product["id"] in focus_ids,
         ))
     return customer, items
 
@@ -6493,6 +6523,629 @@ async def stock_movements(
         query["product_id"] = product_id
     docs = await db.stock_movements.find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(None)
     return [StockMovement(**d) for d in docs]
+
+
+# ---------------- Goods in focus (PLAN_FOKUS_I_CILJEVI.md) ----------------
+FOCUS_REASONS = ("stock", "expiry", "promo", "other")
+FOCUS_SUGGESTION_COVER_DAYS = 90  # stock lasting longer than this at the last 30 days' pace -> suggestion
+FOCUS_SUGGESTION_LIMIT = 10
+
+
+class FocusInput(BaseModel):
+    product_id: Optional[str] = None  # create only
+    reason: str = "other"
+    note: Optional[str] = ""
+    recommended_discount: Optional[float] = None  # one of the product's additional_discounts; None/0 = no suggestion
+    active_to: Optional[str] = None  # YYYY-MM-DD, last day in focus; None = until removed
+    client_id: Optional[str] = None  # superadmin writes only
+
+
+class FocusItemOut(BaseModel):
+    id: str
+    client_id: str
+    product_id: str
+    product_name: str
+    image: Optional[str] = ""
+    reason: str
+    note: str = ""
+    recommended_discount: Optional[float] = None
+    active_to: Optional[str] = None
+    ended: bool = False
+    product_active: bool = True
+    stock_qty: Optional[int] = None
+    next_expiry: Optional[str] = None
+    created_at: str = ""
+    created_by_name: Optional[str] = None
+
+
+class FocusSuggestion(BaseModel):
+    product_id: str
+    product_name: str
+    image: Optional[str] = ""
+    reason: str  # "stock" | "expiry"
+    stock_qty: Optional[int] = None
+    sold_30d: int = 0
+    cover_days: Optional[int] = None  # None = no sales in 30 days
+    expiry_date: Optional[str] = None
+    expiry_qty: Optional[int] = None
+    days_left: Optional[int] = None
+
+
+class FocusList(BaseModel):
+    items: List[FocusItemOut]
+    suggestions: List[FocusSuggestion]
+
+
+def _focus_is_active(doc: dict) -> bool:
+    ends = doc.get("active_to")
+    return not ends or ends >= _today().isoformat()
+
+
+async def _focus_expiry(client_ids: List[str], product_ids: List[str]) -> Dict[str, dict]:
+    """Per product: the earliest date among batches still fine, and the pieces
+    on that date. Unlike the stock endpoints this is also handed to sales reps
+    (focus items with reason `expiry` only)."""
+    if not product_ids:
+        return {}
+    today = _today().isoformat()
+    found: Dict[str, dict] = {}
+    async for b in db.stock_batches.find(
+        {"product_id": {"$in": product_ids}, "qty": {"$gt": 0}, "expiry_date": {"$ne": None, "$gte": today}},
+        {"_id": 0, "product_id": 1, "expiry_date": 1, "qty": 1},
+    ):
+        entry = found.get(b["product_id"])
+        if entry is None or b["expiry_date"] < entry["expiry_date"]:
+            found[b["product_id"]] = {"expiry_date": b["expiry_date"], "expiry_qty": b["qty"]}
+        elif b["expiry_date"] == entry["expiry_date"]:
+            entry["expiry_qty"] += b["qty"]
+    return found
+
+
+async def _focus_by_product(scope: dict) -> Dict[str, FocusInfo]:
+    """Active focus items of the scope, keyed by product id, ready for the sales reps."""
+    docs = [d async for d in db.focus_items.find(scope, {"_id": 0}) if _focus_is_active(d)]
+    if not docs:
+        return {}
+    products = {
+        p["id"]: p
+        async for p in db.products.find(
+            {"id": {"$in": [d["product_id"] for d in docs]}}, {"_id": 0, "id": 1, "active": 1, "track_expiry": 1}
+        )
+    }
+    expiry_ids = [d["product_id"] for d in docs if d.get("reason") == "expiry"]
+    expiry = await _focus_expiry([], expiry_ids)
+    out: Dict[str, FocusInfo] = {}
+    for d in docs:
+        product = products.get(d["product_id"])
+        if not product or product.get("active", True) is False:
+            continue
+        extra = expiry.get(d["product_id"], {}) if d.get("reason") == "expiry" else {}
+        out[d["product_id"]] = FocusInfo(
+            reason=d.get("reason", "other"),
+            note=d.get("note") or "",
+            recommended_discount=d.get("recommended_discount"),
+            active_to=d.get("active_to"),
+            **extra,
+        )
+    return out
+
+
+async def _validated_focus(inp: FocusInput, product: dict) -> dict:
+    if inp.reason not in FOCUS_REASONS:
+        raise HTTPException(status_code=400, detail="Invalid focus reason")
+    note = (inp.note or "").strip()
+    if len(note) > 300:
+        raise HTTPException(status_code=400, detail="Note is too long (max 300 characters)")
+    active_to = None
+    if inp.active_to:
+        active_to = _parse_date(inp.active_to, "active_to").date().isoformat()
+        if active_to < _today().isoformat():
+            raise HTTPException(status_code=400, detail="active_to is in the past")
+    recommended = inp.recommended_discount
+    if recommended is not None:
+        # The sales rep picks the additional discount (the supplier one is fixed),
+        # so the suggestion is one of those; 0 means "no suggestion".
+        allowed = {float(v) for v in (product.get("additional_discounts") or [])}
+        if float(recommended) not in allowed:
+            raise HTTPException(
+                status_code=400, detail=f"Additional discount {recommended}% is not allowed for {product['name']}"
+            )
+        recommended = float(recommended) or None
+    return {"reason": inp.reason, "note": note, "recommended_discount": recommended, "active_to": active_to}
+
+
+async def _focus_suggestions(client_id: str, taken: set) -> List[FocusSuggestion]:
+    """Products worth pushing: a lot of stock for the pace they sell at, or batches close to expiry."""
+    out: List[FocusSuggestion] = []
+    products = {
+        p["id"]: p
+        async for p in db.products.find({"client_id": client_id, "active": {"$ne": False}}, {"_id": 0})
+        if p["id"] not in taken
+    }
+    if not products:
+        return out
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "modules": 1, "expiry_alert_days": 1}) or {}
+    modules = effective_modules(client)
+    in_expiry: set = set()
+    if Module.EXPIRY.value in modules:
+        thresholds = sorted(client.get("expiry_alert_days") or setting("expiry_alert_days"))
+        today = _today()
+        limit = (today + timedelta(days=thresholds[-1])).isoformat()
+        soon: Dict[str, dict] = {}
+        async for b in db.stock_batches.find(
+            {"client_id": client_id, "qty": {"$gt": 0}, "expiry_date": {"$ne": None, "$gte": today.isoformat(), "$lte": limit}},
+            {"_id": 0},
+        ):
+            if b["product_id"] not in products:
+                continue
+            entry = soon.get(b["product_id"])
+            if entry is None or b["expiry_date"] < entry["expiry_date"]:
+                soon[b["product_id"]] = {"expiry_date": b["expiry_date"], "qty": b["qty"]}
+            elif b["expiry_date"] == entry["expiry_date"]:
+                entry["qty"] += b["qty"]
+        for pid, entry in sorted(soon.items(), key=lambda kv: kv[1]["expiry_date"]):
+            days_left = (date.fromisoformat(entry["expiry_date"]) - today).days
+            p = products[pid]
+            out.append(FocusSuggestion(
+                product_id=pid, product_name=p["name"], image=p.get("image", ""), reason="expiry",
+                stock_qty=p.get("stock_qty"), expiry_date=entry["expiry_date"], expiry_qty=entry["qty"], days_left=days_left,
+            ))
+            in_expiry.add(pid)
+    if Module.STOCK.value in modules:
+        since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        sold: Dict[str, int] = {}
+        async for order in db.orders.find(
+            {"client_id": client_id, "created_at": {"$gte": since}, "status": {"$nin": ["canceled", "rejected"]}},
+            {"_id": 0, "status": 1, "items": 1},
+        ):
+            shipped = order.get("status") == "shipped"
+            for item in order.get("items", []):
+                sold[item["product_id"]] = sold.get(item["product_id"], 0) + effective_qty(item, shipped)
+        candidates = []
+        for pid, p in products.items():
+            stock = p.get("stock_qty")
+            if pid in in_expiry or stock is None or stock <= 0:
+                continue
+            pace = sold.get(pid, 0) / 30
+            cover = None if pace <= 0 else int(stock / pace)
+            if cover is None or cover >= FOCUS_SUGGESTION_COVER_DAYS:
+                candidates.append((cover if cover is not None else 10**9, stock, pid, cover))
+        candidates.sort(key=lambda c: (-c[0], -c[1]))
+        for _, stock, pid, cover in candidates[:FOCUS_SUGGESTION_LIMIT]:
+            p = products[pid]
+            out.append(FocusSuggestion(
+                product_id=pid, product_name=p["name"], image=p.get("image", ""), reason="stock",
+                stock_qty=stock, sold_30d=sold.get(pid, 0), cover_days=cover,
+            ))
+    return out
+
+
+@api_router.get("/focus", response_model=FocusList)
+async def list_focus(
+    client_id: Optional[str] = None,
+    current_user: User = Depends(require_module(Module.FOCUS, Role.SUPERADMIN, Role.ADMIN)),
+):
+    """Goods in focus (admin: own client; superadmin passes client_id) plus suggestions."""
+    scope = _scope_query(current_user)
+    if current_user.role == Role.SUPERADMIN:
+        if not client_id:
+            raise HTTPException(status_code=400, detail="client_id is required")
+        scope = {"client_id": client_id}
+    docs = await db.focus_items.find(scope, {"_id": 0}).sort("created_at", -1).to_list(None)
+    products = {
+        p["id"]: p
+        async for p in db.products.find({"id": {"$in": [d["product_id"] for d in docs]}}, {"_id": 0})
+    }
+    expiry = await _expiry_info(scope) if has_module(current_user, Module.EXPIRY) or current_user.role == Role.SUPERADMIN else {}
+    items = []
+    for d in docs:
+        p = products.get(d["product_id"])
+        if not p:
+            continue
+        items.append(FocusItemOut(
+            id=d["id"], client_id=d["client_id"], product_id=p["id"], product_name=p["name"], image=p.get("image", ""),
+            reason=d.get("reason", "other"), note=d.get("note") or "", recommended_discount=d.get("recommended_discount"),
+            active_to=d.get("active_to"), ended=not _focus_is_active(d), product_active=p.get("active", True) is not False,
+            stock_qty=p.get("stock_qty"), next_expiry=(expiry.get(p["id"]) or {}).get("next_expiry"),
+            created_at=d.get("created_at", ""), created_by_name=d.get("created_by_name"),
+        ))
+    taken = {d["product_id"] for d in docs}
+    return FocusList(items=items, suggestions=await _focus_suggestions(scope["client_id"], taken))
+
+
+@api_router.post("/focus", response_model=FocusItemOut)
+async def add_focus(
+    inp: FocusInput, current_user: User = Depends(require_module(Module.FOCUS, Role.SUPERADMIN, Role.ADMIN))
+):
+    client_id = await resolve_write_client_id(current_user, inp.client_id)
+    if not inp.product_id:
+        raise HTTPException(status_code=400, detail="product_id is required")
+    product = await db.products.find_one({"id": inp.product_id, "client_id": client_id}, {"_id": 0})
+    if not product:
+        raise HTTPException(status_code=404, detail="Not found")
+    if await db.focus_items.find_one({"client_id": client_id, "product_id": product["id"]}):
+        raise HTTPException(status_code=409, detail="Product is already in focus")
+    values = await _validated_focus(inp, product)
+    entry_id = str(uuid.uuid4())
+    doc = {
+        "id": entry_id, "client_id": client_id, "product_id": product["id"], **values,
+        "created_at": now_iso(), "created_by_user_id": current_user.id, "created_by_name": current_user.name,
+    }
+    await db.focus_items.insert_one({**doc, "_id": entry_id})
+    return FocusItemOut(
+        id=entry_id, client_id=client_id, product_id=product["id"], product_name=product["name"],
+        image=product.get("image", ""), product_active=product.get("active", True) is not False,
+        stock_qty=product.get("stock_qty"), created_at=doc["created_at"], created_by_name=current_user.name, **values,
+    )
+
+
+class FocusReportProduct(BaseModel):
+    product_id: str
+    product_name: str
+    unit_symbol: str = "kom"
+    unit_factor: int = 1
+    qty: int = 0  # base units, by picked_qty once shipped
+    revenue: float = 0
+    orders: int = 0
+
+
+class FocusReportRep(BaseModel):
+    user_id: Optional[str] = None
+    name: str
+    revenue: float = 0
+    orders: int = 0
+
+
+class FocusReport(BaseModel):
+    from_date: str
+    to_date: str
+    revenue: float = 0
+    orders: int = 0
+    products: List[FocusReportProduct]
+    reps: List[FocusReportRep]
+
+
+@api_router.get("/focus/report", response_model=FocusReport)
+async def focus_report(
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD, default: first day of this month"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD inclusive, default: today"),
+    client_id: Optional[str] = None,
+    current_user: User = Depends(require_module(Module.FOCUS, Role.SUPERADMIN, Role.ADMIN)),
+):
+    """What was sold from goods in focus: order lines flagged `focus` when the
+    order was placed (not canceled/rejected, shipped orders by picked_qty)."""
+    cid = _manager_client(current_user, client_id)
+    today = _today()
+    start = _parse_date(from_date, "from_date").date() if from_date else today.replace(day=1)
+    end = _parse_date(to_date, "to_date").date() if to_date else today
+    if end < start:
+        raise HTTPException(status_code=400, detail="to_date is before from_date")
+    query = {
+        "client_id": cid,
+        "created_at": {"$gte": start.isoformat(), "$lt": (end + timedelta(days=1)).isoformat()},
+        "status": {"$nin": [OrderStatus.CANCELED.value, OrderStatus.REJECTED.value]},
+        "items.focus": True,
+    }
+    products: Dict[str, FocusReportProduct] = {}
+    reps: Dict[str, FocusReportRep] = {}
+    total = 0.0
+    order_count = 0
+    async for order in db.orders.find(query, {"_id": 0}):
+        shipped = _status_value(order) == OrderStatus.SHIPPED.value
+        rep = reps.setdefault(
+            order.get("created_by_user_id") or "?",
+            FocusReportRep(user_id=order.get("created_by_user_id"), name=order.get("created_by_name") or "-"),
+        )
+        rep.orders += 1
+        order_count += 1
+        for item in order.get("items", []):
+            if not item.get("focus"):
+                continue
+            net = line_net(item, shipped)
+            row = products.setdefault(item["product_id"], FocusReportProduct(
+                product_id=item["product_id"], product_name=item.get("name", ""),
+                unit_symbol=item.get("unit_symbol") or "kom", unit_factor=item.get("unit_factor") or 1,
+            ))
+            row.qty += effective_qty(item, shipped)
+            row.revenue += net
+            row.orders += 1
+            rep.revenue += net
+            total += net
+    for row in (*products.values(), *reps.values()):
+        row.revenue = round(row.revenue, 2)
+    return FocusReport(
+        from_date=start.isoformat(), to_date=end.isoformat(), revenue=round(total, 2), orders=order_count,
+        products=sorted(products.values(), key=lambda r: -r.revenue),
+        reps=sorted(reps.values(), key=lambda r: -r.revenue),
+    )
+
+
+@api_router.put("/focus/{focus_id}", response_model=FocusItemOut)
+async def update_focus(
+    focus_id: str, inp: FocusInput,
+    current_user: User = Depends(require_module(Module.FOCUS, Role.SUPERADMIN, Role.ADMIN)),
+):
+    doc = await get_scoped_or_404("focus_items", focus_id, current_user)
+    product = await db.products.find_one({"id": doc["product_id"]}, {"_id": 0})
+    if not product:
+        raise HTTPException(status_code=404, detail="Not found")
+    values = await _validated_focus(inp, product)
+    await db.focus_items.update_one({"id": focus_id}, {"$set": values})
+    return FocusItemOut(
+        id=focus_id, client_id=doc["client_id"], product_id=product["id"], product_name=product["name"],
+        image=product.get("image", ""), product_active=product.get("active", True) is not False,
+        stock_qty=product.get("stock_qty"), created_at=doc.get("created_at", ""),
+        created_by_name=doc.get("created_by_name"), **values,
+    )
+
+
+@api_router.delete("/focus/{focus_id}")
+async def remove_focus(
+    focus_id: str, current_user: User = Depends(require_module(Module.FOCUS, Role.SUPERADMIN, Role.ADMIN))
+):
+    await get_scoped_or_404("focus_items", focus_id, current_user)
+    await db.focus_items.delete_one({"id": focus_id})
+    return {"ok": True}
+
+
+# ---------------- Sales targets (PLAN_FOKUS_I_CILJEVI.md) ----------------
+# Targets per sales rep and period (month / quarter / year). Progress is never
+# stored: it is computed from the orders when asked (same rules as the sales
+# statistics: canceled/rejected don't count, shipped orders count by picked_qty).
+TARGET_METRICS = ("revenue", "orders", "customers", "focus_revenue")
+TARGET_PERIOD_TYPES = ("month", "quarter", "year")
+
+
+class TargetSetInput(BaseModel):
+    user_id: str
+    period_type: str
+    period: str  # 2026-03 | 2026-Q1 | 2026
+    values: Dict[str, Optional[float]]  # metric -> target; None/0 removes it
+    client_id: Optional[str] = None  # superadmin only
+
+
+class TargetCopyInput(BaseModel):
+    period_type: str
+    from_period: str
+    to_period: str
+    client_id: Optional[str] = None
+
+
+class TargetRow(BaseModel):
+    user_id: str
+    user_name: str
+    targets: Dict[str, float] = {}
+    achieved: Dict[str, float] = {}
+    previous_year: Dict[str, float] = {}  # achieved in the same period a year earlier
+    pct: Dict[str, float] = {}  # achieved / target, for the metrics with a target
+
+
+class TargetProgress(BaseModel):
+    period_type: str
+    period: str
+    from_date: str
+    to_date: str  # inclusive
+    previous_period: str
+    rows: List[TargetRow]
+
+
+class TargetMonth(BaseModel):
+    period: str
+    targets: Dict[str, float] = {}
+    achieved: Dict[str, float] = {}
+    pct: Dict[str, float] = {}
+
+
+class TargetMe(TargetMonth):
+    days_total: int
+    days_left: int  # including today
+    daily_needed: Dict[str, float] = {}  # still to do per remaining day, for metrics below target
+    projection: Dict[str, float] = {}  # at the current pace by the end of the month
+    history: List[TargetMonth] = []  # previous months, newest first
+
+
+def _period_range(period_type: str, period: str) -> tuple[date, date]:
+    """(first day, first day AFTER the period) of a validated period string."""
+    try:
+        if period_type == "month":
+            start = datetime.strptime(period, "%Y-%m").date()
+            end = date(start.year + (start.month == 12), start.month % 12 + 1, 1)
+        elif period_type == "quarter":
+            year, q = period.split("-Q")
+            if len(year) != 4 or q not in ("1", "2", "3", "4"):
+                raise ValueError
+            start = date(int(year), (int(q) - 1) * 3 + 1, 1)
+            end = date(start.year + (start.month == 10), (start.month + 2) % 12 + 1, 1)
+        elif period_type == "year":
+            if len(period) != 4:
+                raise ValueError
+            start = date(int(period), 1, 1)
+            end = date(start.year + 1, 1, 1)
+        else:
+            raise HTTPException(status_code=400, detail="period_type must be month, quarter or year")
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid period: {period}")
+    return start, end
+
+
+def _year_before(period_type: str, period: str) -> str:
+    if period_type == "year":
+        return str(int(period) - 1)
+    year, rest = period[:4], period[4:]
+    return f"{int(year) - 1}{rest}"
+
+
+def _period_of(day: date, period_type: str) -> str:
+    if period_type == "month":
+        return day.strftime("%Y-%m")
+    if period_type == "quarter":
+        return f"{day.year}-Q{(day.month - 1) // 3 + 1}"
+    return str(day.year)
+
+
+async def _target_achieved(client_id: str, user_ids: List[str], start: date, end: date) -> Dict[str, Dict[str, float]]:
+    """Per sales rep: revenue (net, RSD), orders, distinct customers, focus_revenue for [start, end)."""
+    out: Dict[str, Dict[str, float]] = {u: {m: 0.0 for m in TARGET_METRICS} for u in user_ids}
+    customers: Dict[str, set] = {u: set() for u in user_ids}
+    query = {
+        "client_id": client_id,
+        "created_by_user_id": {"$in": user_ids},
+        "created_at": {"$gte": start.isoformat(), "$lt": end.isoformat()},
+        "status": {"$nin": [OrderStatus.CANCELED.value, OrderStatus.REJECTED.value]},
+    }
+    async for order in db.orders.find(query, {"_id": 0, "created_by_user_id": 1, "customer_id": 1, "status": 1, "items": 1}):
+        row = out[order["created_by_user_id"]]
+        shipped = _status_value(order) == OrderStatus.SHIPPED.value
+        row["orders"] += 1
+        customers[order["created_by_user_id"]].add(order.get("customer_id"))
+        for item in order.get("items", []):
+            net = line_net(item, shipped)
+            row["revenue"] += net
+            if item.get("focus"):
+                row["focus_revenue"] += net
+    for u, row in out.items():
+        row["customers"] = float(len(customers[u]))
+        row["revenue"] = round(row["revenue"], 2)
+        row["focus_revenue"] = round(row["focus_revenue"], 2)
+    return out
+
+
+def _target_pct(targets: Dict[str, float], achieved: Dict[str, float]) -> Dict[str, float]:
+    return {m: round(achieved.get(m, 0) / v * 100, 1) for m, v in targets.items() if v > 0}
+
+
+async def _targets_of(client_id: str, user_ids: List[str], period_type: str, period: str) -> Dict[str, Dict[str, float]]:
+    found: Dict[str, Dict[str, float]] = {u: {} for u in user_ids}
+    async for t in db.targets.find(
+        {"client_id": client_id, "user_id": {"$in": user_ids}, "period_type": period_type, "period": period}, {"_id": 0}
+    ):
+        found[t["user_id"]][t["metric"]] = t["value"]
+    return found
+
+
+async def _sales_reps(client_id: str) -> List[dict]:
+    return await db.users.find(
+        {"client_id": client_id, "role": Role.OPERATOR.value, "active": {"$ne": False}}, {"_id": 0, "id": 1, "name": 1}
+    ).sort("name", 1).to_list(None)
+
+
+def _manager_client(user: User, client_id: Optional[str]) -> str:
+    if user.role == Role.SUPERADMIN:
+        if not client_id:
+            raise HTTPException(status_code=400, detail="client_id is required")
+        return client_id
+    return user.client_id
+
+
+@api_router.get("/targets/progress", response_model=TargetProgress)
+async def targets_progress(
+    period_type: str = "month",
+    period: Optional[str] = None,
+    client_id: Optional[str] = None,
+    current_user: User = Depends(require_module(Module.TARGETS, Role.SUPERADMIN, Role.ADMIN)),
+):
+    """Targets and achievement of every sales rep for one period, plus what the
+    same period a year earlier achieved (to set the next target)."""
+    cid = _manager_client(current_user, client_id)
+    period = period or _period_of(_today(), period_type)
+    start, end = _period_range(period_type, period)
+    reps = await _sales_reps(cid)
+    ids = [r["id"] for r in reps]
+    previous = _year_before(period_type, period)
+    prev_start, prev_end = _period_range(period_type, previous)
+    targets = await _targets_of(cid, ids, period_type, period)
+    achieved = await _target_achieved(cid, ids, start, end)
+    before = await _target_achieved(cid, ids, prev_start, prev_end)
+    rows = [
+        TargetRow(
+            user_id=r["id"], user_name=r["name"], targets=targets[r["id"]], achieved=achieved[r["id"]],
+            previous_year=before[r["id"]], pct=_target_pct(targets[r["id"]], achieved[r["id"]]),
+        )
+        for r in reps
+    ]
+    return TargetProgress(
+        period_type=period_type, period=period, from_date=start.isoformat(),
+        to_date=(end - timedelta(days=1)).isoformat(), previous_period=previous, rows=rows,
+    )
+
+
+@api_router.put("/targets")
+async def set_targets(
+    inp: TargetSetInput, current_user: User = Depends(require_module(Module.TARGETS, Role.SUPERADMIN, Role.ADMIN))
+):
+    cid = _manager_client(current_user, inp.client_id)
+    _period_range(inp.period_type, inp.period)
+    rep = await db.users.find_one({"id": inp.user_id, "client_id": cid, "role": Role.OPERATOR.value}, {"_id": 0, "id": 1})
+    if not rep:
+        raise HTTPException(status_code=404, detail="Not found")
+    for metric, value in inp.values.items():
+        if metric not in TARGET_METRICS:
+            raise HTTPException(status_code=400, detail=f"Unknown metric: {metric}")
+        if value is not None and (value < 0 or value > 1_000_000_000_000):
+            raise HTTPException(status_code=400, detail="Target must be a positive number")
+    key = {"client_id": cid, "user_id": inp.user_id, "period_type": inp.period_type, "period": inp.period}
+    for metric, value in inp.values.items():
+        if not value:
+            await db.targets.delete_one({**key, "metric": metric})
+        else:
+            await db.targets.update_one(
+                {**key, "metric": metric},
+                {"$set": {"value": float(value), "updated_at": now_iso(), "updated_by": current_user.id},
+                 "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now_iso()}},
+                upsert=True,
+            )
+    return {"ok": True}
+
+
+@api_router.post("/targets/copy")
+async def copy_targets(
+    inp: TargetCopyInput, current_user: User = Depends(require_module(Module.TARGETS, Role.SUPERADMIN, Role.ADMIN))
+):
+    """Copies the targets of one period into another; values already set there stay."""
+    cid = _manager_client(current_user, inp.client_id)
+    _period_range(inp.period_type, inp.from_period)
+    _period_range(inp.period_type, inp.to_period)
+    if inp.from_period == inp.to_period:
+        raise HTTPException(status_code=400, detail="Periods must differ")
+    copied = 0
+    async for t in db.targets.find(
+        {"client_id": cid, "period_type": inp.period_type, "period": inp.from_period}, {"_id": 0}
+    ):
+        key = {"client_id": cid, "user_id": t["user_id"], "period_type": inp.period_type, "period": inp.to_period, "metric": t["metric"]}
+        if await db.targets.find_one(key):
+            continue
+        await db.targets.insert_one({**key, "id": str(uuid.uuid4()), "value": t["value"], "created_at": now_iso(), "updated_by": current_user.id})
+        copied += 1
+    return {"copied": copied}
+
+
+@api_router.get("/targets/me", response_model=TargetMe)
+async def my_targets(current_user: User = Depends(require_module(Module.TARGETS, Role.OPERATOR))):
+    """The sales rep's own monthly targets and progress (no other reps, no quarter/year)."""
+    today = _today()
+    period = _period_of(today, "month")
+    start, end = _period_range("month", period)
+    cid, uid = current_user.client_id, current_user.id
+    targets = (await _targets_of(cid, [uid], "month", period))[uid]
+    achieved = (await _target_achieved(cid, [uid], start, end))[uid]
+    days_total = (end - start).days
+    days_left = (end - today).days
+    elapsed = days_total - days_left + 1
+    daily_needed = {m: round((v - achieved[m]) / days_left, 2) for m, v in targets.items() if v > achieved[m] and days_left > 0}
+    projection = {m: round(achieved[m] / elapsed * days_total, 2) for m in TARGET_METRICS}
+    history = []
+    month_start = start
+    for _ in range(3):
+        month_start = (month_start - timedelta(days=1)).replace(day=1)
+        label = _period_of(month_start, "month")
+        h_start, h_end = _period_range("month", label)
+        h_targets = (await _targets_of(cid, [uid], "month", label))[uid]
+        h_achieved = (await _target_achieved(cid, [uid], h_start, h_end))[uid]
+        history.append(TargetMonth(period=label, targets=h_targets, achieved=h_achieved, pct=_target_pct(h_targets, h_achieved)))
+    return TargetMe(
+        period=period, targets=targets, achieved=achieved, pct=_target_pct(targets, achieved),
+        days_total=days_total, days_left=days_left, daily_needed=daily_needed, projection=projection, history=history,
+    )
 
 
 # ---------------- Reports ----------------

@@ -68,6 +68,16 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="progress"
+        options={{
+          title: t("progress"),
+          href: user?.role === "operator" && hasModule(user, "targets") ? undefined : null,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="trending-up-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="warehouse"
         options={{
           title: t("warehouse"),

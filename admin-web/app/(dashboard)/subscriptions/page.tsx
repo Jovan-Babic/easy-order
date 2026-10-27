@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { Field, fieldInput } from "@/components/FormField";
 import { MODULES, toggleModule } from "@/lib/modules";
 import { ROLE_KEYS } from "@/components/SeatsPanel";
 import { SEAT_ROLES } from "@/lib/seats";
@@ -281,8 +282,12 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
           });
         }}
       >
-        <input required placeholder={t("planName")} value={name} onChange={(e) => setName(e.target.value)} className={input} />
-        <input placeholder={t("planDescription")} value={description} onChange={(e) => setDescription(e.target.value)} className={input} />
+        <Field label={t("planName")}>
+          <input required value={name} onChange={(e) => setName(e.target.value)} className={fieldInput} />
+        </Field>
+        <Field label={t("planDescription")}>
+          <input value={description} onChange={(e) => setDescription(e.target.value)} className={fieldInput} />
+        </Field>
         <p className="text-xs text-muted">{t("planModulesHint")}</p>
         {MODULES.map((m) => (
           <label key={m.key} className="flex items-start gap-3 text-sm">
@@ -321,24 +326,28 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
           {SEAT_ROLES.map((r) => (
             <div key={r} className="grid gap-1">
               <span className="text-xs font-semibold text-onSurfaceSecondary">{t(ROLE_KEYS[r])}</span>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                placeholder={t("planIncluded")}
-                value={included[r]}
-                onChange={(e) => setIncluded({ ...included, [r]: e.target.value })}
-                className={input}
-              />
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder={t("planSeatPrice")}
-                value={seatPrices[r]}
-                onChange={(e) => setSeatPrices({ ...seatPrices, [r]: e.target.value })}
-                className={input}
-              />
+              <label className="text-[11px] text-muted">
+                {t("planIncluded")}
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={included[r]}
+                  onChange={(e) => setIncluded({ ...included, [r]: e.target.value })}
+                  className={`${input} mt-0.5 block w-full text-onSurface`}
+                />
+              </label>
+              <label className="text-[11px] text-muted">
+                {t("planSeatPrice")}
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={seatPrices[r]}
+                  onChange={(e) => setSeatPrices({ ...seatPrices, [r]: e.target.value })}
+                  className={`${input} mt-0.5 block w-full text-onSurface`}
+                />
+              </label>
             </div>
           ))}
         </div>
