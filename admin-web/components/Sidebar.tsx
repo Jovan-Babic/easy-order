@@ -36,6 +36,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/targets", labelKey: "targets", roles: ["admin"], module: "targets" },
   { href: "/stock", labelKey: "stock", roles: ["admin", "warehouse"], module: "stock" },
   { href: "/orders", labelKey: "orders", roles: ["admin", "warehouse"] },
+  { href: "/guide", labelKey: "guide", roles: ["admin", "warehouse"] },
   { href: "/app", labelKey: "app", roles: ["superadmin", "admin", "warehouse"] },
 ];
 

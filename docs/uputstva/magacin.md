@@ -21,6 +21,8 @@ Komercijalisti u Easy Order aplikaciji prave porudžbine, a one stižu u magacin
 
 Na slikama su važni delovi uokvireni narandžastim okvirom, a broj u krugu odgovara broju u tekstu ispod slike.
 
+> **Ovo uputstvo je i u aplikaciji.** Na **Početnoj** dodirnite ikonicu **?** u gornjem delu ekrana. U portalu je stavka **Uputstvo** u meniju.
+
 > **Šta vidite zavisi od paketa vaše firme.** Pakovanje porudžbina je uvek tu. Kartice **Prijem** i **Popis** postoje samo ako firma koristi zalihe, a **Rokovi** samo ako koristi praćenje roka trajanja. Ako neku karticu ne vidite, obratite se administratoru.
 
 ---

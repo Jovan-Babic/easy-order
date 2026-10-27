@@ -21,6 +21,8 @@ Većina posla se radi u **portalu na računaru** (prijavite se u pregledaču, li
 
 Na slikama su važni delovi uokvireni narandžastim okvirom, a broj u krugu odgovara broju u tekstu ispod slike.
 
+> **Ovo uputstvo je i u portalu i u aplikaciji.** U portalu je stavka **Uputstvo** u levom meniju, a u aplikaciji ikonica **?** u gornjem delu ekrana. Administrator može da otvori i uputstvo za komercijalistu i za magacin (kartice na vrhu).
+
 > **Šta vidite zavisi od paketa vaše firme.** Osnova (proizvodi, kupci, porudžbine) je uvek tu. **Magacin**, **Stanje**, **Izveštaji**, **Roba u fokusu** i **Ciljevi** su moduli paketa. Ako neku stavku menija ne vidite, firma je nema u paketu. Obratite se Easy Order podršci.
 
 ---

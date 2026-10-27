@@ -169,6 +169,7 @@ export default function RootLayout() {
                 <Stack.Screen name="reset-password" options={{ presentation: "card" }} />
                 <Stack.Screen name="change-password" options={{ presentation: "card", gestureEnabled: false }} />
                 <Stack.Screen name="invoice" options={{ presentation: "card" }} />
+                <Stack.Screen name="guide" options={{ presentation: "card" }} />
               </Stack>
             </RouteGuard>
           </AppProvider>

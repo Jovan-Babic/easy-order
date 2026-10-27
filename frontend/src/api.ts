@@ -138,6 +138,17 @@ export type TargetMe = TargetMonth & {
   history: TargetMonth[];
 };
 
+// In-app user guide of a role (Markdown; image links are paths on the backend, see guideImageUrl).
+export type Guide = {
+  role: "operator" | "warehouse" | "admin";
+  title: string;
+  version: string;
+  markdown: string;
+  available_roles: Array<"operator" | "warehouse" | "admin">;
+};
+
+export const guideImageUrl = (path: string) => `${BASE}${path}`;
+
 export type StockBatch = {
   id: string;
   product_id: string;
@@ -359,6 +370,7 @@ export const api = {
 
   // orders
   myTargets: () => req<TargetMe>("/targets/me"),
+  getGuide: (role?: Guide["role"]) => req<Guide>(`/guide${role ? `?role=${role}` : ""}`),
   listOrders: (opts?: { customerId?: string; status?: OrderStatus[] }) => {
     const qs = new URLSearchParams();
     if (opts?.customerId) qs.set("customer_id", opts.customerId);

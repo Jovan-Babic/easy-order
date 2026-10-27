@@ -21,6 +21,8 @@ Easy Order je aplikacija u kojoj kod kupca primate porudžbinu: izaberete kupca,
 
 Na slikama su važni delovi uokvireni narandžastim okvirom, a broj u krugu odgovara broju u tekstu ispod slike.
 
+> **Ovo uputstvo je i u aplikaciji.** Dodirnite ikonicu **?** u gornjem delu ekrana (pored izbora jezika).
+
 ---
 
 ## 1. Prva prijava

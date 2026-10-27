@@ -1,5 +1,6 @@
 from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, File, Query, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -6017,6 +6018,67 @@ async def app_update():
         return json.loads(APP_UPDATE_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise HTTPException(status_code=503, detail="App update metadata is unavailable")
+
+
+# ---------------- User guides (docs/uputstva) ----------------
+# One guide per role, written in Markdown with screenshots; backend/public/guides is a copy made by
+# docs/uputstva/alati/publish_guides.py. The apps show the guide of the signed-in user's role.
+GUIDES_DIR = ROOT_DIR / "public" / "guides"
+GUIDE_FILES = {Role.OPERATOR: "komercijalista", Role.WAREHOUSE: "magacin", Role.ADMIN: "admin"}
+_GUIDE_IMAGE = re.compile(r"^[a-z0-9-]+\.png$")
+
+
+class GuideOut(BaseModel):
+    role: str
+    title: str
+    version: str = ""
+    markdown: str  # image links already point at /api/guide/image/...
+    available_roles: List[str]  # the guides this user may open (an admin also reads the other two)
+
+
+def _guide_roles_for(user: User) -> List[Role]:
+    if user.role in (Role.ADMIN, Role.SUPERADMIN):
+        return [Role.ADMIN, Role.OPERATOR, Role.WAREHOUSE]
+    return [user.role] if user.role in GUIDE_FILES else []
+
+
+@api_router.get("/guide", response_model=GuideOut)
+async def get_guide(role: Optional[Role] = None, current_user: User = Depends(get_current_user)):
+    """The user guide for the caller's role (an admin may ask for another role's guide with `role`)."""
+    allowed = _guide_roles_for(current_user)
+    if not allowed:
+        raise HTTPException(status_code=404, detail="No guide for this role")
+    wanted = role or allowed[0]
+    if wanted not in allowed or wanted not in GUIDE_FILES:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    slug = GUIDE_FILES[wanted]
+    path = GUIDES_DIR / f"{slug}.md"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Guide not available")
+    text = path.read_text(encoding="utf-8")
+    meta: Dict[str, str] = {}
+    front = re.match(r"^---\n(.*?)\n---\n", text, flags=re.S)
+    if front:
+        for line in front.group(1).splitlines():
+            key, _, value = line.partition(":")
+            meta[key.strip()] = value.strip()
+        text = text[front.end():]
+    text = re.sub(r"\]\(slike/([a-z0-9-]+)/([a-z0-9-]+\.png)\)", r"](/api/guide/image/\1/\2)", text)
+    return GuideOut(
+        role=wanted.value, title=meta.get("naslov", ""), version=meta.get("verzija", ""), markdown=text,
+        available_roles=[r.value for r in allowed if r in GUIDE_FILES],
+    )
+
+
+@api_router.get("/guide/image/{slug}/{name}")
+async def guide_image(slug: str, name: str):
+    """Screenshot of a guide. Public (the pictures show made-up demo data), so apps can load it as a plain image URL."""
+    if slug not in GUIDE_FILES.values() or not _GUIDE_IMAGE.match(name):
+        raise HTTPException(status_code=404, detail="Not found")
+    path = GUIDES_DIR / "slike" / slug / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
 # ---------------- Statistics ----------------

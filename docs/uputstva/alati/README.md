@@ -17,3 +17,5 @@ Slike se prave iz web verzije mobilne aplikacije (Expo web) nad probnom bazom u 
 
 `lib.js`: `mark()` crta narandžasti okvir sa brojem oko elementa (po `testID`, tekstu ili CSS-u), `union()` uokviruje više elemenata zajedno, `shot()` snima (uz `clip` za isečak).
 Seed se pokreće na sveže pokrenut backend (baza u memoriji), inače se istorija puni duplim porudžbinama.
+
+**Uputstva u aplikacijama:** backend servira kopiju iz `backend/public/guides`. Posle svake izmene uputstva ili slika pokrenuti `python3 alati/publish_guides.py` (iz `docs/uputstva`) i commit-ovati kopiju; backend test `test_published_copy_matches_the_docs` pada ako se razlikuju.

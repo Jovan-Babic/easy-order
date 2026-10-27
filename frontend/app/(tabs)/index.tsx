@@ -25,6 +25,7 @@ import { api, ApiError, Customer, Order, Product, OrderLineInput } from "@/src/a
 import { isoToDisplay } from "@/src/utils/expiry";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { LangToggle } from "@/src/components/LangToggle";
+import { GuideButton } from "@/src/components/GuideButton";
 import { Button } from "@/src/components/Button";
 import { BarcodeScanner } from "@/src/components/BarcodeScanner";
 import { LOGOUT } from "@/constants/testIds";
@@ -242,6 +243,7 @@ function OrderCatalogScreen() {
         <View style={styles.headerRow}>
           <Text style={styles.appName}>Easy Order</Text>
           <View style={styles.headerActions}>
+            <GuideButton />
             <LangToggle />
             <Pressable
               testID={LOGOUT.button}
