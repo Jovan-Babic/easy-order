@@ -9,6 +9,7 @@ import { useAuth } from "@/src/context/AuthContext";
 import { hasModule } from "@/src/utils/modules";
 import { api } from "@/src/api";
 import { LangToggle } from "@/src/components/LangToggle";
+import { GuideButton } from "@/src/components/GuideButton";
 import { LOGOUT } from "@/constants/testIds";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 
@@ -62,6 +63,7 @@ export default function HomeScreen() {
             <Text style={styles.appName}>Easy Order</Text>
             {!!user?.name && <Text style={styles.sub}>{user.name}</Text>}
           </View>
+          <GuideButton />
           <LangToggle />
           <Pressable testID={LOGOUT.button} onPress={() => logout()} hitSlop={8} style={{ padding: spacing.xs }}>
             <Ionicons name="log-out-outline" size={22} color={colors.muted} />
