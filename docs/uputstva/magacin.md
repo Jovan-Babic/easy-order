@@ -134,7 +134,7 @@ Dodirnite **Odbij**, upišite **razlog** i pritisnite **Odbij**.
 2. **Odbij** – odbija porudžbinu.
 3. **Otkaži** – odustajete, porudžbina ostaje kakva je bila.
 
-> **Poslatu porudžbinu ne možete da vratite sami.** Ako ste poslali pogrešno, javite se administratoru, on može da promeni status uz napomenu (stanje se tada vraća).
+> **Poslatu porudžbinu ne možete da vratite ni da izmenite.** Ako ste poslali pogrešno, javite se administratoru firme, a ispravku radi Easy Order podrška.
 
 ---
 
@@ -297,7 +297,7 @@ Poslate i odbijene porudžbine se ne prikazuju u pakovanju. Nađite je u **Istor
 Pritisnite **Vrati u red**.
 
 **Poslao sam pogrešnu količinu.**
-Poslatu porudžbinu menja samo administrator. Javite mu se.
+Poslata porudžbina se ne menja. Javite se administratoru firme koji će zatražiti ispravku od Easy Order podrške.
 
 **Barkod se ne skenira.**
 Dodajte svetla, držite telefon mirno i približite ga. Ako ne ide, artikal potražite po nazivu u pretrazi.

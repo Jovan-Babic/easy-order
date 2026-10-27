@@ -6,6 +6,6 @@ Uputstva su podeljena po ulogama, da bi aplikacija kasnije svakom korisniku mogl
 |---|---|---|
 | `operator` – komercijalista | [komercijalista.md](komercijalista.md) | Android aplikacija |
 | `warehouse` – magacin | [magacin.md](magacin.md) | Android aplikacija (+ portal na računaru) |
-| `admin` – administrator firme | u izradi | portal na računaru + Android aplikacija |
+| `admin` – administrator firme | [admin.md](admin.md) | portal na računaru + Android aplikacija |
 
 Slike ekrana su u `slike/<uloga>/`. Narandžasti okvir sa brojem označava deo ekrana koji se opisuje u tekstu ispod slike.

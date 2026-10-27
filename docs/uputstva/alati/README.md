@@ -9,6 +9,7 @@ Slike se prave iz web verzije mobilne aplikacije (Expo web) nad probnom bazom u 
 4. Probni podaci: `python3 seed.py` (firma „Veleprodaja Morava“, komercijalista `marko@morava-primer.rs`, kupci, artikli, porudžbine u svim statusima; piše `seed.json`).
 5. Snimanje (Playwright; putanja do Playwright-a je u `lib.js`). Svaka grupa slika traži **svež backend + `seed.py`**, jer snimanje menja podatke:
    - komercijalista: `node capture_operator.js raw/`, pa odmah `node capture_operator_fokus.js raw2/` (roba u fokusu i „Moj učinak“; sama pravi fokus, ciljeve i porudžbine),
+   - admin: `python3 seed.py`, pa `python3 seed_admin.py` (paket, pretplata, jedno zaduženje), portal na :3100, `node capture_admin.js raw/` (portal; `ONLY=korak,korak` snima samo neke), pa `node capture_admin_app.js raw2/` (admin kartica u aplikaciji),
    - magacin (telefon): `node capture_magacin.js raw/`,
    - magacin (portal na računaru, odmah posle prethodnog, na istom stanju): pokrenuti portal (`BACKEND_URL=http://localhost:8000 JWT_SECRET=<isti kao backend> npx next dev -p 3100`), pa `node capture_magacin_portal.js raw/` (`ONLY=p4` snima samo stranicu Stanje).
 6. Obrada: `python3 finalize.py raw ../slike/<uloga>`. Slike portala (1920 px) pre toga smanjiti na ~1440 px širine.
