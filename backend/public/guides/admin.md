@@ -81,7 +81,7 @@ Na stranici **Korisnici** otvarate naloge zaposlenima. Administrator firme može
 1. **Novi korisnik** – otvara formu za novi nalog.
 2. **Spisak** – ime, email, telefon, uloga i status (**Aktivan** ili **Neaktivan**).
 3. **Izmeni** – izmena podataka.
-4. **Obriši** – brisanje naloga. Vaš nalog ne može da se obriše.
+4. **Obriši** – brisanje naloga. Vaš nalog ne može da se obriše, a nalog koji ima porudžbine ne može da se obriše – njega **deaktivirajte** (**Izmeni** → **Status**).
 
 ### Novi korisnik
 
@@ -103,7 +103,7 @@ Posle kreiranja piše na koji je email poslata pozivnica. Ako slanje emaila ne u
 ![Izmena korisnika](slike/admin/06-izmena-korisnika.png)
 
 1. **Ime** i telefon.
-2. **Nova lozinka (opciono)** – ako korisnik zaboravi lozinku, možete da mu postavite novu. On mora da je zameni pri sledećoj prijavi i odjavljuje se sa svih uređaja.
+2. **Pošalji novu privremenu lozinku** – ako korisnik zaboravi lozinku. Sistem pravi novu lozinku i šalje je korisniku emailom (vi je ne birate i ne znate); korisnik mora da je zameni pri sledećoj prijavi i odjavljuje se sa svih uređaja. Ako slanje emaila ne uspe, lozinka se prikaže na ekranu. Svoju lozinku menjate dugmetom **Promeni lozinku** u meniju.
 3. **Uloga** – komercijalista ili magacin. Promena odjavljuje korisnika sa svih uređaja.
 4. **Status** – **Neaktivan** nalog ne može da se prijavi, a ostaje sačuvan sa istorijom porudžbina. Koristite ovo kad zaposleni ode.
 5. **Sačuvaj izmene**.
@@ -111,6 +111,10 @@ Posle kreiranja piše na koji je email poslata pozivnica. Ako slanje emaila ne u
 > **Savet:** umesto brisanja, zaposlenom koji je otišao postavite status **Neaktivan**. Njegove porudžbine ostaju u istoriji i izveštajima.
 
 ---
+
+### Dnevnik
+
+Stavka **Dnevnik** u meniju pokazuje ko je i kada u vašoj firmi pravio nalog, menjao ili deaktivirao korisnika, poslao novu lozinku, obrisao kupca, proizvod ili porudžbinu i ručno promenio status porudžbine. Samo se čita; može da se filtrira po vrsti radnje.
 
 ## 4. Nalozi i paket
 
@@ -155,7 +159,7 @@ Na stranici **Proizvodi** vodite katalog koji komercijalisti vide u aplikaciji.
 
 > **Artikal koji je dodao magacioner** ima cenu 0 i neaktivan je. Dopunite cenu i PDV i označite ga kao **Aktivan** da bi ga komercijalisti videli.
 
-**Izmena** otvara istu formu sa popunjenim podacima (**Sačuvaj izmene**). **Obriši** briše proizvod iz kataloga, a poslate porudžbine zadržavaju njegove podatke.
+**Izmena** otvara istu formu sa popunjenim podacima (**Sačuvaj izmene**). **Obriši** briše proizvod iz kataloga, ali samo ako nije ni u jednoj porudžbini. Proizvod koji je već poručivan označite kao **Neaktivan** – komercijalisti ga više ne vide, a istorija ostaje.
 
 ### Uvoz iz Excela
 Za veći broj artikala brže je da ih uvezete iz Excela.
@@ -187,7 +191,10 @@ Na stranici **Kupci** vodite spisak kupaca koje komercijalisti biraju pri porud�
 2. **Ime** (obavezno), **Adresa**, **Email** i **Telefon**.
 3. **PIB** – navodi se na fakturi.
 4. **Kreiraj kupca**.
-5. **Obriši** – briše kupca (traži potvrdu). Poslate porudžbine ostaju sa podacima kupca.
+5. **Deaktiviraj** / **Aktiviraj** – neaktivan kupac nestaje komercijalistima i ne može da dobije novu porudžbinu, a stare porudžbine ostaju netaknute.
+6. **Obriši** – briše kupca (traži potvrdu), ali samo ako nema nijednu porudžbinu; inače koristite **Deaktiviraj**.
+
+Unos se proverava: ime je obavezno, email mora biti ispravan, PIB ima samo cifre (6–15), a cena, PDV (0–100) i popusti (0–100) ne mogu biti negativni.
 
 Novi kupac se odmah pojavljuje komercijalistima.
 
@@ -269,7 +276,7 @@ Ovde birate artikle na koje komercijalisti treba da obrate posebnu pažnju: neš
 1. **Artikal** – potražite ga (polje **Pretraga artikala**) pa izaberite. Moguće su samo aktivni artikli koji još nisu u fokusu.
 2. **Razlog**: **Višak na lageru**, **Ističe rok**, **Akcija** ili **Ostalo**.
 3. **Napomena za komercijaliste** – kratka poruka (do 300 znakova), npr. „Višak, ponudi svima“.
-4. **Preporučeni rabat** – opciono. Biraju se samo vrednosti koje ste artiklu dozvolili kao **dodatni popust** (odeljak 5). Komercijalista jednim dodirom primenjuje preporuku ili izabere drugu vrednost.
+4. **Preporučeni rabat** – opciono; upisujete bilo koju vrednost od 0 do 100 %. Ne mora da bude među dodatnim popustima artikla (odeljak 5): dok je artikal u fokusu, komercijalista sme da poruči baš tu vrednost. Kad artikal izađe iz fokusa, ta vrednost više ne važi za nove porudžbine. Komercijalista jednim dodirom primenjuje preporuku ili izabere drugu vrednost sa liste dodatnih popusta.
 5. **U fokusu do** – opciono. Posle tog datuma artikal sam izlazi iz fokusa.
 6. **Sačuvaj**.
 
@@ -380,10 +387,10 @@ Za izmenu bilo čega od ovoga obratite se Easy Order podršci.
 ## 15. Česta pitanja i problemi
 
 **Zaposleni ne dobija email sa pozivnicom.**
-Proverite da li je email ispravno upisan i da li je u spamu. Ako slanje nije uspelo, portal prikaže privremenu lozinku koju mu predajete lično. Možete mu u **Izmeni** postaviti i novu lozinku.
+Proverite da li je email ispravno upisan i da li je u spamu. Ako slanje nije uspelo, portal prikaže privremenu lozinku koju mu predajete lično. Možete mu u **Izmeni** poslati i novu privremenu lozinku.
 
 **Zaposleni je zaboravio lozinku.**
-Može da pritisne **Zaboravljena lozinka?** na ekranu za prijavu, ili mu vi u **Izmeni** postavite novu.
+Može da pritisne **Zaboravljena lozinka?** na ekranu za prijavu, ili mu vi u **Izmeni** pošaljete novu privremenu lozinku.
 
 **„Dostignut je broj naloga za ovu ulogu.“**
 Paket nema više naloga te uloge. Pogledajte **Nalozi i paket** i obratite se Easy Order podršci za dodatni nalog, ili deaktivirajte nalog koji vam ne treba.

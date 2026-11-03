@@ -312,7 +312,7 @@ export default function ProductsPage() {
     setPendingDelete(null);
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setError(body.detail || t("deleteFailed"));
+      setError(localizedDetail(body.detail, t, t("deleteFailed")));
       return;
     }
     setError(null);

@@ -621,10 +621,17 @@ function OrderCatalogScreen() {
           {additionalDiscountPickerFor && (
           <View style={styles.discountMenu}>
             <Text style={styles.discountMenuTitle}>{additionalDiscountPickerFor?.name}</Text>
-            {(additionalDiscountPickerFor?.additional_discounts && additionalDiscountPickerFor.additional_discounts.length > 0
-              ? additionalDiscountPickerFor.additional_discounts
-              : [0]
-            ).map((opt) => {
+            {Array.from(
+              new Set([
+                ...(additionalDiscountPickerFor?.additional_discounts && additionalDiscountPickerFor.additional_discounts.length > 0
+                  ? additionalDiscountPickerFor.additional_discounts
+                  : [0]),
+                // the discount recommended while the product is in focus may be outside the product's own list
+                ...(additionalDiscountPickerFor?.focus?.recommended_discount ? [additionalDiscountPickerFor.focus.recommended_discount] : []),
+              ])
+            )
+              .sort((a, b) => a - b)
+              .map((opt) => {
               const pid = additionalDiscountPickerFor!.id;
               const current = additionalDiscountSel[pid] ?? 0;
               const active = current === opt;

@@ -34,7 +34,7 @@ type CreateUserForm = {
 
 // Result of POST /api/users: the backend generates a temporary password and
 // emails it; it only comes back here when the email could not be sent.
-type InviteNotice = { email: string; sent: boolean; temporaryPassword?: string | null };
+type InviteNotice = { email: string; sent: boolean; temporaryPassword?: string | null; reset?: boolean };
 
 type EditUserForm = {
   name: string;
@@ -299,7 +299,6 @@ export default function UsersPage() {
       // keeps you logged in; a change here would end the session).
       if (!isSelf) payload.active = editForm.active === "true";
       if (!isSelf) payload.role = editForm.role;
-      if (!isSelf && editForm.password.trim()) payload.password = editForm.password;
 
       const res = await fetch(`/api/users/${editingUser.id}`, {
         method: "PUT",
@@ -318,6 +317,21 @@ export default function UsersPage() {
     }
   };
 
+  // The admin never types someone else's password: the server generates a temporary one and emails it.
+  const resetPassword = async (u: { id: string; email: string }) => {
+    if (!window.confirm(t("resetPasswordConfirm"))) return;
+    setEditError(null);
+    const res = await fetch(`/api/users/${u.id}/reset-password`, { method: "POST" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setEditError(localizedDetail(body.detail, t, t("resetPasswordFailed")));
+      return;
+    }
+    const out = (await res.json()) as { invite_sent: boolean; temporary_password?: string | null };
+    setInviteNotice({ email: u.email, sent: out.invite_sent, temporaryPassword: out.temporary_password, reset: true });
+    closeEdit();
+  };
+
   const remove = async () => {
     if (!pendingDelete) return;
     setListError(null);
@@ -325,7 +339,7 @@ export default function UsersPage() {
     setPendingDelete(null);
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setListError(body.detail || t("deleteFailed"));
+      setListError(localizedDetail(body.detail, t, t("deleteFailed")));
       return;
     }
     await load();
@@ -479,14 +493,13 @@ export default function UsersPage() {
                 <p className="text-sm text-muted">{t("ownPasswordHint")}</p>
               ) : (
                 <>
-                  <Field label={t("newPasswordOptional")}>
-                    <input
-                      type="password"
-                      value={editForm.password}
-                      onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
-                      className={fieldInput}
-                    />
-                  </Field>
+                  <button
+                    type="button"
+                    onClick={() => resetPassword(editingUser)}
+                    className="justify-self-start rounded-md border border-border px-3 py-2 text-sm font-semibold text-onSurface"
+                  >
+                    {t("resetPasswordButton")}
+                  </button>
                   <p className="-mt-2 text-xs text-muted">{t("adminSetPasswordHint")}</p>
                 </>
               )}
@@ -549,11 +562,13 @@ export default function UsersPage() {
           <div>
             {inviteNotice.sent ? (
               <p className="text-onSurface">
-                {t("inviteSentTo")} <strong>{inviteNotice.email}</strong>
+                {inviteNotice.reset ? t("resetPasswordSent") : t("inviteSentTo")} <strong>{inviteNotice.email}</strong>
               </p>
             ) : (
               <>
-                <p className="text-onSurface">{t("inviteNotSent")}</p>
+                <p className="text-onSurface">
+                  {inviteNotice.reset ? <>{t("resetPasswordShow")} <strong>{inviteNotice.email}</strong>:</> : t("inviteNotSent")}
+                </p>
                 <p className="mt-2 font-mono text-base font-bold text-onSurface">{inviteNotice.temporaryPassword}</p>
               </>
             )}

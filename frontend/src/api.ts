@@ -252,6 +252,17 @@ export class ApiError extends Error {
     try {
       const parsed = JSON.parse(body);
       if (typeof parsed?.detail === "string") detail = parsed.detail;
+      else if (Array.isArray(parsed?.detail)) {
+        // FastAPI validation errors: "field: message"
+        const parts = parsed.detail
+          .map((d: any) => {
+            const field = Array.isArray(d?.loc) ? String(d.loc[d.loc.length - 1]) : "";
+            const msg = typeof d?.msg === "string" ? d.msg.replace(/^Value error, /, "") : "";
+            return msg ? (field && field !== "body" ? `${field}: ${msg}` : msg) : "";
+          })
+          .filter(Boolean);
+        if (parts.length) detail = parts.join("; ");
+      }
     } catch {
       // not JSON - keep the raw text
     }

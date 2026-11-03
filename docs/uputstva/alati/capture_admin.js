@@ -111,7 +111,7 @@ const put = (p, b, t) => api(p, { method: 'PUT', body: JSON.stringify(b) }, t);
     await page.getByRole('button', { name: 'Izmeni' }).first().click(); await wait();
     await shot(page, O + 'a06-izmena-korisnika.png', [
       { sel: label('Ime'), n: 1, pad: 4, badge: 'right' },
-      { sel: { text: 'Nova lozinka', exact: false, nth: 0 }, n: 2, pad: 4, badge: 'right' },
+      { sel: btn('Pošalji novu privremenu lozinku'), n: 2, pad: 4, badge: 'right' },
       { sel: label('Uloga'), n: 3, pad: 4, badge: 'right' }, { sel: label('Status'), n: 4, pad: 4, badge: 'right' },
       { sel: btn('Sačuvaj izmene'), n: 5, pad: 4 },
     ], clipTop(900));
