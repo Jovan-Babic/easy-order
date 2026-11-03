@@ -4,7 +4,10 @@ import { COOKIE_NAME } from "@/lib/session";
 import { backendFetch } from "@/lib/backend";
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== "object") {
+    return NextResponse.json({ detail: "Invalid request" }, { status: 400 });
+  }
   const res = await backendFetch("/auth/login", {
     method: "POST",
     body: JSON.stringify(body),

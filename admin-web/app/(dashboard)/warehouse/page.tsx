@@ -1,7 +1,7 @@
 "use client";
 
 import { lineQtyLabel, lineUnit, parseQty, qtyInputValue } from "@/lib/units";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { Field } from "@/components/FormField";
 import { useSession } from "@/lib/session-provider";
@@ -25,22 +25,50 @@ export default function WarehousePage() {
   const [rejecting, setRejecting] = useState(false);
   const [rejectNote, setRejectNote] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [loadFailed, setLoadFailed] = useState(false);
+  // Stock on hand per product (only where stock is tracked), shown next to the ordered quantity.
+  const [stockById, setStockById] = useState<Record<string, number>>({});
 
+  // A failed load keeps the last list on screen and shows an error - an empty queue must mean "nothing to pack".
   const load = useCallback(async () => {
     const qs = QUEUE.map((s) => `status=${s}`).join("&");
     try {
-      const [ordersRes, customersRes] = await Promise.all([fetch(`/api/orders?${qs}`), fetch("/api/customers")]);
+      const [ordersRes, customersRes, productsRes] = await Promise.all([fetch(`/api/orders?${qs}`), fetch("/api/customers"), fetch("/api/products")]);
+      if (ordersRes.status === 401) {
+        window.location.href = "/login"; // session expired
+        return;
+      }
       if (!ordersRes.ok) throw new Error();
       setOrders((await ordersRes.json()) as Order[]);
       const list = customersRes.ok ? ((await customersRes.json()) as Customer[]) : [];
       setCustomers(Object.fromEntries(list.map((c) => [c.id, c])));
+      if (productsRes.ok) {
+        const products = (await productsRes.json()) as Array<{ id: string; stock_qty?: number | null; expired_qty?: number | null }>;
+        setStockById(
+          Object.fromEntries(
+            products
+              .filter((p) => p.stock_qty != null)
+              // pieces past their expiry date can't be sent
+              .map((p) => [p.id, Math.max(0, (p.stock_qty ?? 0) - (p.expired_qty ?? 0))])
+          )
+        );
+      }
+      setLoadFailed(false);
     } catch {
-      setOrders([]);
+      setLoadFailed(true);
     }
   }, []);
 
   useEffect(() => {
     load();
+    // New orders arrive while the page is open: refresh every 30 s and when the tab is shown again.
+    const timer = setInterval(load, 30000);
+    const onVisible = () => document.visibilityState === "visible" && load();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [load]);
 
   const selected = orders.find((o) => o.id === selectedId) ?? null;
@@ -84,7 +112,10 @@ export default function WarehousePage() {
       setOrders((prev) =>
         QUEUE.includes(updated.status) ? prev.map((o) => (o.id === updated.id ? updated : o)) : prev.filter((o) => o.id !== updated.id)
       );
-      if (!QUEUE.includes(updated.status)) setSelectedId(null);
+      if (!QUEUE.includes(updated.status)) {
+        setSelectedId(null);
+        load(); // shipping changes the stock the other orders show
+      }
       return true;
     } finally {
       setBusy(false);
@@ -94,11 +125,20 @@ export default function WarehousePage() {
   const setStatus = (status: OrderStatus, extra: Record<string, unknown> = {}) =>
     run(`/api/orders/${selected!.id}/status`, { method: "POST", body: JSON.stringify({ status, ...extra }) });
 
-  const setPicked = (productId: string, qty: number | null) =>
-    run(`/api/orders/${selected!.id}/items`, {
-      method: "PATCH",
-      body: JSON.stringify({ items: [{ product_id: productId, picked_qty: qty }] }),
-    });
+  // Saves go one after another: the fields stay editable while one is saving (Tab + typing keeps working),
+  // and the backend never gets two overlapping writes to the same order.
+  const pickQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const setPicked = (productId: string, qty: number | null) => {
+    const orderId = selected!.id;
+    const job = pickQueue.current.then(() =>
+      run(`/api/orders/${orderId}/items`, {
+        method: "PATCH",
+        body: JSON.stringify({ items: [{ product_id: productId, picked_qty: qty }] }),
+      })
+    );
+    pickQueue.current = job.catch(() => undefined);
+    return job;
+  };
 
   const allChecked = !!selected && selected.items.every((i) => i.picked_qty != null);
   const anyPicked = !!selected && selected.items.some((i) => (i.picked_qty ?? 0) > 0);
@@ -108,7 +148,20 @@ export default function WarehousePage() {
 
   return (
     <div className="orders-page">
-      <h1 className="mb-6 text-2xl font-extrabold text-onSurface">{t("warehouse")}</h1>
+      <div className="mb-6 flex items-center justify-between gap-4">
+        <h1 className="text-2xl font-extrabold text-onSurface">{t("warehouse")}</h1>
+        <button type="button" onClick={load} className="rounded-md border border-border px-3 py-1.5 text-sm font-semibold text-onSurface">
+          {t("refresh")}
+        </button>
+      </div>
+      {loadFailed && (
+        <div role="alert" className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-error bg-surfaceSecondary p-3 text-sm text-error">
+          <span>{t("queueLoadFailed")}</span>
+          <button type="button" onClick={load} className="rounded-md border border-error px-3 py-1 font-semibold">
+            {t("tryAgain")}
+          </button>
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
         <div className="space-y-6">
@@ -182,7 +235,15 @@ export default function WarehousePage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-2 py-2 text-right">{lineQtyLabel(item.ordered_qty, item)}</td>
+                      <td className="px-2 py-2 text-right">
+                        {lineQtyLabel(item.ordered_qty, item)}
+                        {stockById[item.product_id] !== undefined && (
+                          <span className={`block text-xs ${stockById[item.product_id] < item.ordered_qty ? "font-semibold text-error" : "font-normal text-muted"}`}>
+                            {t("stockOnHand")}: {lineQtyLabel(stockById[item.product_id], item)}
+                            {stockById[item.product_id] < item.ordered_qty ? ` · ${t("stockShort")}` : ""}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-2 py-2 text-right">
                         <div className="flex items-center justify-end gap-2">
                           <input
@@ -190,7 +251,6 @@ export default function WarehousePage() {
                             min={0}
                             step="any"
                             max={qtyInputValue(item.ordered_qty, lineUnit(item))}
-                            disabled={busy}
                             defaultValue={qtyInputValue(item.picked_qty, lineUnit(item))}
                             key={`${item.product_id}-${item.picked_qty ?? "x"}`}
                             onBlur={(e) => {
@@ -205,7 +265,6 @@ export default function WarehousePage() {
                           />
                           <button
                             type="button"
-                            disabled={busy}
                             onClick={() => setPicked(item.product_id, item.ordered_qty)}
                             className="rounded-md border border-brand px-2 py-1 text-xs font-semibold text-brand hover:bg-brandSecondary disabled:opacity-50"
                           >

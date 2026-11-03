@@ -4,5 +4,5 @@ import { backendFetch, proxyJson } from "@/lib/backend";
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ clientId: string }> }) {
   const { clientId } = await params;
   const body = await req.text();
-  return proxyJson(await backendFetch(`/subscriptions/${clientId}/seats`, { method: "PUT", body }));
+  return proxyJson(await backendFetch(`/subscriptions/${encodeURIComponent(clientId)}/seats`, { method: "PUT", body }));
 }

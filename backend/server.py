@@ -1591,6 +1591,9 @@ async def me(current_user: User = Depends(get_authenticated_user)):
 
 @api_router.post("/auth/logout")
 async def logout(current_user: User = Depends(get_authenticated_user)):
+    # Bumping token_version makes every token of this user invalid, so a copied token dies with the logout
+    # (it also signs the user out of their other devices).
+    await db.users.update_one({"id": current_user.id}, {"$inc": {"token_version": 1}})
     return {"ok": True}
 
 
@@ -1797,7 +1800,11 @@ async def get_my_client(current_user: User = Depends(get_current_user)):
     doc = await db.clients.find_one({"id": current_user.client_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Client not found")
-    return await _client_out(doc)
+    out = await _client_out(doc)
+    if current_user.role in (Role.WAREHOUSE, Role.OPERATOR):
+        # Header/invoice data stays (the warehouse prints invoices); activity and accounting data is not theirs to see.
+        out = out.copy(update={"accounting_email": None, "last_activity_at": None, "last_order_at": None, "orders_30d": None})
+    return out
 
 
 @api_router.get("/clients/{client_id}", response_model=Client)
@@ -5787,8 +5794,20 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
 
     focus_map = await _focus_by_product({"client_id": client_id}) if await client_has_module(client_id, Module.FOCUS) else {}
     focus_ids = set(focus_map)
-    items: List[OrderItem] = []
+    # One line per product (the warehouse packs per product): the same product twice is merged when the discounts
+    # match, otherwise rejected.
+    merged: Dict[str, Any] = {}
     for line in inp.items:
+        first = merged.get(line.product_id)
+        if first is None:
+            merged[line.product_id] = line.copy()
+        elif (first.discount, first.additional_discount) != (line.discount, line.additional_discount):
+            name = (products.get(line.product_id) or {}).get("name", line.product_id)
+            raise HTTPException(status_code=400, detail=f"Product {name} is on the order twice with different discounts")
+        else:
+            first.ordered_qty += line.ordered_qty
+    items: List[OrderItem] = []
+    for line in merged.values():
         product = products.get(line.product_id)
         if not product:
             raise HTTPException(status_code=400, detail=f"Product not found: {line.product_id}")
@@ -5865,7 +5884,7 @@ async def update_order(order_id: str, inp: OrderInput, current_user: User = Depe
             "customer_name": customer["name"],
             "items": [i.dict() for i in items],
             "updated_at": now_iso(),
-        }},
+        }, "$inc": {"items_rev": 1}},
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=409, detail="Order was changed in the meantime")
@@ -5885,7 +5904,7 @@ async def delete_order(order_id: str, current_user: User = Depends(require_manag
 # ---------------- Order status workflow (RBAC_PLAN.md section 4) ----------------
 class StatusChangeInput(BaseModel):
     status: OrderStatus
-    note: Optional[str] = None
+    note: Optional[str] = Field(default=None, max_length=300)
     # Only for -> shipped on a client with manual invoice numbering.
     invoice_number: Optional[str] = Field(default=None, max_length=40)
 
@@ -5944,6 +5963,13 @@ async def _get_order_for_processing(order_id: str, user: User) -> dict:
     return order
 
 
+def _require_not_taken_by_other(order: dict, user: User) -> None:
+    """A warehouse worker may not touch an order another worker has taken (an admin may take over)."""
+    holder = order.get("assigned_to_user_id")
+    if user.role == Role.WAREHOUSE and _status_value(order) == OrderStatus.IN_PROGRESS.value and holder and holder != user.id:
+        raise HTTPException(status_code=403, detail=f"Order is taken by {order.get('assigned_to_name') or 'another user'}")
+
+
 async def _assign_invoice_number(order: dict, manual_number: Optional[str]) -> Dict[str, Any]:
     """Invoice number for the first shipment (RBAC_PLAN.md section 5): from
     the per-client counter ("auto") or typed by the warehouse ("manual")."""
@@ -5967,11 +5993,19 @@ async def _assign_invoice_number(order: dict, manual_number: Optional[str]) -> D
     return {"invoice_seq": counter["seq"], "invoice_number": f"{prefix}/{counter['seq']:04d}"}
 
 
+async def _release_invoice_seq(client_id: str, seq: Optional[int]) -> None:
+    """Gives back an invoice number that was drawn but not used (the status write lost a race), so the numbering
+    has no gap - only if nobody drew a later number in the meantime."""
+    if seq:
+        await db.counters.update_one({"_id": _invoice_counter_id(client_id), "seq": seq}, {"$inc": {"seq": -1}})
+
+
 @api_router.post("/orders/{order_id}/status", response_model=OrderOut)
 async def change_order_status(
     order_id: str, inp: StatusChangeInput, current_user: User = Depends(get_current_user)
 ):
     order = await _get_order_for_processing(order_id, current_user)
+    _require_not_taken_by_other(order, current_user)
     current = _status_value(order)
     target = inp.status.value
     note = (inp.note or "").strip() or None
@@ -6004,10 +6038,12 @@ async def change_order_status(
             raise HTTPException(status_code=400, detail="Nothing was picked - reject the order instead")
 
     update: Dict[str, Any] = {"status": target}
+    claimed_seq = None
     if target == OrderStatus.SHIPPED.value and not order.get("invoice_number"):
         # An order keeps the number from its first shipment, even if an admin
         # later moves it back and ships it again.
         update.update(await _assign_invoice_number(order, inp.invoice_number))
+        claimed_seq = update.get("invoice_seq")
     if target == OrderStatus.IN_PROGRESS.value:
         update["assigned_to_user_id"] = current_user.id
         update["assigned_to_name"] = current_user.name
@@ -6024,8 +6060,10 @@ async def change_order_status(
             {"$set": update, "$push": {"status_history": _history_entry(current_user, current, target, note)}},
         )
     except DuplicateKeyError:
+        await _release_invoice_seq(order["client_id"], claimed_seq)
         raise HTTPException(status_code=409, detail="Invoice number is already used")
     if result.matched_count == 0:
+        await _release_invoice_seq(order["client_id"], claimed_seq)
         raise HTTPException(status_code=409, detail="Order was changed in the meantime")
     updated_doc = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if override and (current, target) not in _WAREHOUSE_FLOW:
@@ -6070,10 +6108,21 @@ async def update_picked_items(
     inp: PickedItemsInput,
     current_user: User = Depends(require_module(Module.WAREHOUSE, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE)),
 ):
-    order = await get_scoped_or_404("orders", order_id, current_user)
+    for _attempt in range(4):
+        order = await get_scoped_or_404("orders", order_id, current_user)
+        done = await _try_update_picked(order, order_id, inp, current_user)
+        if done is not None:
+            return done
+    raise HTTPException(status_code=409, detail="Order was changed in the meantime")
+
+
+async def _try_update_picked(order: dict, order_id: str, inp: "PickedItemsInput", current_user: User) -> Optional[OrderOut]:
+    """One optimistic attempt: None = another write to the items got in first (the caller re-reads and retries)."""
     current = _status_value(order)
     if current not in (OrderStatus.NEW.value, OrderStatus.IN_PROGRESS.value):
         raise HTTPException(status_code=409, detail="Only new or in-progress orders can be packed")
+    _require_not_taken_by_other(order, current_user)
+    rev = order.get("items_rev")
 
     items = order.get("items", [])
     by_id = {i["product_id"]: i for i in items}
@@ -6100,11 +6149,16 @@ async def update_picked_items(
             assigned_to_name=current_user.name,
         )
         push = {"status_history": _history_entry(current_user, current, OrderStatus.IN_PROGRESS.value, None)}
+    # Conditional on the status and on the items revision: two workers packing at once never overwrite each other.
     result = await db.orders.update_one(
-        {"id": order_id, "status": current}, {"$set": update, **({"$push": push} if push else {})}
+        {"id": order_id, "status": current, "items_rev": rev if rev is not None else {"$exists": False}},
+        {"$set": update, "$inc": {"items_rev": 1}, **({"$push": push} if push else {})},
     )
     if result.matched_count == 0:
-        raise HTTPException(status_code=409, detail="Order was changed in the meantime")
+        fresh = await db.orders.find_one({"id": order_id}, {"_id": 0, "status": 1})
+        if fresh and _status_value(fresh) != current:
+            raise HTTPException(status_code=409, detail="Order was changed in the meantime")
+        return None
     return _order_out(await db.orders.find_one({"id": order_id}, {"_id": 0}))
 
 
