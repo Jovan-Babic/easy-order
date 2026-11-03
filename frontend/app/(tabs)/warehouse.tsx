@@ -58,6 +58,18 @@ export default function WarehouseScreen() {
   const [expiring, setExpiring] = useState<ExpiringResponse | null>(null);
   // Products with expiry tracking, to hint which expiry date to pack first.
   const [expiryProducts, setExpiryProducts] = useState<Record<string, Product>>({});
+  // Stock on hand per product (only for products whose stock is tracked), shown next to what the order needs.
+  const [stockById, setStockById] = useState<Record<string, { onHand: number }>>({});
+
+  const rememberStock = (products: Product[]) =>
+    setStockById(
+      Object.fromEntries(
+        products
+          .filter((p) => p.stock_qty != null)
+          // pieces past their expiry date can't be sent
+          .map((p) => [p.id, { onHand: Math.max(0, (p.stock_qty ?? 0) - (p.expired_qty ?? 0)) }])
+      )
+    );
 
   const load = useCallback(async (pull = false) => {
     try {
@@ -73,6 +85,7 @@ export default function WarehouseScreen() {
       setClient(me);
       setExpiring(alerts);
       setExpiryProducts(Object.fromEntries(products.filter((p) => p.track_expiry).map((p) => [p.id, p])));
+      rememberStock(products);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -97,6 +110,8 @@ export default function WarehouseScreen() {
           ? prev.map((o) => (o.id === orderId ? updated : o))
           : prev.filter((o) => o.id !== orderId)
       );
+      // Shipping changes the stock: re-read it so the other orders show the new numbers.
+      if (!QUEUE.includes(updated.status ?? "new")) api.listProducts().then(rememberStock).catch(() => {});
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) await load(true);
       Alert.alert(t("somethingWentWrong"), e instanceof ApiError ? e.detail : String(e));
@@ -216,6 +231,15 @@ export default function WarehouseScreen() {
                                 : lineQtyLabel(it.ordered_qty, it)}
                             </Text>
                           </Pressable>
+                          {stockById[it.product_id] && (
+                            <Text
+                              style={[styles.stockHint, stockById[it.product_id].onHand < it.ordered_qty && styles.stockShort]}
+                              testID={`stock-${item.id}-${it.product_id}`}
+                            >
+                              {t("stockOnHand")}: {lineQtyLabel(stockById[it.product_id].onHand, it)}
+                              {stockById[it.product_id].onHand < it.ordered_qty ? `  ·  ${t("stockShort")}` : ""}
+                            </Text>
+                          )}
                           {expiryProducts[it.product_id] && (
                             <Text style={styles.expiryHint}>
                               {expiryProducts[it.product_id].next_expiry
@@ -434,6 +458,8 @@ const styles = StyleSheet.create({
     color: colors.onSurface,
   },
   expiryHint: { fontSize: font.sm, color: colors.warning, fontWeight: "600" },
+  stockHint: { fontSize: font.sm, color: colors.muted, fontWeight: "600" },
+  stockShort: { color: colors.error },
   lineName: { flex: 1, fontSize: font.base, color: colors.onSurface },
   lineQty: { fontSize: font.base, fontWeight: "700", color: colors.onSurface },
   lineDone: { color: colors.muted, textDecorationLine: "line-through" },

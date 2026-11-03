@@ -26,12 +26,14 @@ export default function WarehousePage() {
   const [rejectNote, setRejectNote] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
+  // Stock on hand per product (only where stock is tracked), shown next to the ordered quantity.
+  const [stockById, setStockById] = useState<Record<string, number>>({});
 
   // A failed load keeps the last list on screen and shows an error - an empty queue must mean "nothing to pack".
   const load = useCallback(async () => {
     const qs = QUEUE.map((s) => `status=${s}`).join("&");
     try {
-      const [ordersRes, customersRes] = await Promise.all([fetch(`/api/orders?${qs}`), fetch("/api/customers")]);
+      const [ordersRes, customersRes, productsRes] = await Promise.all([fetch(`/api/orders?${qs}`), fetch("/api/customers"), fetch("/api/products")]);
       if (ordersRes.status === 401) {
         window.location.href = "/login"; // session expired
         return;
@@ -40,6 +42,17 @@ export default function WarehousePage() {
       setOrders((await ordersRes.json()) as Order[]);
       const list = customersRes.ok ? ((await customersRes.json()) as Customer[]) : [];
       setCustomers(Object.fromEntries(list.map((c) => [c.id, c])));
+      if (productsRes.ok) {
+        const products = (await productsRes.json()) as Array<{ id: string; stock_qty?: number | null; expired_qty?: number | null }>;
+        setStockById(
+          Object.fromEntries(
+            products
+              .filter((p) => p.stock_qty != null)
+              // pieces past their expiry date can't be sent
+              .map((p) => [p.id, Math.max(0, (p.stock_qty ?? 0) - (p.expired_qty ?? 0))])
+          )
+        );
+      }
       setLoadFailed(false);
     } catch {
       setLoadFailed(true);
@@ -99,7 +112,10 @@ export default function WarehousePage() {
       setOrders((prev) =>
         QUEUE.includes(updated.status) ? prev.map((o) => (o.id === updated.id ? updated : o)) : prev.filter((o) => o.id !== updated.id)
       );
-      if (!QUEUE.includes(updated.status)) setSelectedId(null);
+      if (!QUEUE.includes(updated.status)) {
+        setSelectedId(null);
+        load(); // shipping changes the stock the other orders show
+      }
       return true;
     } finally {
       setBusy(false);
@@ -219,7 +235,15 @@ export default function WarehousePage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-2 py-2 text-right">{lineQtyLabel(item.ordered_qty, item)}</td>
+                      <td className="px-2 py-2 text-right">
+                        {lineQtyLabel(item.ordered_qty, item)}
+                        {stockById[item.product_id] !== undefined && (
+                          <span className={`block text-xs ${stockById[item.product_id] < item.ordered_qty ? "font-semibold text-error" : "font-normal text-muted"}`}>
+                            {t("stockOnHand")}: {lineQtyLabel(stockById[item.product_id], item)}
+                            {stockById[item.product_id] < item.ordered_qty ? ` · ${t("stockShort")}` : ""}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-2 py-2 text-right">
                         <div className="flex items-center justify-end gap-2">
                           <input

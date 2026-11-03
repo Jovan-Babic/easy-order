@@ -88,6 +88,8 @@ Primer: kupac Delikates Sunce naručio je 36 sokova od jabuke, 24 jogurta i 3 kg
 2. **Preuzmi** – kažete da vi pakujete ovu porudžbinu. Status prelazi u **U pripremi**, a komercijalista više ne može da je menja.
 3. **Odbij** – ako porudžbinu ne možete da ispunite (odeljak niže).
 
+Ispod naručene količine piše i trenutno **Na stanju** (za artikle kojima se vodi stanje; istekla roba se ne računa). Ako na stanju ima manje nego što je naručeno, red je crven i piše **nema dovoljno** – tada znate tačno koliko možete da pošaljete i upisujete tu količinu. Stanje se osvežava kad povučete listu nadole (u aplikaciji) ili nakon svake otpreme.
+
 Narandžasti red **Uzmi prvo rok: 31.10.2026** vidi se kod artikala sa rokom trajanja: uzmite sa police robu sa tim (najranijim) rokom. Program sam skida sa stanja seriju sa najranijim rokom.
 
 ### Korak 2 – spakujte i čekirajte
