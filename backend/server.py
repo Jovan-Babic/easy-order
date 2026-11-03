@@ -5663,12 +5663,14 @@ def _allowed_supplier_discount(product: dict, requested: Optional[float]) -> flo
     return float(requested)
 
 
-def _allowed_additional_discount(product: dict, requested: Optional[float]) -> float:
-    """Additional discount must be one of product.additional_discounts
-    (0 = none is always allowed)."""
+def _allowed_additional_discount(product: dict, requested: Optional[float], focus_discount: Optional[float] = None) -> float:
+    """Additional discount must be one of product.additional_discounts, or the discount recommended while the
+    product is in focus (0 = none is always allowed)."""
     if not requested:
         return 0.0
     allowed = {float(v) for v in (product.get("additional_discounts") or [])}
+    if focus_discount:
+        allowed.add(float(focus_discount))
     if float(requested) not in allowed:
         raise HTTPException(
             status_code=400, detail=f"Additional discount {requested}% is not allowed for {product['name']}"
@@ -5783,7 +5785,8 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
     unit_codes = list({p.get("unit") or "kom" for p in product_docs})
     units = {u["code"]: u async for u in db.units.find({"code": {"$in": unit_codes}}, {"_id": 0})}
 
-    focus_ids = set(await _focus_by_product({"client_id": client_id})) if await client_has_module(client_id, Module.FOCUS) else set()
+    focus_map = await _focus_by_product({"client_id": client_id}) if await client_has_module(client_id, Module.FOCUS) else {}
+    focus_ids = set(focus_map)
     items: List[OrderItem] = []
     for line in inp.items:
         product = products.get(line.product_id)
@@ -5808,7 +5811,9 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
             unit_symbol=(units.get(product.get("unit") or "kom") or {}).get("symbol") or (product.get("unit") or "kom"),
             unit_factor=(units.get(product.get("unit") or "kom") or {}).get("factor") or 1,
             discount=_allowed_supplier_discount(product, line.discount),
-            additional_discount=_allowed_additional_discount(product, line.additional_discount),
+            additional_discount=_allowed_additional_discount(
+                product, line.additional_discount, focus_map[product["id"]].recommended_discount if product["id"] in focus_map else None
+            ),
             ordered_qty=line.ordered_qty,
             focus=product["id"] in focus_ids,
         ))
@@ -6695,7 +6700,9 @@ class FocusInput(BaseModel):
     product_id: Optional[str] = None  # create only
     reason: str = "other"
     note: Optional[str] = ""
-    recommended_discount: Optional[float] = None  # one of the product's additional_discounts; None/0 = no suggestion
+    # Any additional discount 0-100 chosen for this focus item (it does not have to be in the product's
+    # additional_discounts: while the item is in focus, orders accept exactly this value too); None/0 = no suggestion.
+    recommended_discount: Optional[float] = Field(default=None, ge=0, le=100)
     active_to: Optional[str] = None  # YYYY-MM-DD, last day in focus; None = until removed
     client_id: Optional[str] = None  # superadmin writes only
 
@@ -6801,16 +6808,8 @@ async def _validated_focus(inp: FocusInput, product: dict) -> dict:
         active_to = _parse_date(inp.active_to, "active_to").date().isoformat()
         if active_to < _today().isoformat():
             raise HTTPException(status_code=400, detail="active_to is in the past")
-    recommended = inp.recommended_discount
-    if recommended is not None:
-        # The sales rep picks the additional discount (the supplier one is fixed),
-        # so the suggestion is one of those; 0 means "no suggestion".
-        allowed = {float(v) for v in (product.get("additional_discounts") or [])}
-        if float(recommended) not in allowed:
-            raise HTTPException(
-                status_code=400, detail=f"Additional discount {recommended}% is not allowed for {product['name']}"
-            )
-        recommended = float(recommended) or None
+    # The sales rep applies it as the additional discount (the supplier one is fixed); 0 means "no suggestion".
+    recommended = round(float(inp.recommended_discount), 2) or None if inp.recommended_discount is not None else None
     return {"reason": inp.reason, "note": note, "recommended_discount": recommended, "active_to": active_to}
 
 

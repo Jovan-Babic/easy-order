@@ -365,12 +365,23 @@ export default function FocusPage() {
                 <textarea className={fieldInput} rows={2} maxLength={300} placeholder={t("focusNoteHint")} value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} />
               </Field>
               <Field label={t("focusDiscount")}>
-                <select className={fieldInput} value={draft.discount} onChange={(e) => setDraft({ ...draft, discount: e.target.value })}>
-                  <option value="">{t("focusDiscountNone")}</option>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step="any"
+                  list="focus-discount-options"
+                  className={fieldInput}
+                  placeholder={t("focusDiscountNone")}
+                  value={draft.discount}
+                  onChange={(e) => setDraft({ ...draft, discount: e.target.value })}
+                />
+                <datalist id="focus-discount-options">
                   {discountOptions.map((d) => (
-                    <option key={d} value={d}>{d}%</option>
+                    <option key={d} value={d} />
                   ))}
-                </select>
+                </datalist>
+                <p className="mt-1 text-xs text-muted">{t("focusDiscountHint")}</p>
               </Field>
               <Field label={t("focusUntil")}>
                 <input type="date" className={fieldInput} value={draft.active_to} onChange={(e) => setDraft({ ...draft, active_to: e.target.value })} />

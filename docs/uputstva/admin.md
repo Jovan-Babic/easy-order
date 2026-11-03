@@ -276,7 +276,7 @@ Ovde birate artikle na koje komercijalisti treba da obrate posebnu pažnju: neš
 1. **Artikal** – potražite ga (polje **Pretraga artikala**) pa izaberite. Moguće su samo aktivni artikli koji još nisu u fokusu.
 2. **Razlog**: **Višak na lageru**, **Ističe rok**, **Akcija** ili **Ostalo**.
 3. **Napomena za komercijaliste** – kratka poruka (do 300 znakova), npr. „Višak, ponudi svima“.
-4. **Preporučeni rabat** – opciono. Biraju se samo vrednosti koje ste artiklu dozvolili kao **dodatni popust** (odeljak 5). Komercijalista jednim dodirom primenjuje preporuku ili izabere drugu vrednost.
+4. **Preporučeni rabat** – opciono; upisujete bilo koju vrednost od 0 do 100 %. Ne mora da bude među dodatnim popustima artikla (odeljak 5): dok je artikal u fokusu, komercijalista sme da poruči baš tu vrednost. Kad artikal izađe iz fokusa, ta vrednost više ne važi za nove porudžbine. Komercijalista jednim dodirom primenjuje preporuku ili izabere drugu vrednost sa liste dodatnih popusta.
 5. **U fokusu do** – opciono. Posle tog datuma artikal sam izlazi iz fokusa.
 6. **Sačuvaj**.
 

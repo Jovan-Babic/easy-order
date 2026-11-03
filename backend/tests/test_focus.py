@@ -79,8 +79,9 @@ def test_validation(api_client):
     p = _product(api_client)
     bad = api_client.post(f"{API}/focus", json={"product_id": p["id"], "reason": "nope"})
     assert bad.status_code == 400
-    # the suggested discount must be one the product allows
-    assert api_client.post(f"{API}/focus", json={"product_id": p["id"], "recommended_discount": 33}).status_code == 400
+    # the suggested discount is any 0-100 value (it does not have to be one of the product's own)
+    assert api_client.post(f"{API}/focus", json={"product_id": p["id"], "recommended_discount": 133}).status_code == 422
+    assert api_client.post(f"{API}/focus", json={"product_id": p["id"], "recommended_discount": -1}).status_code == 422
     assert api_client.post(f"{API}/focus", json={"product_id": p["id"], "active_to": _in(-1)}).status_code == 400
     assert api_client.post(f"{API}/focus", json={"product_id": "missing"}).status_code == 404
     ok = api_client.post(f"{API}/focus", json={"product_id": p["id"], "reason": "promo", "active_to": _in(3)})
@@ -182,3 +183,22 @@ def test_report_counts_only_focus_lines(api_client):
     assert S.op.get(f"{API}/focus/report").status_code == 403
     assert api_client.get(f"{API}/focus/report", params={"from_date": "2026-02-01", "to_date": "2026-01-01"}).status_code == 400
     api_client.delete(f"{API}/focus/{f['id']}")
+
+
+def test_focus_discount_outside_the_product_list_is_orderable_only_while_in_focus(api_client):
+    p = _product(api_client)  # additional discounts 0 / 5 / 10 only
+    cust = api_client.post(f"{API}/customers", json={"name": "TEST_FOCUS_DISC"}).json()
+    line = {"customer_id": cust["id"], "items": [{"product_id": p["id"], "ordered_qty": 1, "additional_discount": 33.5}]}
+    assert S.op.post(f"{API}/orders", json=line).status_code == 400  # not in focus: still refused
+    f = api_client.post(f"{API}/focus", json={"product_id": p["id"], "reason": "promo", "recommended_discount": 33.5})
+    assert f.status_code == 200 and f.json()["recommended_discount"] == 33.5
+    assert _seen(S.op, p["id"])["focus"]["recommended_discount"] == 33.5
+    r = S.op.post(f"{API}/orders", json=line)
+    assert r.status_code == 200, r.text
+    assert r.json()["items"][0]["additional_discount"] == 33.5
+    other = {**line, "items": [{**line["items"][0], "additional_discount": 34}]}
+    assert S.op.post(f"{API}/orders", json=other).status_code == 400  # only the recommended value
+    api_client.delete(f"{API}/focus/{f.json()['id']}")
+    assert S.op.post(f"{API}/orders", json=line).status_code == 400  # focus ended
+    api_client.delete(f"{API}/orders/{r.json()['id']}")
+    api_client.delete(f"{API}/customers/{cust['id']}")

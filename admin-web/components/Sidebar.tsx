@@ -40,6 +40,13 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/app", labelKey: "app", roles: ["superadmin", "admin", "warehouse"] },
 ];
 
+// Menu order per role (an item missing from a list goes to the end).
+const NAV_ORDER: Record<string, string[]> = {
+  superadmin: ["/dashboard", "/clients", "/subscriptions", "/payments", "/billing-drafts", "/users", "/announcements", "/audit", "/units", "/settings", "/app"],
+  admin: ["/dashboard", "/seats", "/billing", "/users", "/customers", "/products", "/orders", "/warehouse", "/stock", "/focus", "/targets", "/reports", "/guide", "/app", "/audit"],
+  warehouse: ["/warehouse", "/stock", "/orders", "/guide", "/app"],
+};
+
 const showAppMenu = process.env.NEXT_PUBLIC_SHOW_APP_MENU === "true";
 
 export function Sidebar({ user }: { user: NavUser }) {
@@ -63,6 +70,10 @@ export function Sidebar({ user }: { user: NavUser }) {
       return false;
     }
     return item.roles.includes(user.role);
+  }).sort((x, y) => {
+    const order = NAV_ORDER[user.role] ?? [];
+    const at = (href: string) => (order.includes(href) ? order.indexOf(href) : order.length);
+    return at(x.href) - at(y.href);
   });
   const current = items.find((item) => pathname.startsWith(item.href));
 
