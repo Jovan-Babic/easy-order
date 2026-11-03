@@ -343,8 +343,14 @@ export default function AdminScreen() {
   };
 
   const remove = async (item: any) => {
-    if (tab === "products") await api.deleteProduct(item.id);
-    else await api.deleteCustomer(item.id);
+    try {
+      if (tab === "products") await api.deleteProduct(item.id);
+      else await api.deleteCustomer(item.id);
+    } catch (error) {
+      // e.g. 409: the item has orders - it must be deactivated instead of deleted
+      showToast?.(error instanceof ApiError ? error.detail : t("delete"));
+      return;
+    }
     showToast(t("delete"));
     await load();
   };

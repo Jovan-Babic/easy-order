@@ -51,8 +51,10 @@ def _announce(sa, **kw):
 
 
 def test_only_superadmin(api_client):
-    for path in ("/audit", "/announcements", "/superadmin/system", "/clients/x/notes", "/clients/x/activity"):
+    for path in ("/announcements", "/superadmin/system", "/clients/x/notes", "/clients/x/activity"):
         assert api_client.get(f"{API}{path}").status_code == 403, path
+    # The client admin reads the audit log of their own client only (see test_admin_hardening.py).
+    assert api_client.get(f"{API}/audit").status_code == 200
     assert api_client.post(f"{API}/announcements", json={"message_sr": "x"}).status_code == 403
 
 
@@ -151,10 +153,12 @@ def test_audit_log(superadmin_client, api_client):
     assert [e["id"] for e in paged] == [e["id"] for e in entries[2:4]]
     assert any(e["action"] == "plan.create" and e["target_name"] == plan["name"] for e in superadmin_client.get(f"{API}/audit", params={"action": "plan."}).json())
 
-    # what a client's own admin does is not the superadmin's business: nothing is logged for it
+    # what a client's own admin does is logged too (the admin and the superadmin can both read it)
     n = len(superadmin_client.get(f"{API}/audit", params={"client_id": client["id"], "limit": 200}).json())
     admin.post(f"{API}/users", json={"email": f"test-audit-op-{marker}@easyorder.dev", "name": "TEST", "role": "operator"})
-    assert len(superadmin_client.get(f"{API}/audit", params={"client_id": client["id"], "limit": 200}).json()) == n
+    after = superadmin_client.get(f"{API}/audit", params={"client_id": client["id"], "limit": 200}).json()
+    assert len(after) == n + 1 and after[0]["action"] == "user.create"
+    assert [e["id"] for e in admin.get(f"{API}/audit", params={"limit": 200}).json()] == [e["id"] for e in after]
 
 
 def test_announcement_validation(superadmin_client):

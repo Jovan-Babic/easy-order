@@ -20,7 +20,7 @@ import smtplib
 import logging
 import mimetypes
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr, PrivateAttr
+from pydantic import BaseModel, Field, EmailStr, PrivateAttr, field_validator
 from typing import List, Literal, Optional, Dict, Any, Tuple
 from enum import Enum
 import uuid
@@ -516,10 +516,15 @@ class ClientCreateResponse(InviteResult):
 
 class UserInput(BaseModel):
     email: EmailStr
-    name: str
-    phone: Optional[str] = ""
+    name: str = Field(min_length=1, max_length=100)
+    phone: Optional[str] = Field(default="", max_length=40)
     role: Role
     client_id: Optional[str] = None
+
+    @field_validator("name", "phone", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        return _stripped(v)
 
 
 class ChangePasswordInput(BaseModel):
@@ -528,8 +533,8 @@ class ChangePasswordInput(BaseModel):
 
 
 class UserUpdateInput(BaseModel):
-    name: Optional[str] = None
-    phone: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    phone: Optional[str] = Field(default=None, max_length=40)
     password: Optional[str] = None
     active: Optional[bool] = None
     role: Optional[Role] = None
@@ -591,16 +596,46 @@ class Customer(BaseModel):
     email: Optional[str] = ""
     phone: Optional[str] = ""
     pib: Optional[str] = ""
+    active: bool = True
     created_at: str = Field(default_factory=now_iso)
 
 
+_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _stripped(value):
+    return value.strip() if isinstance(value, str) else value
+
+
 class CustomerInput(BaseModel):
-    name: str
-    address: Optional[str] = ""
-    email: Optional[str] = ""
-    phone: Optional[str] = ""
-    pib: Optional[str] = ""
+    name: str = Field(min_length=1, max_length=200)
+    address: Optional[str] = Field(default="", max_length=300)
+    email: Optional[str] = Field(default="", max_length=120)
+    phone: Optional[str] = Field(default="", max_length=40)
+    pib: Optional[str] = Field(default="", max_length=15)
+    # None = keep (create: active). An inactive customer cannot get new orders; use it instead of deleting
+    # a customer that has order history.
+    active: Optional[bool] = None
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
+
+    @field_validator("name", "address", "email", "phone", "pib", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        return _stripped(v)
+
+    @field_validator("email")
+    @classmethod
+    def _email_shape(cls, v):
+        if v and not _EMAIL_SHAPE.match(v):
+            raise ValueError("Invalid email address")
+        return v
+
+    @field_validator("pib")
+    @classmethod
+    def _pib_digits(cls, v):
+        if v and not re.fullmatch(r"[0-9]{6,15}", v):
+            raise ValueError("PIB must contain 6-15 digits")
+        return v
 
 
 class Product(BaseModel):
@@ -664,18 +699,18 @@ class ProductOut(Product):
 
 
 class ProductInput(BaseModel):
-    name: str
-    image: Optional[str] = ""
-    manufacturer: Optional[str] = ""
-    price_no_vat: Optional[float] = 0
-    vat_rate: Optional[float] = 20
+    name: str = Field(min_length=1, max_length=200)
+    image: Optional[str] = Field(default="", max_length=2048)
+    manufacturer: Optional[str] = Field(default="", max_length=200)
+    price_no_vat: Optional[float] = Field(default=0, ge=0, le=1_000_000_000)
+    vat_rate: Optional[float] = Field(default=20, ge=0, le=100)
     # None = "not sent". On update this keeps the stored value; a default of 0
     # made "not sent" and "explicitly 0" indistinguishable.
-    discount: Optional[float] = None
-    discounts: Optional[List[float]] = None
-    additional_discounts: Optional[List[int]] = None
-    pieces_per_package: Optional[int] = 0
-    boxes_per_transport: Optional[int] = 0
+    discount: Optional[float] = Field(default=None, ge=0, le=100)
+    discounts: Optional[List[float]] = Field(default=None, max_length=20)
+    additional_discounts: Optional[List[int]] = Field(default=None, max_length=20)
+    pieces_per_package: Optional[int] = Field(default=0, ge=0, le=1_000_000)
+    boxes_per_transport: Optional[int] = Field(default=0, ge=0, le=1_000_000)
     # None = keep the stored barcode, "" = clear it.
     barcode: Optional[str] = None
     # Same rules as barcode (None = keep, "" = clear).
@@ -685,8 +720,27 @@ class ProductInput(BaseModel):
     # None = keep. Switching it on turns the current stock into an undated batch.
     track_expiry: Optional[bool] = None
     # Unit code. None = keep (create: "kom"). Fixed once the product has stock or orders.
-    unit: Optional[str] = None
+    unit: Optional[str] = Field(default=None, max_length=20)
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
+
+    @field_validator("name", "manufacturer", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        return _stripped(v)
+
+    @field_validator("image")
+    @classmethod
+    def _image_url(cls, v):
+        if v and not v.lower().startswith(("https://", "http://")):
+            raise ValueError("Image must be an http(s):// link")
+        return v
+
+    @field_validator("discounts", "additional_discounts")
+    @classmethod
+    def _percentages(cls, v):
+        if v is not None and any(x < 0 or x > 100 for x in v):
+            raise ValueError("Discounts must be between 0 and 100")
+        return v
 
 
 class PickedBatch(BaseModel):
@@ -1980,7 +2034,7 @@ async def _audit(
     user: Optional[User], action: str, target_type: Optional[str] = None, target_id: Optional[str] = None,
     target_name: Optional[str] = None, client_id: Optional[str] = None, data: Optional[dict] = None,
 ) -> None:
-    """Superadmin action log (who did what to whom). Nothing is logged for the system itself."""
+    """Action log of superadmins and client admins (who did what to whom). Nothing is logged for the system itself."""
     if user is None:
         return
     entry_id = str(uuid.uuid4())
@@ -4232,12 +4286,15 @@ async def list_audit(
     skip: int = Query(0, ge=0),
     action: Optional[str] = Query(None, description="prefix, e.g. 'client.' or 'subscription.payment'"),
     client_id: Optional[str] = None,
-    current_user: User = Depends(require_roles(Role.SUPERADMIN)),
+    current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN)),
 ):
     query: Dict[str, Any] = {}
     if action:
         query["action"] = {"$regex": f"^{re.escape(action)}"}
-    if client_id:
+    if current_user.role == Role.ADMIN:
+        # A client admin sees only what happened inside their own client.
+        query["client_id"] = current_user.client_id
+    elif client_id:
         query["client_id"] = client_id
     docs = await db.audit_log.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     return [AuditEntry(**d) for d in docs]
@@ -4515,8 +4572,7 @@ async def create_user(inp: UserInput, current_user: User = Depends(require_manag
     await _check_seat_limit(client_id, role)
     obj = User(email=normalize_email(inp.email), name=inp.name, phone=inp.phone, role=role, client_id=client_id)
     invite = await _invite_user(obj)
-    if current_user.role == Role.SUPERADMIN:
-        await _audit(current_user, "user.create", "user", obj.id, obj.email, client_id, {"role": role.value})
+    await _audit(current_user, "user.create", "user", obj.id, obj.email, client_id, {"role": role.value})
     return UserInviteResponse(**obj.dict(), **invite.dict())
 
 
@@ -4558,19 +4614,41 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
     if inp.role is not None:
         updated["role"] = inp.role
     if inp.password:
+        # Your own password only changes through /auth/change-password (it asks for the current one); an admin
+        # never picks someone else's password - they send a generated temporary one (POST /users/{id}/reset-password).
+        if user_id == current_user.id:
+            raise HTTPException(status_code=403, detail="Use change-password to change your own password")
+        if current_user.role != Role.SUPERADMIN:
+            raise HTTPException(status_code=403, detail="Use reset-password to give this user a new temporary password")
         ensure_strong_password(inp.password)
         updated["password_hash"] = hash_password(inp.password)
-        # Set by someone else (admin/superadmin) = temporary, the user must
-        # replace it. Changing your own password here doesn't force that.
-        updated["must_change_password"] = user_id != current_user.id
+        updated["must_change_password"] = True
     if inp.password or role_changed:
         # Old tokens carry the old role/password - log them out everywhere.
         updated["token_version"] = target.get("token_version", 0) + 1
     await db.users.replace_one({"id": user_id}, {**updated, "_id": user_id})
-    if current_user.role == Role.SUPERADMIN:
-        changes = {k: v for k, v in {"role": inp.role.value if role_changed else None, "active": inp.active, "password_reset": True if inp.password else None}.items() if v is not None}
-        await _audit(current_user, "user.update", "user", user_id, target.get("email"), target.get("client_id"), changes or None)
+    changes = {k: v for k, v in {"role": inp.role.value if role_changed else None, "active": inp.active, "password_reset": True if inp.password else None}.items() if v is not None}
+    await _audit(current_user, "user.update", "user", user_id, target.get("email"), target.get("client_id"), changes or None)
     return User(**updated)
+
+
+@api_router.post("/users/{user_id}/reset-password", response_model=InviteResult)
+async def reset_user_password(user_id: str, current_user: User = Depends(require_manager)):
+    """Gives a user a new generated temporary password (emailed like an invite; shown to the caller only when the
+    email could not be sent). The user must replace it at the next sign-in and every old session ends."""
+    target = await get_scoped_or_404("users", user_id, current_user)
+    if user_id == current_user.id:
+        raise HTTPException(status_code=403, detail="Use change-password to change your own password")
+    if current_user.role == Role.ADMIN and target.get("role") not in ADMIN_MANAGEABLE_ROLES:
+        raise HTTPException(status_code=403, detail="Admins can only manage operators and warehouse users")
+    temporary_password = generate_temporary_password()
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"password_hash": hash_password(temporary_password), "must_change_password": True}, "$inc": {"token_version": 1}},
+    )
+    sent = await _send_invite_email(target["name"], target["email"], Role(target["role"]), temporary_password)
+    await _audit(current_user, "user.reset_password", "user", user_id, target.get("email"), target.get("client_id"))
+    return InviteResult(invite_sent=sent, temporary_password=None if sent else temporary_password)
 
 
 @api_router.delete("/users/{user_id}")
@@ -4580,23 +4658,27 @@ async def delete_user(user_id: str, current_user: User = Depends(require_manager
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
     if current_user.role == Role.ADMIN and target.get("role") not in ADMIN_MANAGEABLE_ROLES:
         raise HTTPException(status_code=403, detail="Admins can only manage operators and warehouse users")
+    if await db.orders.find_one({"$or": [{"created_by_user_id": user_id}, {"assigned_to_user_id": user_id}]}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="User has orders - deactivate the account instead of deleting it")
     await db.users.delete_one({"id": user_id})
-    if current_user.role == Role.SUPERADMIN:
-        await _audit(current_user, "user.delete", "user", user_id, target.get("email"), target.get("client_id"))
+    await _audit(current_user, "user.delete", "user", user_id, target.get("email"), target.get("client_id"))
     return {"ok": True}
 
 
 # ---------------- Customers ----------------
 @api_router.get("/customers", response_model=List[Customer])
 async def list_customers(current_user: User = Depends(get_current_user)):
-    docs = await db.customers.find(_scope_query(current_user), {"_id": 0}).sort("name", 1).to_list(None)
+    query = _scope_query(current_user)
+    if current_user.role == Role.OPERATOR:
+        query = {**query, "active": {"$ne": False}}  # inactive customers get no new orders
+    docs = await db.customers.find(query, {"_id": 0}).sort("name", 1).to_list(None)
     return [Customer(**v) for v in docs]
 
 
 @api_router.post("/customers", response_model=Customer)
 async def create_customer(inp: CustomerInput, current_user: User = Depends(require_manager)):
     client_id = await resolve_write_client_id(current_user, inp.client_id)
-    obj = Customer(**inp.dict(exclude={"client_id"}), client_id=client_id)
+    obj = Customer(**inp.dict(exclude={"client_id", "active"}), active=inp.active is not False, client_id=client_id)
     await db.customers.insert_one({**obj.dict(), "_id": obj.id})
     return obj
 
@@ -4604,8 +4686,13 @@ async def create_customer(inp: CustomerInput, current_user: User = Depends(requi
 @api_router.put("/customers/{customer_id}", response_model=Customer)
 async def update_customer(customer_id: str, inp: CustomerInput, current_user: User = Depends(require_manager)):
     existing = await get_scoped_or_404("customers", customer_id, current_user)
-    updated = {**existing, **inp.dict(exclude={"client_id"})}
+    changes = inp.dict(exclude={"client_id"})
+    if changes.get("active") is None:
+        changes.pop("active", None)  # not sent = keep
+    updated = {**existing, **changes}
     await db.customers.replace_one({"id": customer_id}, {**updated, "_id": customer_id})
+    if "active" in changes and changes["active"] != existing.get("active", True):
+        await _audit(current_user, "customer.active" if changes["active"] else "customer.deactivate", "customer", customer_id, existing.get("name"), existing.get("client_id"))
     return Customer(**updated)
 
 
@@ -4766,8 +4853,11 @@ async def import_customers(
 
 @api_router.delete("/customers/{customer_id}")
 async def delete_customer(customer_id: str, current_user: User = Depends(require_manager)):
-    await get_scoped_or_404("customers", customer_id, current_user)
+    existing = await get_scoped_or_404("customers", customer_id, current_user)
+    if await db.orders.find_one({"customer_id": customer_id}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Customer has orders - deactivate the customer instead of deleting it")
     await db.customers.delete_one({"id": customer_id})
+    await _audit(current_user, "customer.delete", "customer", customer_id, existing.get("name"), existing.get("client_id"))
     return {"ok": True}
 
 
@@ -4924,7 +5014,10 @@ async def update_product(product_id: str, inp: ProductInput, current_user: User 
 @api_router.delete("/products/{product_id}")
 async def delete_product(product_id: str, current_user: User = Depends(require_manager)):
     existing = await get_scoped_or_404("products", product_id, current_user)
+    if await db.orders.find_one({"client_id": existing["client_id"], "items.product_id": product_id}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Product is on orders - set it inactive instead of deleting it")
     await db.products.delete_one({"id": product_id})
+    await _audit(current_user, "product.delete", "product", product_id, existing.get("name"), existing.get("client_id"))
     await db.stock_batches.delete_many({"product_id": product_id})
     await db.focus_items.delete_many({"product_id": product_id})
     await _delete_product_image(existing.get("image"))
@@ -5679,6 +5772,8 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
     customer = await db.customers.find_one({"id": inp.customer_id, "client_id": client_id}, {"_id": 0})
     if not customer:
         raise HTTPException(status_code=400, detail="Customer not found")
+    if customer.get("active", True) is False:
+        raise HTTPException(status_code=400, detail=f"Customer is not active: {customer['name']}")
 
     product_ids = list({line.product_id for line in inp.items})
     product_docs = await db.products.find(
@@ -5778,6 +5873,7 @@ async def delete_order(order_id: str, current_user: User = Depends(require_manag
     if _status_value(order) != OrderStatus.NEW.value:
         raise HTTPException(status_code=409, detail="Only new orders can be deleted - cancel the order instead")
     await db.orders.delete_one({"id": order_id})
+    await _audit(current_user, "order.delete", "order", order_id, order.get("customer_name"), order.get("client_id"))
     return {"ok": True}
 
 
@@ -5927,6 +6023,8 @@ async def change_order_status(
     if result.matched_count == 0:
         raise HTTPException(status_code=409, detail="Order was changed in the meantime")
     updated_doc = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if override and (current, target) not in _WAREHOUSE_FLOW:
+        await _audit(current_user, "order.status_override", "order", order_id, updated_doc.get("customer_name"), updated_doc.get("client_id"), {"from": current, "to": target, "note": note})
     if await client_has_module(updated_doc["client_id"], Module.STOCK):
         if target == OrderStatus.SHIPPED.value:
             await _move_stock_for_order(updated_doc, -1, "shipment", current_user)

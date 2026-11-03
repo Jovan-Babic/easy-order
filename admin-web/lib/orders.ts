@@ -1,3 +1,4 @@
+import { validationText } from "@/lib/errors";
 // Shapes of the FastAPI order/client responses used by the portal.
 // Money amounts come from the backend (`totals`, `line_net`) - no math here.
 export type OrderStatus = "new" | "in_progress" | "shipped" | "rejected" | "canceled";
@@ -94,5 +95,5 @@ export const STATUS_LABEL_KEYS = {
 // Error text from a FastAPI JSON error body.
 export async function errorDetail(res: Response, fallback: string): Promise<string> {
   const body = await res.json().catch(() => ({}));
-  return typeof body.detail === "string" ? body.detail : fallback;
+  return typeof body.detail === "string" ? body.detail : validationText(body.detail) ?? fallback;
 }

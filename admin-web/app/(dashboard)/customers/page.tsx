@@ -6,6 +6,7 @@ import { useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Field, fieldInput } from "@/components/FormField";
 import { ImportModal } from "@/components/ImportModal";
+import { localizedDetail } from "@/lib/errors";
 
 type Customer = {
   id: string;
@@ -15,6 +16,7 @@ type Customer = {
   email?: string;
   phone?: string;
   pib?: string;
+  active?: boolean;
 };
 
 type Client = { id: string; name: string };
@@ -70,7 +72,7 @@ export default function CustomersPage() {
       const res = await fetch("/api/customers", { method: "POST", body: JSON.stringify(payload) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || t("failedCreateCustomer"));
+        setError(localizedDetail(body.detail, t, t("failedCreateCustomer")));
         return;
       }
       setForm(emptyForm);
@@ -83,8 +85,29 @@ export default function CustomersPage() {
 
   const remove = async () => {
     if (!pendingDelete) return;
-    await fetch(`/api/customers/${pendingDelete.id}`, { method: "DELETE" });
+    const res = await fetch(`/api/customers/${pendingDelete.id}`, { method: "DELETE" });
     setPendingDelete(null);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(localizedDetail(body.detail, t, t("deleteFailed")));
+      return;
+    }
+    setError(null);
+    await load();
+  };
+
+  // A customer with order history is deactivated, not deleted: sales reps no longer see it, old orders stay intact.
+  const toggleActive = async (c: Customer) => {
+    const res = await fetch(`/api/customers/${c.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ name: c.name, address: c.address ?? "", email: c.email ?? "", phone: c.phone ?? "", pib: c.pib ?? "", active: c.active === false }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(localizedDetail(body.detail, t, t("failedUpdateUser")));
+      return;
+    }
+    setError(null);
     await load();
   };
 
@@ -120,19 +143,19 @@ export default function CustomersPage() {
       {showForm && (
         <form onSubmit={submit} className="mb-8 grid max-w-lg gap-3 rounded-lg bg-surfaceSecondary p-6 shadow-sm">
           <Field label={t("name")}>
-            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={fieldInput} />
+            <input required maxLength={200} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={fieldInput} />
           </Field>
           <Field label={t("address")}>
-            <input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={fieldInput} />
+            <input maxLength={300} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={fieldInput} />
           </Field>
           <Field label={t("email")}>
-            <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className={fieldInput} />
+            <input type="email" maxLength={120} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className={fieldInput} />
           </Field>
           <Field label={t("phone")}>
-            <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className={fieldInput} />
+            <input maxLength={40} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className={fieldInput} />
           </Field>
           <Field label={t("taxIdPib")}>
-            <input value={form.pib} onChange={(e) => setForm({ ...form, pib: e.target.value })} className={fieldInput} />
+            <input inputMode="numeric" pattern="[0-9]{6,15}" title="6-15" maxLength={15} value={form.pib} onChange={(e) => setForm({ ...form, pib: e.target.value })} className={fieldInput} />
           </Field>
           {isSuperAdmin && (
             <Field label={t("client")}>
@@ -159,6 +182,7 @@ export default function CustomersPage() {
         </form>
       )}
 
+      {error && !showForm && <p className="mb-3 text-sm text-error">{error}</p>}
       {loading ? (
         <p className="text-muted">{t("loading")}</p>
       ) : (
@@ -177,12 +201,18 @@ export default function CustomersPage() {
             <tbody>
               {customers.map((c) => (
                 <tr key={c.id} className="border-b border-border last:border-0">
-                  <td className="px-4 py-3 font-semibold text-onSurface">{c.name}</td>
+                  <td className="px-4 py-3 font-semibold text-onSurface">
+                    {c.name}
+                    {c.active === false && <span className="ml-2 rounded bg-border px-2 py-0.5 text-xs font-normal text-muted">{t("inactive")}</span>}
+                  </td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.address || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.email || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.phone || "-"}</td>
                   {isSuperAdmin && <td className="px-4 py-3 text-onSurfaceSecondary">{clientName(c.client_id)}</td>}
-                  <td className="px-4 py-3">
+                  <td className="space-x-4 px-4 py-3">
+                    <button onClick={() => toggleActive(c)} className="font-semibold text-onSurfaceSecondary hover:underline">
+                      {c.active === false ? t("activate") : t("deactivate")}
+                    </button>
                     <button onClick={() => setPendingDelete(c)} className="font-semibold text-error hover:underline">
                       {t("delete")}
                     </button>

@@ -89,16 +89,19 @@ class TestPasswordSetByAdmin:
     def test_admin_reset_forces_change_and_logs_out(self, api_client):
         email, body = _invite_operator(api_client)
         op = activate_invited_user(email, body["temporary_password"])
-        r = api_client.put(f"{API}/users/{body['id']}", json={"password": "NewTemp12345"})
+        # An admin never picks the password: PUT with a password is refused, reset-password generates one.
+        assert api_client.put(f"{API}/users/{body['id']}", json={"password": "NewTemp12345"}).status_code == 403
+        r = api_client.post(f"{API}/users/{body['id']}/reset-password")
         assert r.status_code == 200, r.text
-        assert r.json()["must_change_password"] is True
+        fresh = r.json()["temporary_password"]  # no SMTP on the test server
+        assert fresh
         assert op.get(f"{API}/products").status_code == 401
-        again = login(email, "NewTemp12345")
+        again = login(email, fresh)
         assert again.get(f"{API}/products").status_code == 403
 
-    def test_weak_password_rejected_on_update(self, api_client):
+    def test_weak_password_rejected_on_update(self, api_client, superadmin_client):
         _, body = _invite_operator(api_client)
-        r = api_client.put(f"{API}/users/{body['id']}", json={"password": "abc"})
+        r = superadmin_client.put(f"{API}/users/{body['id']}", json={"password": "abc"})
         assert r.status_code == 400
 
     def test_role_change_logs_out(self, superadmin_client, api_client):
