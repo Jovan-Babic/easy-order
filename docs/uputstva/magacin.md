@@ -88,6 +88,8 @@ Primer: kupac Delikates Sunce naručio je 36 sokova od jabuke, 24 jogurta i 3 kg
 2. **Preuzmi** – kažete da vi pakujete ovu porudžbinu. Status prelazi u **U pripremi**, a komercijalista više ne može da je menja.
 3. **Odbij** – ako porudžbinu ne možete da ispunite (odeljak niže).
 
+Ispod naručene količine piše i trenutno **Na stanju** (za artikle kojima se vodi stanje; istekla roba se ne računa). Ako na stanju ima manje nego što je naručeno, red je crven i piše **nema dovoljno** – tada znate tačno koliko možete da pošaljete i upisujete tu količinu. Stanje se osvežava kad povučete listu nadole (u aplikaciji) ili nakon svake otpreme.
+
 Narandžasti red **Uzmi prvo rok: 31.10.2026** vidi se kod artikala sa rokom trajanja: uzmite sa police robu sa tim (najranijim) rokom. Program sam skida sa stanja seriju sa najranijim rokom.
 
 ### Korak 2 – spakujte i čekirajte
@@ -126,6 +128,8 @@ Pritisnite **Pošalji**. Šta se dešava:
 ### Ostale radnje na porudžbini
 - **Vrati u red** – vraća porudžbinu u status **Nova** (npr. ako ste je preuzeli greškom). Dostupno dok porudžbina nije poslata.
 - **Odbij** – odbijanje porudžbine, vidi dole.
+- **Tuđa porudžbina** – dok je porudžbina u pripremi kod kolege, ne možete da menjate količine, da je vratite u red ni da je odbijete (prikazuje se poruka ko je preuzeo). Kolega je može vratiti u red, ili to uradi administrator.
+- **Osvežavanje (u portalu)** – spisak porudžbina se sam osvežava na 30 sekundi; dugme **Osveži** ga osvežava odmah.
 
 ### Odbijanje porudžbine
 Dodirnite **Odbij**, upišite **razlog** i pritisnite **Odbij**.
