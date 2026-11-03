@@ -126,6 +126,8 @@ Pritisnite **Pošalji**. Šta se dešava:
 ### Ostale radnje na porudžbini
 - **Vrati u red** – vraća porudžbinu u status **Nova** (npr. ako ste je preuzeli greškom). Dostupno dok porudžbina nije poslata.
 - **Odbij** – odbijanje porudžbine, vidi dole.
+- **Tuđa porudžbina** – dok je porudžbina u pripremi kod kolege, ne možete da menjate količine, da je vratite u red ni da je odbijete (prikazuje se poruka ko je preuzeo). Kolega je može vratiti u red, ili to uradi administrator.
+- **Osvežavanje (u portalu)** – spisak porudžbina se sam osvežava na 30 sekundi; dugme **Osveži** ga osvežava odmah.
 
 ### Odbijanje porudžbine
 Dodirnite **Odbij**, upišite **razlog** i pritisnite **Odbij**.
