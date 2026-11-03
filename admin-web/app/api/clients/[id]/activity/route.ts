@@ -3,5 +3,5 @@ import { backendFetch, proxyJson } from "@/lib/backend";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  return proxyJson(await backendFetch(`/clients/${id}/activity`));
+  return proxyJson(await backendFetch(`/clients/${encodeURIComponent(id)}/activity`));
 }

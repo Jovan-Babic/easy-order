@@ -9,8 +9,8 @@ export default async function ClientDetailPage({
 }) {
   const { clientId } = await params;
   const [clientRes, statsRes] = await Promise.all([
-    backendFetch(`/clients/${clientId}`),
-    backendFetch(`/stats/clients/${clientId}`),
+    backendFetch(`/clients/${encodeURIComponent(clientId)}`),
+    backendFetch(`/stats/clients/${encodeURIComponent(clientId)}`),
   ]);
 
   if (!clientRes.ok) notFound();

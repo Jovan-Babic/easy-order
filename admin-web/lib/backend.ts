@@ -21,6 +21,10 @@ export function backendPublicUrl(pathOrUrl: string) {
 // Bearer token. Never called from the browser - route handlers are the only
 // callers, so this never crosses browser CORS.
 export async function backendFetch(path: string, init?: RequestInit) {
+  // Defense in depth: ids are encoded by the callers, but never let a path climb out of its route.
+  if (path.split("?")[0].split("/").some((seg) => seg === ".." || seg === ".")) {
+    return new Response(JSON.stringify({ detail: "Bad path" }), { status: 400, headers: { "Content-Type": "application/json" } });
+  }
   const store = await cookies();
   const token = store.get(COOKIE_NAME)?.value;
   const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
