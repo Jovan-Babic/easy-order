@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { detailOf } from "@/lib/subscriptions";
-import { useSession } from "@/lib/session-provider";
 
 type Entry = {
   id: string;
@@ -17,15 +16,13 @@ type Entry = {
   data: Record<string, unknown> | null;
 };
 
-const SUPERADMIN_AREAS = ["client.", "subscription.", "plan.", "user.", "announcement.", "customer.", "product.", "order."];
-const ADMIN_AREAS = ["user.", "customer.", "product.", "order."];
+const AREAS = ["client.", "subscription.", "plan.", "user.", "announcement.", "customer.", "product.", "order."];
 const PAGE = 50;
 
 // Read-only log of what superadmins did (clients, plans, subscriptions, payments, users, announcements) and, for a
 // client admin, what administrators did inside their own company (users, deletions, status overrides).
 export default function AuditPage() {
   const { t } = useLanguage();
-  const AREAS = useSession().role === "superadmin" ? SUPERADMIN_AREAS : ADMIN_AREAS;
   const [entries, setEntries] = useState<Entry[]>([]);
   const [area, setArea] = useState("");
   const [more, setMore] = useState(false);

@@ -22,7 +22,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/seats", labelKey: "seatsTitle", roles: ["admin"] },
   { href: "/billing", labelKey: "billingTitle", roles: ["admin"] },
   { href: "/announcements", labelKey: "announcements", roles: ["superadmin"] },
-  { href: "/audit", labelKey: "audit", roles: ["superadmin", "admin"] },
+  { href: "/audit", labelKey: "audit", roles: ["superadmin"] },
   { href: "/units", labelKey: "units", roles: ["superadmin"] },
   { href: "/settings", labelKey: "settings", roles: ["superadmin"] },
   // The system owner doesn't work with a client's business data (products,
@@ -43,7 +43,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
 // Menu order per role (an item missing from a list goes to the end).
 const NAV_ORDER: Record<string, string[]> = {
   superadmin: ["/dashboard", "/clients", "/subscriptions", "/payments", "/billing-drafts", "/users", "/announcements", "/audit", "/units", "/settings", "/app"],
-  admin: ["/dashboard", "/seats", "/billing", "/users", "/customers", "/products", "/orders", "/warehouse", "/stock", "/focus", "/targets", "/reports", "/guide", "/app", "/audit"],
+  admin: ["/dashboard", "/seats", "/billing", "/users", "/customers", "/products", "/orders", "/warehouse", "/stock", "/focus", "/targets", "/reports", "/guide", "/app"],
   warehouse: ["/warehouse", "/stock", "/orders", "/guide", "/app"],
 };
 

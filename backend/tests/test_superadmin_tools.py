@@ -51,10 +51,8 @@ def _announce(sa, **kw):
 
 
 def test_only_superadmin(api_client):
-    for path in ("/announcements", "/superadmin/system", "/clients/x/notes", "/clients/x/activity"):
+    for path in ("/audit", "/announcements", "/superadmin/system", "/clients/x/notes", "/clients/x/activity"):
         assert api_client.get(f"{API}{path}").status_code == 403, path
-    # The client admin reads the audit log of their own client only (see test_admin_hardening.py).
-    assert api_client.get(f"{API}/audit").status_code == 200
     assert api_client.post(f"{API}/announcements", json={"message_sr": "x"}).status_code == 403
 
 
@@ -158,7 +156,7 @@ def test_audit_log(superadmin_client, api_client):
     admin.post(f"{API}/users", json={"email": f"test-audit-op-{marker}@easyorder.dev", "name": "TEST", "role": "operator"})
     after = superadmin_client.get(f"{API}/audit", params={"client_id": client["id"], "limit": 200}).json()
     assert len(after) == n + 1 and after[0]["action"] == "user.create"
-    assert [e["id"] for e in admin.get(f"{API}/audit", params={"limit": 200}).json()] == [e["id"] for e in after]
+    assert admin.get(f"{API}/audit").status_code == 403  # logged, but only the superadmin reads the log
 
 
 def test_announcement_validation(superadmin_client):
