@@ -4293,15 +4293,13 @@ async def list_audit(
     skip: int = Query(0, ge=0),
     action: Optional[str] = Query(None, description="prefix, e.g. 'client.' or 'subscription.payment'"),
     client_id: Optional[str] = None,
-    current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN)),
+    current_user: User = Depends(require_roles(Role.SUPERADMIN)),
 ):
+    # Client admins' actions are logged too, but only the superadmin can read the log.
     query: Dict[str, Any] = {}
     if action:
         query["action"] = {"$regex": f"^{re.escape(action)}"}
-    if current_user.role == Role.ADMIN:
-        # A client admin sees only what happened inside their own client.
-        query["client_id"] = current_user.client_id
-    elif client_id:
+    if client_id:
         query["client_id"] = client_id
     docs = await db.audit_log.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     return [AuditEntry(**d) for d in docs]

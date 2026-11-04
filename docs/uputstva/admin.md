@@ -112,10 +112,6 @@ Posle kreiranja piše na koji je email poslata pozivnica. Ako slanje emaila ne u
 
 ---
 
-### Dnevnik
-
-Stavka **Dnevnik** u meniju pokazuje ko je i kada u vašoj firmi pravio nalog, menjao ili deaktivirao korisnika, poslao novu lozinku, obrisao kupca, proizvod ili porudžbinu i ručno promenio status porudžbine. Samo se čita; može da se filtrira po vrsti radnje.
-
 ## 4. Nalozi i paket
 
 Stranica **Nalozi i paket** pokazuje koliko naloga imate u paketu i koliko je iskorišćeno.

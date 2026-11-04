@@ -73,16 +73,16 @@ def test_reset_password_gives_generated_temporary_password(api_client):
     api_client.delete(f"{API}/users/{uid}")
 
 
-def test_admin_actions_are_audited_and_visible_to_the_admin(api_client):
+def test_admin_actions_are_audited_but_only_the_superadmin_reads_the_log(api_client, superadmin_client):
     uid, email, _ = _invite(api_client, "operator", "adm-audit")
     api_client.post(f"{API}/users/{uid}/reset-password")
     api_client.delete(f"{API}/users/{uid}")
-    rows = api_client.get(f"{API}/audit", params={"action": "user.", "limit": 50})
+    assert api_client.get(f"{API}/audit").status_code == 403
+    me = api_client.get(f"{API}/clients/me").json()
+    rows = superadmin_client.get(f"{API}/audit", params={"action": "user.", "client_id": me["id"], "limit": 100})
     assert rows.status_code == 200, rows.text
     mine = [r for r in rows.json() if r["target_name"] == email]
     assert {"user.create", "user.reset_password", "user.delete"} <= {r["action"] for r in mine}
-    me = api_client.get(f"{API}/clients/me").json()
-    assert all(r["client_id"] == me["id"] for r in rows.json())
 
 
 def test_cannot_delete_what_has_history_but_can_deactivate(api_client):
