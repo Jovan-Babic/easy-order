@@ -79,7 +79,7 @@ Na stranici **Korisnici** otvarate naloge zaposlenima. Administrator firme može
 ![Korisnici](slike/admin/04-korisnici.png)
 
 1. **Novi korisnik** – otvara formu za novi nalog.
-2. **Spisak** – ime, email, telefon, uloga i status (**Aktivan** ili **Neaktivan**).
+2. **Spisak** – ime, email, telefon, uloga i status (**Aktivan** ili **Neaktivan**). Nalog zaključan zbog previše pogrešnih lozinki ima oznaku **Zaključan** i dugme **Otključaj**.
 3. **Izmeni** – izmena podataka.
 4. **Obriši** – brisanje naloga. Vaš nalog ne može da se obriše, a nalog koji ima porudžbine ne može da se obriše – njega **deaktivirajte** (**Izmeni** → **Status**).
 
@@ -387,6 +387,9 @@ Proverite da li je email ispravno upisan i da li je u spamu. Ako slanje nije usp
 
 **Zaposleni je zaboravio lozinku.**
 Može da pritisne **Zaboravljena lozinka?** na ekranu za prijavu, ili mu vi u **Izmeni** pošaljete novu privremenu lozinku.
+
+**Zaposleni ne može da se prijavi, a piše „Previše neuspešnih pokušaja“.**
+Nalog se zaključava posle pet pogrešnih lozinki (na 15 minuta). U **Korisnici** pored njegovog imena piše **Zaključan** – pritisnite **Otključaj** i može odmah ponovo da se prijavi. Nalog otključava i slanje nove privremene lozinke ili njegov uspešan reset lozinke preko emaila.
 
 **„Dostignut je broj naloga za ovu ulogu.“**
 Paket nema više naloga te uloge. Pogledajte **Nalozi i paket** i obratite se Easy Order podršci za dodatni nalog, ili deaktivirajte nalog koji vam ne treba.

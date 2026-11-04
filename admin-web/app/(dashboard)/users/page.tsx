@@ -19,6 +19,7 @@ type User = {
   client_id: string | null;
   client_name?: string | null;
   active: boolean;
+  locked?: boolean;
 };
 
 type Client = { id: string; name: string };
@@ -332,6 +333,18 @@ export default function UsersPage() {
     closeEdit();
   };
 
+  // Ends a sign-in lockout (too many wrong passwords) at once.
+  const unlock = async (u: User) => {
+    setListError(null);
+    const res = await fetch(`/api/users/${u.id}/unlock`, { method: "POST" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setListError(localizedDetail(body.detail, t, t("unlockFailed")));
+      return;
+    }
+    await load();
+  };
+
   const remove = async () => {
     if (!pendingDelete) return;
     setListError(null);
@@ -634,8 +647,14 @@ export default function UsersPage() {
                     <span className={u.active ? "text-success" : "text-error"}>
                       {u.active ? t("active") : t("inactive")}
                     </span>
+                    {u.locked && <span className="ml-2 rounded bg-border px-2 py-0.5 text-xs font-semibold text-error">{t("accountLocked")}</span>}
                   </td>
                   <td className="px-4 py-3">
+                    {u.locked && canEdit(u) && u.id !== session.id && (
+                      <button onClick={() => unlock(u)} className="mr-3 font-semibold text-onSurface hover:underline">
+                        {t("unlockAccount")}
+                      </button>
+                    )}
                     {canEdit(u) && (
                       <button onClick={() => openEdit(u)} className="mr-3 font-semibold text-brand hover:underline">
                         {t("edit")}
