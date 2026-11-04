@@ -484,6 +484,7 @@ class User(BaseModel):
 class UserRow(User):
     """Row of GET /users: the user plus the name of their client (superadmin list)."""
     client_name: Optional[str] = None
+    locked: bool = False  # too many failed sign-ins: the account is locked until the window passes or someone unlocks it
 
 
 class UserOut(User):
@@ -1561,6 +1562,9 @@ async def _set_password(user_id: str, new_password: str) -> dict:
         projection={"_id": 0},
         return_document=True,
     )
+    if updated:
+        # A new password the owner chose (reset link or change) also ends a sign-in lockout.
+        await db.auth_attempts.delete_many({"key": _login_key(updated["email"])})
     return updated
 
 
@@ -4548,7 +4552,29 @@ async def list_users(client_id: Optional[str] = None, current_user: User = Depen
         ids = list({d["client_id"] for d in docs if d.get("client_id")})
         if ids:
             names = {c["id"]: c["name"] async for c in db.clients.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1})}
-    return [UserRow(**{**v, "client_name": names.get(v.get("client_id"))}) for v in docs]
+    # Locked = LOGIN_MAX_FAILURES failed sign-ins inside the lockout window (the same rule `login` applies).
+    since = datetime.now(timezone.utc) - timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+    counts: Dict[str, int] = {}
+    async for a in db.auth_attempts.find(
+        {"key": {"$in": [_login_key(d["email"]) for d in docs]}, "created_at": {"$gte": since}}, {"_id": 0, "key": 1}
+    ):
+        counts[a["key"]] = counts.get(a["key"], 0) + 1
+    return [
+        UserRow(**{**v, "client_name": names.get(v.get("client_id")), "locked": counts.get(_login_key(v["email"]), 0) >= LOGIN_MAX_FAILURES})
+        for v in docs
+    ]
+
+
+@api_router.post("/users/{user_id}/unlock")
+async def unlock_user(user_id: str, current_user: User = Depends(require_manager)):
+    """Ends a sign-in lockout (too many wrong passwords) right away. An admin unlocks their own operators and
+    warehouse users; the superadmin anyone."""
+    target = await get_scoped_or_404("users", user_id, current_user)
+    if current_user.role == Role.ADMIN and target.get("role") not in ADMIN_MANAGEABLE_ROLES:
+        raise HTTPException(status_code=403, detail="Admins can only manage operators and warehouse users")
+    await db.auth_attempts.delete_many({"key": _login_key(target["email"])})
+    await _audit(current_user, "user.unlock", "user", user_id, target.get("email"), target.get("client_id"))
+    return {"ok": True}
 
 
 @api_router.post("/users", response_model=UserInviteResponse)
@@ -4632,6 +4658,8 @@ async def update_user(user_id: str, inp: UserUpdateInput, current_user: User = D
         # Old tokens carry the old role/password - log them out everywhere.
         updated["token_version"] = target.get("token_version", 0) + 1
     await db.users.replace_one({"id": user_id}, {**updated, "_id": user_id})
+    if inp.password:
+        await db.auth_attempts.delete_many({"key": _login_key(target["email"])})
     changes = {k: v for k, v in {"role": inp.role.value if role_changed else None, "active": inp.active, "password_reset": True if inp.password else None}.items() if v is not None}
     await _audit(current_user, "user.update", "user", user_id, target.get("email"), target.get("client_id"), changes or None)
     return User(**updated)
@@ -4651,6 +4679,7 @@ async def reset_user_password(user_id: str, current_user: User = Depends(require
         {"id": user_id},
         {"$set": {"password_hash": hash_password(temporary_password), "must_change_password": True}, "$inc": {"token_version": 1}},
     )
+    await db.auth_attempts.delete_many({"key": _login_key(target["email"])})  # a new password also unlocks the account
     sent = await _send_invite_email(target["name"], target["email"], Role(target["role"]), temporary_password)
     await _audit(current_user, "user.reset_password", "user", user_id, target.get("email"), target.get("client_id"))
     return InviteResult(invite_sent=sent, temporary_password=None if sent else temporary_password)

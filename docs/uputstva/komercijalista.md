@@ -331,7 +331,7 @@ Ako se ne prikaže nijedan artikal (**Nema proizvoda**), taj barkod još nije up
 Telefon nema internet. Uključite mobilne podatke ili Wi-Fi i pokušajte ponovo. Unete količine ostaju dok ne zatvorite aplikaciju.
 
 **„Previše neuspešnih pokušaja. Pokušajte ponovo za 15 minuta.“**
-Pet puta je uneta pogrešna lozinka. Sačekajte 15 minuta ili koristite **Zaboravljena lozinka?**.
+Pet puta je uneta pogrešna lozinka. Sačekajte 15 minuta, ili odmah koristite **Zaboravljena lozinka?** (nova lozinka otključava nalog), ili zamolite administratora da vas otključa.
 
 **„Nalog ili firma su deaktivirani“ / „Pretplata je istekla“**
 Obratite se administratoru vaše firme.
