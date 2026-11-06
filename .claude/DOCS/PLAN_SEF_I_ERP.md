@@ -122,3 +122,55 @@ Dva PDF-a sa zvaničnog sajta (API_EPP verzija 30.04.2026. i API_EEO_PDV verzija
 **Šta NE treba da radimo.** Evidenciju i obračun PDV-a (EPP/EEO) vodi računovođa ili ERP, na nivou poreske prijave. Nama su ti podaci sa SEF-a potrebni samo posredno: kad šaljemo ispravne izlazne fakture, SEF sam puni obračunati PDV. Slanje EPP/EEO iz našeg sistema nije deo plana.
 
 **Šta nam još nedostaje (ne može se uraditi bez toga):** zvanična specifikacija za **izlazne fakture** (putanje `sales-invoice/...`, upload UBL-a, statusi, otkazivanje i storno) i SRBDT specifikacija UBL-a. Na sajtu efaktura.gov.rs su, prema pretrazi, to: „Specifikacija prilagođene primene standarda EN 16931-1 (SRBDT)“ (`/extfile/sr/1804/spec-srbdt-ext-en16931-2023_03_31.pdf`), „Interno tehničko uputstvo“ (`/extfile/sr/7593/...`) i prezentacija „Rad sa SEF-om preko API servisa“ (`/extfile/sr/1470/...`), a za otpremnice tehničko uputstvo na eotpremnica.efaktura.gov.rs. Najbolje je izvesti **Swagger JSON** sa demo SEF-a, koji je sama tačna specifikacija API-ja.
+
+## 10. Dodatak: zvanična API specifikacija SEF-a (dokument od 31.07.2026, 205 strana)
+
+Ovo je prava specifikacija za izlazne fakture (poglavlja 1.1–1.80). Sve niže je **pročitano iz dokumenta**, osim tačaka označenih **[proveriti]**.
+
+### Šta potvrđuje plan
+- **Model je upravo ovaj.** Poglavlje 1.80 („Koraci za povezivanje ERP-a“): korisnik otvori nalog na SEF-u, u Podešavanja → API menadžment generiše API ključ i **ugrađuje ga sam ili ga daje svom pružaocu usluge / dobavljaču informacionog sistema**. Dakle softver koji drži ključ klijenta je predviđen scenario (kao i ISP koji zastupa firmu).
+- **Autentikacija:** zaglavlje `ApiKey` uz svaki zahtev, REST/JSON, produkcija `efaktura.mfin.gov.rs`, demo `demoefaktura.mfin.gov.rs`.
+- **Izbegavanje duplog slanja je rešeno u samom API-ju:** `requestId` je **obavezan i jedinstven** za slanje (poglavlje 1.4 opisuje idempotentnost). Naš `requestId` = ID slanja iz kolekcije `einvoices`; ponovljen poziv posle prekida mreže ne pravi drugu fakturu.
+- **Slanje fakture:** `POST /api/publicApi/sales-invoice/ubl/upload?requestId=...&sendToCir=...&executeValidation=...` (multipart, UBL fajl) ili `POST .../sales-invoice/ubl` (XML u telu). Odgovor: `{InvoiceId, PurchaseInvoiceId, SalesInvoiceId}`. `executeValidation` = proverava bez slanja (korisno za „pregled“ pre slanja). `sendToCir` samo za budžetske korisnike.
+- **Status:** `GET .../sales-invoice?invoiceId=` vraća `Status` (New, Draft, Sent, Paid, Mistake, OverDue, Archived, Sending, Deleted, Approved, Rejected, Cancelled, Storno, Unknown), komentar, `CancelComment`, `StornoComment`.
+- **Otkazivanje:** `POST .../sales-invoice/cancel` {invoiceId, cancelComments} samo za statuse Draft, New i „Greška prilikom slanja“. **Brisanje:** samo Draft. **Storno:** `POST .../sales-invoice/storno` {invoiceId, stornoNumber, stornoComment} za Approved, Rejected i Sent (storno fakture povezane sa otpremnicom oslobađa otpremnicu za drugu fakturu).
+- **Notifikacije su polling, ne webhook:** `POST /api/publicApi/subscribe` (pretplata od narednog dana) + `POST .../sales-invoice/changes?date=` (lista promena statusa za dan) + `POST .../sales-invoice/ids?status=&dateFrom=&dateTo=`. Za nas je dovoljan postojeći dnevni cron + osvežavanje statusa pri otvaranju porudžbine (jeftin `GET` po `invoiceId`). **Nema potrebe za javnim webhook endpoint-om.**
+- **Jedinice mere:** `GET /api/publicApi/get-unit-measures` vraća UN/ECE kodove (`H87` kom, `KGM` kg…) sa srpskim nazivima. Naše jedinice (`kom, g, kg, t, ml, l, hl, mm, cm, m`) se preslikavaju na ovu listu; listu povlačimo pri podešavanju.
+- **PDF faktura:** `GET .../sales-invoice/pdf?invoiceId=` generiše/preuzima **prošireni PDF** fakture sa SEF-a, pa ne moramo sami da crtamo zvaničan dokument. Postoji i PDF istorije statusa.
+- **Provera kupca:** `POST /api/publicApi/Company/CheckIfCompanyRegisteredOnEfaktura` {registrationNumber (MB), vatNumber (PIB), jbkjs za budžet} → `EFakturaRegisteredCompany`. Koristimo je pre slanja da kažemo „kupac nije na SEF-u“ umesto da dobijemo grešku.
+- **Primer UBL-a** (str. 9–11): `CustomizationID urn:cen.eu:en16931:2017#compliant#urn:mfin.gov.rs:srbdt:2022`, `InvoiceTypeCode 380`, valuta `RSD`, `EndpointID schemeID="9948"` = PIB, `PartyTaxScheme` `RS`+PIB, `PartyLegalEntity/CompanyID` = **matični broj**, kupac budžetski korisnik ima `JBKJS:`, `PaymentMeans 30` + račun, `TaxTotal/TaxSubtotal` po kategoriji (`S`, 20 i 10 %), `InvoiceLine` sa `unitCode`, `LineExtensionAmount`, `ClassifiedTaxCategory`, `Price`.
+
+### Nove obaveze iz dokumenta koje menjaju plan
+1. **Datum prometa je obavezan** (od verzije 3.14): `cac:Delivery/cbc:ActualDeliveryDate`, ne sme biti posle datuma izdavanja. Za nas: datum otpreme (`shipped_at`), a bez magacina datum koji admin izabere pri izdavanju. Greška: `InvoiceDeliveryDateMissing`.
+2. **Datum nastanka PDV obaveze:** kad stavka ima kategoriju S10/S20, `InvoicePeriod/DescriptionCode` mora biti jedna od dozvoljenih vrednosti (3, 35 ili 432). Primer koristi `3` (datum isporuke). Greške: `InvoicePeriodDescriptionCodeNotDefined/NotNeeded`.
+3. **Datum izdavanja i rok:** postoje greške `IssueDateCannotBeDifferentFromTodays`, `InvoiceDateLaterThanToday`, `InvoiceDueDateMissing`, `PaymentDateMoreThan90DaysInFuture`. Pretpostavka **[proveriti na demo SEF-u]**: faktura se izdaje „danas“ i ne može da se unazad datira. Zato „Izdaj fakturu“ znači izdavanje u trenutku slanja, a ne naknadno slanje stare porudžbine.
+4. **Kupac mora da ima matični broj i PIB** (ne samo PIB): `CheckIfCompanyRegisteredOnEfaktura` traži oba. Postojeći kupci ih nemaju strukturirano: potrebno polje za matični broj.
+5. **Zbirovi se proveravaju strogo:** greške tipa `UBLTotalTaxAmountAndSubtotalTaxAmountDiffer`, `UBLTaxSubtotalNotDefined`, `ErrorAmountDeltaExceedAmountTolerance`, `UBLUndefinedPayableAmount`. `calc.py` mora da bude jedini izvor, uz test sa raznim kombinacijama rabata, PDV stopa i količina u gramima/mililitrima.
+6. **Ograničenja slanja po paketu:** postoje greške `InvoicesSendingLimitReached` i `ExternalInvoicesSendingLimitReached`. Treba proveriti da li SEF paket klijenta ima mesečni limit faktura i prikazati poruku **[proveriti]**.
+7. **Noćna pauza:** dokument kaže da SEF ne mora da radi 24 h (primer „noćna pauza“ do ~6 ujutru). Slanje mora da se ponovi kasnije bez gubitka (to nam omogućava `requestId`).
+8. **Kategorije i izuzeci PDV-a:** lista razloga izuzeća `GET .../sales-invoice/getValueAddedTaxExemptionReasonList`. Za MVP radimo samo `S` (20 i 10 %); oslobođeni i nulti promet (kategorije Z/E/O…) tek po potrebi klijenta, uz računovođu.
+
+### Uklapanje u naš sistem (provereno prema kodu)
+| Šta SEF traži | Šta imamo | Razlika |
+|---|---|---|
+| Prodavac: PIB, matični broj, adresa (ulica, grad, poštanski broj, država), račun, mejl | `clients`: `pib`, `registration_number`, `bank_account`, adresa u jednom polju | strukturirana adresa |
+| Kupac: PIB + matični broj + adresa | `customers`: `pib`, adresa u jednom polju | matični broj + strukturirana adresa |
+| Stavke: naziv, jedinica (UN/ECE), količina, cena, PDV kategorija i stopa, rabat | `OrderItem` snapshot: naziv, cena, `vat_rate`, jedinica + `unit_factor`, `discount`, `additional_discount`, `picked_qty` | preslikavanje jedinica; rabati kao `AllowanceCharge` |
+| Broj fakture (`cbc:ID`) | `invoice_number` pri otpremi (`PREFIX/0001`) ili ručni | broj mora biti jedinstven i bez rupa |
+| Datum prometa, datum izdavanja, rok | `shipped_at`, `created_at` | rok plaćanja (novo podešavanje) |
+| Idempotentnost (`requestId`) | nema | `einvoices._id` |
+| Prekid mreže, noćna pauza | `_send_order_status_email` je „best effort“ | red za ponovno slanje (cron) |
+
+**Zaključak:** izvodljivo i dobro se uklapa. Nema arhitekturalnih prepreka (REST, ključ po firmi, `requestId`, polling), a naš model (porudžbina → stavke sa snapshot-om → `calc.py`) već nosi ono što UBL traži. Glavni rad je **podaci** (strukturirane adrese, matični broj, mapiranje jedinica/PDV-a) i **tačnost iznosa**, a ne sam API.
+
+### Revidirana procena (SEF modul, model B)
+| Korak | Procena |
+|---|---|
+| Podaci: adrese i matični broj (kupci, firma), podešavanja (rok plaćanja, PDV), mapiranje jedinica | 1 nedelja |
+| UBL builder + testovi iznosa (`calc.py`), validacija (`executeValidation`) | 1–1,5 nedelje |
+| SEF klijent (slanje, status, otkazivanje/storno, PDF, provera kupca), `einvoices`, `requestId`, cron za status | 1–1,5 nedelje |
+| Portal: Integracije (ključ, provera veze), dugme „Izdaj fakturu“ sa pregledom, status u porudžbinama, upozorenja pred rok PDV-a, uputstvo | 1 nedelja |
+| Demo testovi i pilot sa računovođom | 1 nedelja |
+| **Ukupno** | **4–6 nedelja** |
+
+Pre početka ostaje da se u **demo okruženju proveri**: pravilo o datumu izdavanja, ograničenja slanja po paketu, tačna obavezna polja kupca i ponašanje pri odbijanju fakture od strane kupca.
