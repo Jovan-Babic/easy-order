@@ -49,7 +49,14 @@ export function SubscriptionBanner() {
     if (billing.late) {
       return (
         <div className="mb-6 rounded-lg border border-warning bg-amber-50 p-4 text-sm text-warning">
-          {t("billingLate")} <strong>{formatDate(billing.blocks_on)}</strong>.{amount}
+          {billing.blocks_on ? (
+            <>
+              {t("billingLate")} <strong>{formatDate(billing.blocks_on)}</strong>.
+            </>
+          ) : (
+            t("billingPartial")
+          )}
+          {amount}
           {link}
         </div>
       );

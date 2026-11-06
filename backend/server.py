@@ -3555,8 +3555,11 @@ async def _billing_notice(raw: dict) -> Optional[dict]:
     next_due = dues[0] if dues else None
     blocks_on = None
     if next_due:
-        due = date.fromisoformat(next_due)
-        blocks_on = (date(due.year, due.month, int(setting("block_after_day"))) + timedelta(days=1)).isoformat()
+        block_day = _blocks_on(next_due)
+        # Announce a block date only if the debt would really block the account
+        # that day (a partial payment leaves less than a package unpaid: no block).
+        if subscription_state(sub, block_day)["status"] == "locked":
+            blocks_on = block_day.isoformat()
     out: Dict[str, Any] = {
         "status": state["status"], "lock_reason": state.get("lock_reason"), "next_due_date": next_due,
         "late": bool(next_due and next_due <= today.isoformat()), "blocks_on": blocks_on,
