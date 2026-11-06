@@ -99,6 +99,18 @@ FORGOT_PASSWORD_MAX_PER_HOUR = int(os.environ.get("FORGOT_PASSWORD_MAX_PER_HOUR"
 # stays under that; Cloudinary additionally shrinks what it stores.
 IMAGE_MAX_BYTES = int(os.environ.get("IMAGE_MAX_BYTES", str(4 * 1024 * 1024)))
 IMAGE_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
+_HEIC_BRANDS = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs", b"mif1", b"msf1"}
+
+
+def _looks_like_image(data: bytes) -> bool:
+    """The file itself (not the Content-Type the client claims) starts like a JPEG, PNG, WEBP or HEIC/HEIF image."""
+    if data[:3] == b"\xff\xd8\xff":  # JPEG
+        return True
+    if data[:8] == b"\x89PNG\r\n\x1a\n":  # PNG
+        return True
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":  # WEBP
+        return True
+    return data[4:8] == b"ftyp" and data[8:12] in _HEIC_BRANDS  # HEIC / HEIF
 PRODUCT_IMAGE_FOLDER = "easy-order/products"
 CLIENT_LOGO_FOLDER = "easy-order/clients"
 
@@ -1616,10 +1628,13 @@ async def upload_product_image(
         raise HTTPException(
             status_code=413, detail=f"Image is too large (max {IMAGE_MAX_BYTES // (1024 * 1024)} MB)"
         )
+    if not _looks_like_image(data):
+        # The claimed Content-Type matched, but the bytes are not an image: refuse before it reaches Cloudinary.
+        raise HTTPException(status_code=415, detail="The file is not a valid JPEG, PNG, WEBP or HEIC image")
 
     if not cloudinary_available():
         raise HTTPException(
-            status_code=500,
+            status_code=503,
             detail="Cloudinary is not configured. Set CLOUDINARY_URL or CLOUDINARY_CLOUD_NAME/CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET.",
         )
 
