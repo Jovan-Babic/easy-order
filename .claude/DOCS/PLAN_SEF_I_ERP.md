@@ -107,3 +107,18 @@ Svaka faza ide kao poseban PR; u svakoj: testovi protiv demo SEF-a (ne produkcij
 1. Odmah: **Faza 0** (razgovor sa klijentima) i **Faza 1** (izvoz za ERP). Daje stvarnu vrednost svima, bez zakonskog rizika i bez zavisnosti od SEF-a.
 2. Zatim, prema odgovorima: **model B (SEF)** za klijente bez ERP-a ili **konektor** za njihov ERP.
 3. **e-Otpremnice** posle SEF-a, osim ako klijent isporučuje javnom sektoru ili akciznu robu, kada idu odmah.
+
+## 9. Dodatak: šta pokrivaju dokumenti koje je klijent dostavio (2026-11-06)
+
+Dva PDF-a sa zvaničnog sajta (API_EPP verzija 30.04.2026. i API_EEO_PDV verzija 11.08.2024.) **nisu specifikacija za slanje faktura**. Oba opisuju **evidenciju PDV-a** u SEF-u:
+- **EPP, elektronsko evidentiranje prethodnog poreza:** ulazni PDV (nabavke od obveznika, fiskalni i drugi računi, uvoz).
+- **EEO PDV, evidentiranje obračuna PDV:** pojedinačne i zbirne evidencije obračunatog PDV-a (promet po stopama 20 % i 10 %, avans, storno, poreski dužnik, posebni postupci).
+
+**Šta iz njih saznajemo i važi za naš plan**
+- Isti obrazac pristupa kao kod faktura: JSON preko HTTPS, API ključ u zaglavlju (`apiKey`), poseban demo host (`demoppppdv.mfin.gov.rs`) i produkcioni, Swagger stranica. EPP traži i PIB uz ključ (401 ako se ne poklapaju), što potvrđuje da je ključ vezan za PIB firme.
+- Sistemska polja se pune **automatski iz e-faktura** do 10. odnosno 12. u mesecu posle poreskog perioda. Posle toga korisnik mora da unese vrednosti ručno. **Zaključak:** fakture moramo da šaljemo na vreme (najkasnije do 10. u narednom mesecu). SEF modul treba da pokazuje neposlate i odbijene fakture, posebno pred kraj meseca.
+- Specifikacije se menjaju često (EPP verzija iz 2026. menja način preuzimanja vrednosti za periode posle 1.7.2025.). Još jedan razlog za testove na demo okruženju pri svakoj promeni.
+
+**Šta NE treba da radimo.** Evidenciju i obračun PDV-a (EPP/EEO) vodi računovođa ili ERP, na nivou poreske prijave. Nama su ti podaci sa SEF-a potrebni samo posredno: kad šaljemo ispravne izlazne fakture, SEF sam puni obračunati PDV. Slanje EPP/EEO iz našeg sistema nije deo plana.
+
+**Šta nam još nedostaje (ne može se uraditi bez toga):** zvanična specifikacija za **izlazne fakture** (putanje `sales-invoice/...`, upload UBL-a, statusi, otkazivanje i storno) i SRBDT specifikacija UBL-a. Na sajtu efaktura.gov.rs su, prema pretrazi, to: „Specifikacija prilagođene primene standarda EN 16931-1 (SRBDT)“ (`/extfile/sr/1804/spec-srbdt-ext-en16931-2023_03_31.pdf`), „Interno tehničko uputstvo“ (`/extfile/sr/7593/...`) i prezentacija „Rad sa SEF-om preko API servisa“ (`/extfile/sr/1470/...`), a za otpremnice tehničko uputstvo na eotpremnica.efaktura.gov.rs. Najbolje je izvesti **Swagger JSON** sa demo SEF-a, koji je sama tačna specifikacija API-ja.
