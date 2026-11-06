@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/lib/i18n";
+import { localizedDetail } from "@/lib/errors";
 import { ClientFields } from "@/components/ClientFields";
 import { ClientInfo } from "@/lib/orders";
 import { ALL_MODULES } from "@/lib/modules";
@@ -52,7 +53,7 @@ export function ClientEditForm({ client }: { client: ClientInfo }) {
       if (!res.ok) {
         if (uploaded) await deleteUploadedLogo(uploaded);
         const body = await res.json().catch(() => ({}));
-        setMessage({ ok: false, text: typeof body.detail === "string" ? body.detail : t("saveFailed") });
+        setMessage({ ok: false, text: localizedDetail(body.detail, t, t("saveFailed")) });
         return;
       }
       setPendingLogo(null);

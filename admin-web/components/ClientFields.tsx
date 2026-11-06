@@ -44,11 +44,12 @@ export function ClientFields({
         <input value={form.phone} onChange={(e) => set({ phone: e.target.value })} className={field} />
       </Field>
       <Field label={t("taxIdPib")}>
-        <input value={form.pib} onChange={(e) => set({ pib: e.target.value })} className={field} />
+        <input inputMode="numeric" pattern="[0-9]{9}" title={t("companyPibHint")} maxLength={9} value={form.pib} onChange={(e) => set({ pib: e.target.value.replace(/\D/g, "") })} className={field} />
       </Field>
       <Field label={t("registrationNumber")}>
-        <input value={form.registration_number} onChange={(e) => set({ registration_number: e.target.value })} className={field} />
+        <input inputMode="numeric" pattern="[0-9]{8}" title={t("companyMbHint")} maxLength={8} value={form.registration_number} onChange={(e) => set({ registration_number: e.target.value.replace(/\D/g, "") })} className={field} />
       </Field>
+      <p className="-mt-2 text-xs text-muted">{t("companyIdsHint")}</p>
       <h2 className="mt-2 font-bold text-onSurface">{t("addressForInvoices")}</h2>
       <Field label={t("street")}>
         <input maxLength={100} value={form.street} onChange={(e) => set({ street: e.target.value })} className={field} />

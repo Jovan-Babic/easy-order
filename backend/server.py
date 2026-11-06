@@ -480,8 +480,27 @@ class ClientInput(BaseModel):
     def _strip_address(cls, v):
         return _stripped(v)
 
-    # The client's own registration number is not digit-checked: it was free text before and only the superadmin
-    # edits it (SEF itself rejects a wrong one).
+    # The company's own identifiers end up on every invoice, so a typo is refused here: PIB = 9 digits with a valid
+    # check digit, registration number (matični broj) = exactly 8 digits. (Customers are checked more loosely.)
+    @field_validator("pib", mode="before")
+    @classmethod
+    def _company_pib_strip(cls, v):
+        return _stripped(v)
+
+    @field_validator("pib")
+    @classmethod
+    def _company_pib(cls, v):
+        if v and not pib_is_valid(v):
+            raise ValueError("PIB is not valid (9 digits with a correct check digit)")
+        return v
+
+    @field_validator("registration_number")
+    @classmethod
+    def _company_registration_number(cls, v):
+        if v and not re.fullmatch(r"[0-9]{8}", v):
+            raise ValueError("Registration number (matični broj) must have exactly 8 digits")
+        return v
+
     @field_validator("country")
     @classmethod
     def _country_code(cls, v):
@@ -678,6 +697,17 @@ def _check_country(value):
         if not re.fullmatch(r"[A-Z]{2}", value):
             raise ValueError("Country must be a 2-letter code (RS)")
     return value
+
+
+def pib_is_valid(value: str) -> bool:
+    """Serbian PIB: 9 digits, the last one is a check digit (ISO 7064 MOD 11,10)."""
+    if not re.fullmatch(r"[0-9]{9}", value):
+        return False
+    carry = 10
+    for ch in value[:8]:
+        total = (int(ch) + carry) % 10 or 10
+        carry = (2 * total) % 11
+    return (11 - carry) % 10 == int(value[8])
 
 
 def _without_unset_address(data: dict) -> dict:

@@ -50,12 +50,12 @@ class TestClientSettings:
 
     def test_prefix_uppercased_and_me_endpoint(self, superadmin_client):
         client, admin = _make_client(
-            superadmin_client, invoice_prefix="abc", registration_number="123", bank_account="160-1-00", logo=""
+            superadmin_client, invoice_prefix="abc", registration_number="20869500", bank_account="160-1-00", logo=""
         )
         assert client["invoice_prefix"] == "ABC" and client["invoice_next_seq"] == 1
         me = admin.get(f"{API}/clients/me")
         assert me.status_code == 200
-        assert me.json()["registration_number"] == "123" and me.json()["bank_account"] == "160-1-00"
+        assert me.json()["registration_number"] == "20869500" and me.json()["bank_account"] == "160-1-00"
 
     def test_superadmin_has_no_own_client(self, superadmin_client):
         assert superadmin_client.get(f"{API}/clients/me").status_code == 404

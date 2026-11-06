@@ -100,3 +100,40 @@ def test_builtin_units_have_ubl_codes(api_client, superadmin_client):
     ok = superadmin_client.put(f"{API}/units/{code}", json={"ubl_code": "XPK"})
     assert ok.status_code == 200 and ok.json()["ubl_code"] == "XPK"
     assert superadmin_client.put(f"{API}/units/{code}", json={"ubl_code": "xpk!"}).status_code == 422
+
+
+def test_pib_check_digit():
+    import sys
+    sys.path.insert(0, ".")
+    from server import pib_is_valid
+    # real numbers from the SEF documentation: DOO Tamiš, Ministry of Finance, Customs
+    for ok in ("107775252", "108213413", "101685102"):
+        assert pib_is_valid(ok), ok
+    for bad in ("123456789", "100000000", "10777525", "1077752521", "10777525a", ""):
+        assert not pib_is_valid(bad), bad
+
+
+@pytest.mark.parametrize("bad", [
+    {"pib": "123456789"}, {"pib": "10777525"}, {"pib": "abcdefghi"},
+    {"registration_number": "123"}, {"registration_number": "1234567"}, {"registration_number": "123456789"}, {"registration_number": "2086950a"},
+])
+def test_company_ids_are_checked(superadmin_client, api_client, bad):
+    cid = api_client.get(f"{API}/auth/me").json()["client_id"]
+    cur = superadmin_client.get(f"{API}/clients/{cid}").json()
+    body = {k: cur[k] for k in ("name", "address", "email", "phone", "bank_account", "logo", "invoice_prefix", "invoice_numbering")}
+    r = superadmin_client.put(f"{API}/clients/{cid}", json={**body, **bad})
+    assert r.status_code == 422, (bad, r.text)
+    # a new client is checked the same way
+    c = superadmin_client.post(f"{API}/clients", json={"name": "TEST_S1_bad", "admin_name": "x", "admin_email": f"s1bad-{uuid.uuid4().hex[:6]}@easyorder.dev", **bad})
+    assert c.status_code == 422, (bad, c.text)
+
+
+def test_company_ids_accept_valid_values(superadmin_client, api_client):
+    cid = api_client.get(f"{API}/auth/me").json()["client_id"]
+    cur = superadmin_client.get(f"{API}/clients/{cid}").json()
+    body = {k: cur[k] for k in ("name", "address", "email", "phone", "bank_account", "logo", "invoice_prefix", "invoice_numbering")}
+    r = superadmin_client.put(f"{API}/clients/{cid}", json={**body, "pib": "107775252", "registration_number": "20869500"})
+    assert r.status_code == 200, r.text
+    assert r.json()["pib"] == "107775252" and r.json()["registration_number"] == "20869500"
+    # empty values stay allowed (a company that has not filled them in yet)
+    assert superadmin_client.put(f"{API}/clients/{cid}", json={**body, "pib": "", "registration_number": ""}).status_code == 200
