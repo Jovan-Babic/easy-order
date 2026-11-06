@@ -224,9 +224,9 @@ Ako vaša firma ima paket **SEF**, u meniju postoji stranica **Integracije**, a 
 
 **Podešavanje (jednom):**
 1. Na SEF portalu (Podešavanja → API menadžment) administrator firme napravi **API ključ**. Za probu koristite **demo** SEF, a ključ za demo i za produkciju su različiti.
-2. Na stranici **Integracije** izaberite okruženje (**Demo** ili **Produkcija**), upišite ključ i kliknite *Sačuvaj*. Ključ se čuva šifrovan i posle čuvanja se više ne prikazuje (vidi se samo njegov kraj).
-3. Kliknite **Proveri vezu**. Treba da piše „Veza radi“.
-4. Uključite **Slanje faktura na SEF** i po potrebi podesite **rok plaćanja** (dana).
+2. Na stranici **Integracije** (tab **SEF**) postoje dva odvojena unosa: **Demo** i **Produkcija**. Upišite ključ u pravi unos i kliknite *Sačuvaj*. Oba ključa mogu da stoje istovremeno, jedan ne briše drugi. Ključ se čuva šifrovan i posle čuvanja se više ne prikazuje (vidi se samo njegov kraj).
+3. Kliknite **Proveri vezu** uz taj ključ. Treba da piše „Veza radi“.
+4. U polju **Okruženje u kome se šalju fakture** izaberite Demo ili Produkciju (označeno je „u upotrebi“), uključite **Slanje faktura na SEF** i po potrebi podesite **rok plaćanja** (dana). Produkciju izaberite tek kad ceo tok proverite na demo okruženju.
 
 **Izdavanje fakture:** na stranici **Porudžbine** kliknite **SEF** uz otpremljenu porudžbinu.
 - Program pokazuje šta još nedostaje (na primer kupcu matični broj ili adresa, firmi PIB ili tekući račun, jedinici mere UBL šifra). Podatke kupca dopunjujete na stranici **Kupci**, a podatke firme (PIB, matični broj, adresa, PDV status, tekući račun) i šifre jedinica mere menja vlasnik sistema, pa mu se obratite. Posle dopune otvorite prozor ponovo.

@@ -87,13 +87,35 @@ def _preview(oid, **body):
 
 def test_key_is_stored_encrypted_and_never_returned():
     out = _set_key("fake-ok-SECRETKEY9876")
-    assert out["key_set"] is True and out["key_hint"] == "…9876" and out["env"] == "demo"
+    assert out["key_set"] is True and out["keys"]["demo"]["hint"] == "…9876" and out["env"] == "demo"
+    assert out["keys"]["production"]["set"] is False
     assert "SECRETKEY" not in str(out) and "SECRETKEY" not in S.admin.get(f"{API}/integrations/sef").text
     out = S.admin.put(f"{API}/integrations/sef", json={"payment_terms_days": 30}).json()
     assert out["key_set"] is True and out["payment_terms_days"] == 30  # None keeps the key
     assert S.admin.put(f"{API}/integrations/sef", json={"payment_terms_days": 400}).status_code == 422
     out = S.admin.put(f"{API}/integrations/sef", json={"api_key": ""}).json()
     assert out["key_set"] is False
+
+
+def test_demo_and_production_keys_are_kept_apart():
+    S.admin.put(f"{API}/integrations/sef", json={"api_key": "", "key_env": "demo"})
+    S.admin.put(f"{API}/integrations/sef", json={"api_key": "", "key_env": "production"})
+    out = S.admin.put(f"{API}/integrations/sef", json={"api_key": "fake-demo-AAAA1111", "key_env": "demo", "env": "demo"}).json()
+    assert out["keys"]["demo"]["set"] and not out["keys"]["production"]["set"]
+    out = S.admin.put(f"{API}/integrations/sef", json={"api_key": "fake-prod-BBBB2222", "key_env": "production"}).json()
+    assert out["env"] == "demo"  # saving a key does not switch the environment
+    assert out["keys"]["demo"]["hint"] == "…1111" and out["keys"]["production"]["hint"] == "…2222"
+    # switching the environment keeps both keys; the check runs against the key of the chosen one
+    out = S.admin.put(f"{API}/integrations/sef", json={"env": "production"}).json()
+    assert out["env"] == "production" and out["key_set"] is True and out["keys"]["demo"]["set"]
+    assert S.admin.post(f"{API}/integrations/sef/test").json()["env"] == "production"
+    assert S.admin.post(f"{API}/integrations/sef/test", params={"env": "demo"}).json()["env"] == "demo"
+    # removing one leaves the other; a missing key of the chosen environment stops sending
+    out = S.admin.put(f"{API}/integrations/sef", json={"api_key": "", "key_env": "production"}).json()
+    assert out["key_set"] is False and out["keys"]["demo"]["set"] is True
+    assert S.admin.post(f"{API}/integrations/sef/test").status_code == 400
+    S.admin.put(f"{API}/integrations/sef", json={"env": "demo"})
+    S.admin.put(f"{API}/integrations/sef", json={"api_key": "", "key_env": "demo"})  # leave no key behind
 
 
 def test_connection_check():
@@ -104,7 +126,7 @@ def test_connection_check():
     _set_key("fake-ok-1234567")
     r = S.admin.post(f"{API}/integrations/sef/test").json()
     assert r["ok"] is True and "3.7" in r["message"]
-    assert S.admin.get(f"{API}/integrations/sef").json()["last_check_ok"] is True
+    assert S.admin.get(f"{API}/integrations/sef").json()["keys"]["demo"]["last_check_ok"] is True
 
 
 def test_roles_and_modules():
