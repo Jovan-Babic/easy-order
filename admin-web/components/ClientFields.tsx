@@ -46,6 +46,31 @@ export function ClientFields({
       <Field label={t("taxIdPib")}>
         <input value={form.pib} onChange={(e) => set({ pib: e.target.value })} className={field} />
       </Field>
+      <Field label={t("registrationNumber")}>
+        <input value={form.registration_number} onChange={(e) => set({ registration_number: e.target.value })} className={field} />
+      </Field>
+      <h2 className="mt-2 font-bold text-onSurface">{t("addressForInvoices")}</h2>
+      <Field label={t("street")}>
+        <input maxLength={100} value={form.street} onChange={(e) => set({ street: e.target.value })} className={field} />
+      </Field>
+      <div className="grid grid-cols-3 gap-3">
+        <Field label={t("city")}>
+          <input maxLength={100} value={form.city} onChange={(e) => set({ city: e.target.value })} className={field} />
+        </Field>
+        <Field label={t("postalCode")}>
+          <input maxLength={20} value={form.postal_code} onChange={(e) => set({ postal_code: e.target.value })} className={field} />
+        </Field>
+        <Field label={t("country")}>
+          <input maxLength={2} value={form.country} onChange={(e) => set({ country: e.target.value.toUpperCase() })} className={field} />
+        </Field>
+      </div>
+      <Field label={t("vatPayer")}>
+        <select value={form.vat_payer} onChange={(e) => set({ vat_payer: e.target.value as "" | "yes" | "no" })} className={field}>
+          <option value="">{t("vatPayerUnknown")}</option>
+          <option value="yes">{t("vatPayerYes")}</option>
+          <option value="no">{t("vatPayerNo")}</option>
+        </select>
+      </Field>
 
       {!hideModules && <h2 className="mt-2 font-bold text-onSurface">{t("modules")}</h2>}
       {!hideModules && <p className="-mt-2 text-xs text-muted">{t("modulesHint")}</p>}
@@ -65,9 +90,6 @@ export function ClientFields({
       ))}
 
       <h2 className="mt-2 font-bold text-onSurface">{t("invoiceSettings")}</h2>
-      <Field label={t("registrationNumber")}>
-        <input value={form.registration_number} onChange={(e) => set({ registration_number: e.target.value })} className={field} />
-      </Field>
       <Field label={t("bankAccount")}>
         <input value={form.bank_account} onChange={(e) => set({ bank_account: e.target.value })} className={field} />
       </Field>

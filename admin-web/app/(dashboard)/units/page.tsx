@@ -54,6 +54,7 @@ export default function UnitsPage() {
               <th className="px-4 py-3">{t("unitSymbol")}</th>
               <th className="px-4 py-3">{t("unitGroup")}</th>
               <th className="px-4 py-3 text-right">{t("unitFactor")}</th>
+              <th className="px-4 py-3">{t("unitUblCode")}</th>
               <th className="px-4 py-3">{t("status")}</th>
               <th className="px-4 py-3" />
             </tr>
@@ -67,6 +68,9 @@ export default function UnitsPage() {
                 <td data-label={t("unitGroup")} className="px-4 py-3 text-onSurfaceSecondary">{GROUP_KEYS[u.group] ? t(GROUP_KEYS[u.group]) : u.group}</td>
                 <td data-label={t("unitFactor")} className="px-4 py-3 text-right text-onSurfaceSecondary">
                   {u.base_code === u.code ? t("unitBaseMark") : `1 ${u.symbol} = ${u.factor.toLocaleString("sr-RS")} ${u.base_code}`}
+                </td>
+                <td data-label={t("unitUblCode")} className="px-4 py-3 font-mono text-xs text-onSurfaceSecondary">
+                  {u.ubl_code || <span className="text-error">{t("unitUblMissing")}</span>}
                 </td>
                 <td data-label={t("status")} className="px-4 py-3">
                   <span className={u.active ? "text-success" : "text-error"}>{u.active ? t("active") : t("inactive")}</span>
@@ -107,6 +111,7 @@ function UnitDialog({ unit, units, onClose, onDone }: { unit: Unit | null; units
   const [baseCode, setBaseCode] = useState(unit?.base_code ?? "g");
   const [factor, setFactor] = useState(String(unit?.factor ?? 1));
   const [active, setActive] = useState(unit?.active ?? true);
+  const [ublCode, setUblCode] = useState(unit?.ubl_code ?? "");
   const { busy, error, send } = useSubmit(onDone);
   const bases = units.filter((u) => u.base_code === u.code && u.group === group);
   const existing = !!unit;
@@ -124,6 +129,7 @@ function UnitDialog({ unit, units, onClose, onDone }: { unit: Unit | null; units
             group,
             base_code: baseCode,
             factor: Number(factor),
+            ...(ublCode.trim() ? { ubl_code: ublCode.trim().toUpperCase() } : {}),
           };
           if (existing) send(`/api/units/${unit.code}`, "PUT", body);
           else send("/api/units", "POST", { code, ...body });
@@ -173,6 +179,11 @@ function UnitDialog({ unit, units, onClose, onDone }: { unit: Unit | null; units
             <input required type="number" min="1" step="1" value={factor} onChange={(e) => setFactor(e.target.value)} className={`${input} mt-1`} />
           </label>
         </div>
+        <label className="text-sm font-semibold text-onSurface">
+          {t("unitUblCode")}
+          <input maxLength={3} pattern="[A-Za-z0-9]{2,3}" placeholder="H87" value={ublCode} onChange={(e) => setUblCode(e.target.value.toUpperCase())} className={`${input} mt-1`} />
+          <span className="mt-1 block text-xs font-normal text-muted">{t("unitUblHint")}</span>
+        </label>
         <label className="flex items-center gap-2 text-sm font-semibold text-onSurface">
           <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
           {t("active")}

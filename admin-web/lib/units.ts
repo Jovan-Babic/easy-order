@@ -14,6 +14,7 @@ export type Unit = {
   base_code: string;
   factor: number;
   active: boolean;
+  ubl_code?: string | null;
 };
 
 export const PIECE: Unit = {

@@ -9,6 +9,11 @@ export type ClientFormFields = {
   phone: string;
   pib: string;
   registration_number: string;
+  street: string;
+  city: string;
+  postal_code: string;
+  country: string;
+  vat_payer: "" | "yes" | "no"; // "" = not stated
   bank_account: string;
   logo: string;
   invoice_prefix: string;
@@ -25,6 +30,11 @@ export const emptyClientFields: ClientFormFields = {
   phone: "",
   pib: "",
   registration_number: "",
+  street: "",
+  city: "",
+  postal_code: "",
+  country: "RS",
+  vat_payer: "",
   bank_account: "",
   logo: "",
   invoice_prefix: "",
@@ -68,6 +78,11 @@ export function clientPayload(form: ClientFormFields, logo: string, withModules 
     phone: form.phone,
     pib: form.pib,
     registration_number: form.registration_number,
+    street: form.street.trim(),
+    city: form.city.trim(),
+    postal_code: form.postal_code.trim(),
+    country: form.country.trim().toUpperCase() || "RS",
+    vat_payer: form.vat_payer === "" ? null : form.vat_payer === "yes",
     bank_account: form.bank_account,
     logo,
     invoice_prefix: form.invoice_prefix.trim().toUpperCase(),

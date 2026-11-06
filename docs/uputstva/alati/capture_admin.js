@@ -183,10 +183,11 @@ const put = (p, b, t) => api(p, { method: 'PUT', body: JSON.stringify(b) }, t);
   await step('customers', async () => {
     await go('/customers');
     await page.getByRole('button', { name: 'Novi kupac' }).click(); await wait(900);
+    await page.setViewportSize({ width: 1280, height: 1250 }); await wait(400);
     await shot(page, O + 'a12-kupci.png', [
       { sel: btn('Uvoz'), n: 1, pad: 6 }, { sel: label('Ime'), n: 2, pad: 4, badge: 'right' }, { sel: label('PIB'), n: 3, pad: 4, badge: 'right' },
-      { sel: btn('Kreiraj kupca'), n: 4, pad: 4 }, { sel: btn('Obriši', 0), n: 5, pad: 6, badge: 'right' },
-    ], clipTop(900));
+      { sel: btn('Kreiraj kupca'), n: 4, pad: 4 },
+    ], clipTop(1250));
   });
 
   await step('orders', async () => {

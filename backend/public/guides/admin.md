@@ -183,10 +183,11 @@ Na stranici **Kupci** vodite spisak kupaca koje komercijalisti biraju pri porud�
 
 ![Kupci](slike/admin/13-kupci.png)
 
-1. **Uvoz** – unos kupaca iz Excela, isto kao kod proizvoda. Kolone su **Naziv**, **Adresa**, **Email**, **Telefon** i **PIB**. Kupac se prepoznaje po PIB-u, a ako ga nema, po tačnom nazivu.
+1. **Uvoz** – unos kupaca iz Excela, isto kao kod proizvoda. Kolone su **Naziv**, **Adresa**, **Email**, **Telefon**, **PIB**, **Matični broj**, **Ulica i broj**, **Grad**, **Poštanski broj** i **Država** (primer fajla se preuzima u prozoru za uvoz). Kupac se prepoznaje po PIB-u, a ako ga nema, po tačnom nazivu. Prazna ćelija ne briše ono što već piše.
 2. **Ime** (obavezno), **Adresa**, **Email** i **Telefon**.
-3. **PIB** – navodi se na fakturi.
-4. **Kreiraj kupca**.
+3. **PIB** i **Matični broj** – navode se na fakturi i potrebni su za slanje e-faktura (SEF).
+   **Ulica i broj**, **Grad**, **Poštanski broj** i **Država** (RS) – adresa za fakturu; slobodno polje **Adresa** ostaje za prikaz.
+4. **Kreiraj kupca**, a za postojećeg kupca **Izmeni** otvara istu formu (**Sačuvaj izmene**). Kolona **Podaci za fakturu** pokazuje da li kupcu išta nedostaje (npr. matični broj ili poštanski broj).
 5. **Deaktiviraj** / **Aktiviraj** – neaktivan kupac nestaje komercijalistima i ne može da dobije novu porudžbinu, a stare porudžbine ostaju netaknute.
 6. **Obriši** – briše kupca (traži potvrdu), ali samo ako nema nijednu porudžbinu; inače koristite **Deaktiviraj**.
 
@@ -194,7 +195,7 @@ Unos se proverava: ime je obavezno, email mora biti ispravan, PIB ima samo cifre
 
 Novi kupac se odmah pojavljuje komercijalistima.
 
-> **Izmena podataka kupca** (adresa, telefon, email) radi se u aplikaciji: **Admin** → **Kupci** → ikonica olovke (odeljak 13).
+> Podatke kupca možete da menjate i u aplikaciji (**Admin** → **Kupci** → ikonica olovke, odeljak 13), ali matični broj i adresu za fakturu unosite u portalu.
 
 ---
 

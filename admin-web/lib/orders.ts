@@ -56,6 +56,12 @@ export type Customer = {
   email?: string;
   phone?: string;
   pib?: string;
+  registration_number?: string;
+  street?: string;
+  city?: string;
+  postal_code?: string;
+  country?: string;
+  invoice_missing?: string[];
 };
 
 export type ClientInfo = {
@@ -66,6 +72,11 @@ export type ClientInfo = {
   phone?: string;
   pib?: string;
   registration_number?: string;
+  street?: string;
+  city?: string;
+  postal_code?: string;
+  country?: string;
+  vat_payer?: boolean | null;
   bank_account?: string;
   logo?: string;
   invoice_prefix?: string;
