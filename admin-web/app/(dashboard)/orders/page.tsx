@@ -16,6 +16,8 @@ export default function OrdersPage() {
   const session = useSession();
   const isSuperAdmin = session.role === "superadmin";
   const canSef = (session.role === "admin" || session.role === "superadmin") && session.modules.includes("sef");
+  // Without the warehouse module there is no shipping: a new order is invoiced directly (a superadmin sees every client's orders).
+  const hasWarehouse = session.role !== "superadmin" && session.modules.includes("warehouse");
   const [einvoiceOrderId, setEinvoiceOrderId] = useState<string | null>(null);
   const canDelete = session.role === "superadmin" || session.role === "admin";
   const [orders, setOrders] = useState<Order[]>([]);
@@ -117,7 +119,7 @@ export default function OrdersPage() {
                   >
                     {t("details")}
                   </button>
-                  {canSef && o.status === "shipped" && (
+                  {canSef && (o.status === "shipped" || (o.status === "new" && !hasWarehouse)) && (
                     <button
                       type="button"
                       onClick={() => setEinvoiceOrderId(o.id)}

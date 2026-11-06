@@ -234,6 +234,8 @@ Ako vaša firma ima paket **SEF**, u meniju postoji stranica **Integracije**, a 
 - **Proveri na SEF-u (demo)** proverava fakturu bez izdavanja, a samo je dostupno na demo okruženju.
 - **Pošalji na SEF** izdaje fakturu i troši njen broj. Dvostruki klik ne pravi dve fakture.
 - **Osveži status** pokazuje šta SEF kaže (poslata, odobrena, odbijena). **Otkaži** radi dok kupac nije odobrio fakturu, a posle odobrenja ostaje **Storniraj** (razlog je obavezan).
+- **Firma bez modula Magacin** nema otpremu, pa se faktura izdaje direktno iz **nove** porudžbine: sami birate **datum prometa** (ne posle današnjeg), a broj fakture se dodeljuje pri slanju (ako firma numeriše ručno, upisujete ga u prozoru).
+- Porudžbina sa izdatom fakturom se **ne menja**: ne može da se izmeni, obriše ni da joj se promeni status. Prvo otkažite ili stornirajte fakturu.
 - Ako SEF ne odgovori, status ostaje „Slanje u toku“. Dugme **Pokušaj ponovo** šalje isti zahtev i ne pravi drugu fakturu.
 - Ako SEF odbije fakturu, razlog se prikazuje u prozoru (greška i šifra).
 

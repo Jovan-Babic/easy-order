@@ -47,6 +47,9 @@ export type EinvoicePreview = {
     grand: number;
     categories: Array<{ vat_rate: number; taxable: number; vat: number }>;
   };
+  number_pending: boolean; // no number yet: it is assigned when the invoice is sent
+  delivery_editable: boolean; // not shipped (client without the warehouse module): the admin picks the delivery date
+  manual_numbering: boolean;
   sef: { configured: boolean; enabled: boolean; env: "demo" | "production" };
   current: Einvoice | null;
   validation: { ok: boolean; message: string | null; code?: string } | null;
@@ -68,7 +71,9 @@ const SIMPLE: Record<string, [string, string]> = {
   delivery_date: ["datum prometa (isporuke)", "delivery date"],
   no_lines: ["porudžbina nema isporučenih stavki", "the order has no shipped lines"],
   not_shipped: ["porudžbina nije otpremljena", "the order is not shipped"],
-  invoice_number: ["porudžbina nema broj fakture", "the order has no invoice number"],
+  invoice_number: ["upišite broj fakture", "enter the invoice number"],
+  invoice_number_used: ["taj broj fakture je već upotrebljen", "that invoice number is already used"],
+  invoice_prefix: ["firma nema prefiks brojeva faktura (podešava ga vlasnik sistema)", "the company has no invoice number prefix (set by the system owner)"],
   "buyer.missing": ["kupac više ne postoji", "the customer no longer exists"],
   delivery_after_issue: ["datum prometa je posle datuma izdavanja", "delivery date is after the issue date"],
   due_before_issue: ["rok plaćanja je pre datuma izdavanja", "due date is before the issue date"],

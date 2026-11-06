@@ -207,3 +207,78 @@ def test_disabled_integration_does_not_send():
     order = _shipped_order()
     assert S.admin.post(f"{API}/orders/{order['id']}/einvoice", json={}).status_code == 400
     S.admin.put(f"{API}/integrations/sef", json={"enabled": True})
+
+
+# ---------------------------------------------------------------- clients without the warehouse module
+
+
+def _no_warehouse_world(superadmin, numbering="auto"):
+    client, admin = _invite_admin(superadmin, ["sef"], "nowh")
+    cur = superadmin.get(f"{API}/clients/{client['id']}").json()
+    r = superadmin.put(f"{API}/clients/{client['id']}", json={
+        **cur, "pib": PIB, "registration_number": "20869500", "street": "Bulevar 1", "city": "Beograd",
+        "postal_code": "11000", "vat_payer": True, "bank_account": "160-0000000012345-98",
+        "invoice_prefix": "NW", "invoice_numbering": numbering,
+    })
+    assert r.status_code == 200, r.text
+    customer = admin.post(f"{API}/customers", json={
+        "name": "TEST_NW_Kupac", "pib": "100000000", "registration_number": "12345678",
+        "street": "Ulica 5", "city": "Novi Sad", "postal_code": "21000",
+    }).json()
+    product = admin.post(f"{API}/products", json={"name": "TEST_NW_Artikal", "price_no_vat": 200, "vat_rate": 20}).json()
+    order = admin.post(f"{API}/orders", json={"customer_id": customer["id"], "items": [{"product_id": product["id"], "ordered_qty": 2}]})
+    assert order.status_code == 200, order.text
+    admin.put(f"{API}/integrations/sef", json={"api_key": "fake-ok-1234567", "enabled": True, "env": "demo"})
+    return client, admin, order.json()
+
+
+def test_client_without_warehouse_invoices_a_new_order(superadmin_client):
+    client, admin, order = _no_warehouse_world(superadmin_client)
+    try:
+        oid = order["id"]
+        out = admin.post(f"{API}/orders/{oid}/einvoice/preview", json={}).json()
+        assert out["problems"] == [] and out["number_pending"] is True and out["delivery_editable"] is True
+        assert out["number"] is None and out["amounts"]["grand"] == 480.0  # by the ordered quantity
+        assert admin.get(f"{API}/orders/{oid}").json()["invoice_number"] in (None, "")  # a preview draws no number
+        r = admin.post(f"{API}/orders/{oid}/einvoice", json={})
+        assert r.status_code == 200 and r.json()["status"] == "sent" and r.json()["number"] == "NW/0001"
+        assert admin.get(f"{API}/orders/{oid}").json()["invoice_number"] == "NW/0001"
+        # an invoiced order is frozen: no edit, delete or status change
+        body = {"customer_id": order["customer_id"], "items": [{"product_id": order["items"][0]["product_id"], "ordered_qty": 5}]}
+        assert admin.put(f"{API}/orders/{oid}", json=body).status_code == 409
+        assert admin.delete(f"{API}/orders/{oid}").status_code == 409
+        assert admin.post(f"{API}/orders/{oid}/status", json={"status": "canceled"}).status_code == 409
+        # after the invoice is cancelled the order can be changed again
+        assert admin.post(f"{API}/orders/{oid}/einvoice/cancel", json={"comment": "Greška"}).status_code == 200
+        assert admin.put(f"{API}/orders/{oid}", json=body).status_code == 200
+    finally:
+        superadmin_client.delete(f"{API}/clients/{client['id']}")
+
+
+def test_manual_numbering_needs_a_typed_number(superadmin_client):
+    client, admin, order = _no_warehouse_world(superadmin_client, numbering="manual")
+    try:
+        oid = order["id"]
+        out = admin.post(f"{API}/orders/{oid}/einvoice/preview", json={}).json()
+        assert out["manual_numbering"] is True and out["problems"] == ["invoice_number"]
+        assert admin.post(f"{API}/orders/{oid}/einvoice", json={}).status_code == 422
+        r = admin.post(f"{API}/orders/{oid}/einvoice", json={"invoice_number": "RN-2026/77"})
+        assert r.status_code == 200 and r.json()["number"] == "RN-2026/77"
+        assert fake_sef.State.uploads and "RN-2026/77" in fake_sef.State.uploads[-1]["xml"]
+    finally:
+        superadmin_client.delete(f"{API}/clients/{client['id']}")
+
+
+def test_warehouse_client_still_needs_shipping():
+    p = S.admin.post(f"{API}/products", json={"name": "TEST_NotShipped", "price_no_vat": 10, "vat_rate": 20}).json()
+    o = S.admin.post(f"{API}/orders", json={"customer_id": S.customer["id"], "items": [{"product_id": p["id"], "ordered_qty": 1}]}).json()
+    out = S.admin.post(f"{API}/orders/{o['id']}/einvoice/preview", json={}).json()
+    assert "not_shipped" in out["problems"]
+
+
+def test_shipped_order_with_an_invoice_cannot_change_status():
+    _set_key()
+    order = _shipped_order()
+    assert S.admin.post(f"{API}/orders/{order['id']}/einvoice", json={}).status_code == 200
+    r = S.admin.post(f"{API}/orders/{order['id']}/status", json={"status": "new", "note": "vraćam"})
+    assert r.status_code == 409

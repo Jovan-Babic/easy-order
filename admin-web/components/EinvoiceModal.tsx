@@ -19,6 +19,16 @@ export function EinvoiceModal({ orderId, onClose }: { orderId: string; onClose: 
   const [xml, setXml] = useState<string | null>(null);
   const [action, setAction] = useState<"cancel" | "storno" | null>(null);
   const [comment, setComment] = useState("");
+  const [deliveryDate, setDeliveryDate] = useState("");
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  // what the admin typed (delivery date, manual invoice number) goes with every preview / send
+  const typed = useCallback(
+    () => ({
+      ...(deliveryDate ? { delivery_date: deliveryDate } : {}),
+      ...(invoiceNumber.trim() ? { invoice_number: invoiceNumber.trim() } : {}),
+    }),
+    [deliveryDate, invoiceNumber],
+  );
 
   const fail = useCallback(
     (body: { detail?: unknown }) => {
@@ -34,19 +44,23 @@ export function EinvoiceModal({ orderId, onClose }: { orderId: string; onClose: 
 
   const loadPreview = useCallback(
     async (extra: Record<string, unknown> = {}) => {
-      const res = await fetch(`/api/orders/${orderId}/einvoice/preview`, { method: "POST", body: JSON.stringify(extra) });
+      const res = await fetch(`/api/orders/${orderId}/einvoice/preview`, { method: "POST", body: JSON.stringify({ ...typed(), ...extra }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) return fail(body);
       setPreview(body as EinvoicePreview);
       setCurrent((body as EinvoicePreview).current);
       return body as EinvoicePreview;
     },
-    [orderId, fail],
+    [orderId, fail, typed],
   );
 
+  // First load only; later reloads follow the "Check" button so typing does not fire a request per key.
   useEffect(() => {
-    loadPreview();
-  }, [loadPreview]);
+    loadPreview().then((out) => {
+      if (out?.delivery_editable && out.delivery_date) setDeliveryDate(out.delivery_date);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderId]);
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -71,7 +85,7 @@ export function EinvoiceModal({ orderId, onClose }: { orderId: string; onClose: 
   const send = () =>
     run(async () => {
       if (!window.confirm(t("sefSendConfirm"))) return;
-      const res = await fetch(`/api/orders/${orderId}/einvoice`, { method: "POST", body: "{}" });
+      const res = await fetch(`/api/orders/${orderId}/einvoice`, { method: "POST", body: JSON.stringify(typed()) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) return fail(body);
       setCurrent(body as Einvoice);
@@ -195,9 +209,38 @@ export function EinvoiceModal({ orderId, onClose }: { orderId: string; onClose: 
                   </ul>
                 </div>
               )}
+              {preview.manual_numbering && preview.number_pending && (
+                <label className="block text-xs text-muted">
+                  {t("sefNumber")}
+                  <input
+                    value={invoiceNumber}
+                    maxLength={100}
+                    onChange={(e) => setInvoiceNumber(e.target.value)}
+                    onBlur={() => loadPreview()}
+                    className="mt-1 w-full rounded-md border border-border px-3 py-2 text-sm text-onSurface"
+                  />
+                </label>
+              )}
+              {!preview.manual_numbering && preview.number_pending && <p className="text-muted">{t("sefNumberPending")}</p>}
               <dl className="grid grid-cols-3 gap-2 text-onSurface">
                 <div><dt className="text-xs text-muted">{t("sefIssueDate")}</dt><dd>{formatDate(preview.issue_date)}</dd></div>
-                <div><dt className="text-xs text-muted">{t("sefDeliveryDate")}</dt><dd>{formatDate(preview.delivery_date) || "—"}</dd></div>
+                <div>
+                  <dt className="text-xs text-muted">{t("sefDeliveryDate")}</dt>
+                  <dd>
+                    {preview.delivery_editable ? (
+                      <input
+                        type="date"
+                        value={deliveryDate}
+                        max={preview.issue_date}
+                        onChange={(e) => setDeliveryDate(e.target.value)}
+                        onBlur={() => loadPreview()}
+                        className="rounded-md border border-border px-2 py-1 text-sm"
+                      />
+                    ) : (
+                      formatDate(preview.delivery_date) || "—"
+                    )}
+                  </dd>
+                </div>
                 <div><dt className="text-xs text-muted">{t("sefDueDate")}</dt><dd>{formatDate(preview.due_date) || "—"}</dd></div>
               </dl>
               <table className="w-full text-left">

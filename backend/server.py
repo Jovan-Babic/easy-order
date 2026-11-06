@@ -6073,6 +6073,7 @@ async def update_order(order_id: str, inp: OrderInput, current_user: User = Depe
     creator (operator) or an admin. Prices are re-snapshotted from the
     current catalog, like on creation."""
     order = await _get_order_for_processing(order_id, current_user)
+    await _require_no_active_einvoice(order_id)
     if _status_value(order) != OrderStatus.NEW.value:
         raise HTTPException(status_code=409, detail="Only new orders can be edited")
     customer, items = await _resolve_order_lines(order["client_id"], inp)
@@ -6094,6 +6095,7 @@ async def update_order(order_id: str, inp: OrderInput, current_user: User = Depe
 @api_router.delete("/orders/{order_id}")
 async def delete_order(order_id: str, current_user: User = Depends(require_manager)):
     order = await get_scoped_or_404("orders", order_id, current_user)
+    await _require_no_active_einvoice(order_id)
     if _status_value(order) != OrderStatus.NEW.value:
         raise HTTPException(status_code=409, detail="Only new orders can be deleted - cancel the order instead")
     await db.orders.delete_one({"id": order_id})
@@ -6205,6 +6207,7 @@ async def change_order_status(
     order_id: str, inp: StatusChangeInput, current_user: User = Depends(get_current_user)
 ):
     order = await _get_order_for_processing(order_id, current_user)
+    await _require_no_active_einvoice(order_id)
     _require_not_taken_by_other(order, current_user)
     current = _status_value(order)
     target = inp.status.value
@@ -8043,6 +8046,7 @@ class EinvoiceDates(BaseModel):
     issue_date: Optional[str] = None
     delivery_date: Optional[str] = None
     due_date: Optional[str] = None
+    invoice_number: Optional[str] = Field(default=None, max_length=100)  # manual numbering, orders not shipped yet
     validate_on_sef: bool = False  # preview only: also ask SEF to validate (demo environment only)
     include_xml: bool = False
 
@@ -8058,6 +8062,27 @@ def _einvoice_public(doc: Optional[dict]) -> Optional[dict]:
     return {k: v for k, v in doc.items() if k not in ("_id", "ubl_xml")}
 
 
+async def _assign_order_invoice_number(order: dict, manual_number: Optional[str]) -> str:
+    """Gives an order that was not shipped (client without the warehouse module) its invoice number, once.
+    A parallel request that got there first wins and its number is used."""
+    drawn = await _assign_invoice_number(order, manual_number)
+    result = await db.orders.update_one(
+        {"id": order["id"], "$or": [{"invoice_number": None}, {"invoice_number": {"$exists": False}}]},
+        {"$set": drawn},
+    )
+    if result.modified_count == 0:
+        await _release_invoice_seq(order["client_id"], drawn.get("invoice_seq"))
+        current = await db.orders.find_one({"id": order["id"]}, {"_id": 0, "invoice_number": 1})
+        return (current or {}).get("invoice_number") or drawn["invoice_number"]
+    return drawn["invoice_number"]
+
+
+async def _require_no_active_einvoice(order_id: str) -> None:
+    """An order with an issued e-invoice is frozen: change the invoice first (storno), then the order."""
+    if await db.einvoices.find_one({"order_id": order_id, "status": {"$in": list(_SEF_ACTIVE)}}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Order has an issued e-invoice")
+
+
 async def _einvoice_context(order_id: str, user: User, dates: Optional[EinvoiceDates]) -> Dict[str, Any]:
     order = await get_scoped_or_404("orders", order_id, user)
     client = await db.clients.find_one({"id": order["client_id"]}, {"_id": 0}) or {}
@@ -8067,7 +8092,12 @@ async def _einvoice_context(order_id: str, user: User, dates: Optional[EinvoiceD
     today = _belgrade_today()
     dates = dates or EinvoiceDates()
     issue_date = dates.issue_date or today.isoformat()
-    delivery_date = dates.delivery_date or (order.get("shipped_at") or "")[:10] or None
+    # A client with the warehouse module invoices shipped orders (delivery date = shipment). A client without it has
+    # no shipping step: the invoice is issued from the new order, the admin picks the delivery date, and the number is
+    # assigned when the invoice is sent (typed by hand when the client numbers manually).
+    no_warehouse = Module.WAREHOUSE.value not in effective_modules(client)
+    direct = no_warehouse and _status_value(order) == OrderStatus.NEW.value
+    delivery_date = dates.delivery_date or (order.get("shipped_at") or "")[:10] or (today.isoformat() if direct else None)
     problems: List[str] = []
     for field, value in (("issue_date", issue_date), ("delivery_date", delivery_date)):
         if value:
@@ -8080,9 +8110,20 @@ async def _einvoice_context(order_id: str, user: User, dates: Optional[EinvoiceD
         due_date = (date.fromisoformat(issue_date) + timedelta(days=int(cfg.get("payment_terms_days", 15)))).isoformat()
     if "issue_date" not in problems and issue_date != today.isoformat():
         problems.append("issue_date_not_today")  # SEF refuses an issue date that is not today's (to be confirmed on demo)
-    if _status_value(order) != OrderStatus.SHIPPED.value:
+    if _status_value(order) != OrderStatus.SHIPPED.value and not direct:
         problems.append("not_shipped")
-    if not order.get("invoice_number"):
+    number = order.get("invoice_number")
+    manual = client.get("invoice_numbering", "auto") == "manual"
+    if not number and direct:
+        if manual:
+            number = (dates.invoice_number or "").strip() or None
+            if not number:
+                problems.append("invoice_number")
+            elif await db.orders.find_one({"client_id": order["client_id"], "invoice_number": number}, {"_id": 1}):
+                problems.append("invoice_number_used")
+        elif not client.get("invoice_prefix"):
+            problems.append("invoice_prefix")
+    elif not number:
         problems.append("invoice_number")
     if not customer:
         problems.append("buyer.missing")
@@ -8093,7 +8134,8 @@ async def _einvoice_context(order_id: str, user: User, dates: Optional[EinvoiceD
     problems += sef.invoice_problems(order, client, customer, units, delivery_date)
     return {
         "order": order, "client": client, "customer": customer, "units": units, "problems": list(dict.fromkeys(problems)),
-        "issue_date": issue_date, "due_date": due_date, "delivery_date": delivery_date, "number": order.get("invoice_number"),
+        "issue_date": issue_date, "due_date": due_date, "delivery_date": delivery_date, "number": number,
+        "number_pending": not order.get("invoice_number"), "delivery_editable": direct, "manual_numbering": manual,
     }
 
 
@@ -8116,12 +8158,14 @@ async def einvoice_preview(order_id: str, inp: EinvoiceDates, current_user: User
     out: Dict[str, Any] = {
         "problems": problems, "number": ctx["number"], "issue_date": ctx["issue_date"], "due_date": ctx["due_date"],
         "delivery_date": ctx["delivery_date"], "amounts": calc_invoice_amounts(ctx["order"]),
+        "number_pending": ctx["number_pending"], "delivery_editable": ctx["delivery_editable"],
+        "manual_numbering": ctx["manual_numbering"],
         "sef": {"configured": bool(cfg.get("api_key_enc")), "enabled": bool(cfg.get("enabled")), "env": cfg.get("env") or "demo"},
         "current": _einvoice_public(await _latest_einvoice(order_id)), "validation": None, "xml": None,
     }
     if problems:
         return out
-    xml = _build_xml(ctx)
+    xml = _build_xml({**ctx, "number": ctx["number"] or "PREVIEW/0000"})  # a number still to be assigned is not drawn here
     if inp.include_xml:
         out["xml"] = xml
     if inp.validate_on_sef:
@@ -8178,6 +8222,8 @@ async def einvoice_send(order_id: str, inp: EinvoiceDates, current_user: User = 
         raise HTTPException(status_code=409, detail="Invoice was already issued for this order")
     if ctx["problems"]:
         raise HTTPException(status_code=422, detail={"problems": ctx["problems"]})
+    if ctx["number_pending"]:
+        ctx["number"] = await _assign_order_invoice_number(ctx["order"], inp.invoice_number)
     attempt = await db.einvoices.count_documents({"order_id": order_id}) + 1
     amounts = calc_invoice_amounts(ctx["order"])
     doc = {
