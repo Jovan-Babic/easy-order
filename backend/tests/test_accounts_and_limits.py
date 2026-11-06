@@ -168,6 +168,24 @@ class TestImageUpload:
     def test_wrong_type_rejected(self, api_client):
         assert self._post(api_client, "x.pdf", b"%PDF-1.4", "application/pdf").status_code == 415
 
+    def test_fake_image_rejected_by_content(self, api_client):
+        # claims to be a PNG / JPEG / WEBP / HEIC but the bytes are something else
+        for name, ctype in (("a.png", "image/png"), ("a.jpg", "image/jpeg"), ("a.webp", "image/webp"), ("a.heic", "image/heic")):
+            for junk in (b"<svg onload=alert(1)>", b"<html><script>1</script></html>", b"plain text", b""):
+                r = self._post(api_client, name, junk, ctype)
+                assert r.status_code == 415, (name, junk, r.status_code)
+
+    def test_real_image_signatures_pass_the_content_check(self, api_client):
+        # Valid signatures get past the check; without Cloudinary on the test server the answer is then 503 (never 415)
+        samples = {
+            "image/png": b"\x89PNG\r\n\x1a\n" + b"0" * 32,
+            "image/jpeg": b"\xff\xd8\xff\xe0" + b"0" * 32,
+            "image/webp": b"RIFF\x10\x00\x00\x00WEBPVP8 " + b"0" * 16,
+            "image/heic": b"\x00\x00\x00\x18ftypheic" + b"0" * 16,
+        }
+        for ctype, content in samples.items():
+            assert self._post(api_client, "x", content, ctype).status_code != 415, ctype
+
     def test_too_large_rejected(self, api_client):
         big = b"\x89PNG" + b"0" * (4 * 1024 * 1024)
         assert self._post(api_client, "big.png", big, "image/png").status_code == 413
