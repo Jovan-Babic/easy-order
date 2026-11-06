@@ -88,3 +88,50 @@ def test_stored_price_list_wins_and_plans_are_cleaned(monkeypatch):
 def test_nothing_to_do_without_old_prices(monkeypatch):
     db = _run(monkeypatch, [{"id": "a", "name": "A"}])
     assert db.app_settings.doc is None and not db.plans.unset
+
+
+# ---- SEF: one key per client -> one key per environment
+
+
+class _Clients:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def find(self, *_a, **_k):
+        class _It:
+            def __init__(self, rows):
+                self.rows = list(rows)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self.rows:
+                    raise StopAsyncIteration
+                return self.rows.pop(0)
+
+        return _It([r for r in self.rows if "api_key_enc" in (r.get("sef") or {})])
+
+    async def update_one(self, query, update):
+        row = next(r for r in self.rows if r["id"] == query["id"])
+        for key in update.get("$unset", {}):
+            row["sef"].pop(key.split(".", 1)[1], None)
+        for key, value in update.get("$set", {}).items():
+            _, _, env = key.split(".")
+            row["sef"].setdefault("keys", {})[env] = value
+
+
+def test_single_sef_key_moves_to_its_environment(monkeypatch):
+    rows = [
+        {"id": "a", "sef": {"env": "production", "api_key_enc": "ENC", "key_set_at": "t", "key_hint": "…1234", "enabled": True}},
+        {"id": "b", "sef": {"env": "demo", "api_key_enc": None, "last_check_ok": True}},
+    ]
+
+    class _Db:
+        clients = _Clients(rows)
+
+    monkeypatch.setattr(server, "db", _Db())
+    asyncio.run(server._migrate_sef_keys())
+    assert rows[0]["sef"]["keys"]["production"]["enc"] == "ENC" and rows[0]["sef"]["keys"]["production"]["hint"] == "…1234"
+    assert "api_key_enc" not in rows[0]["sef"] and rows[0]["sef"]["enabled"] is True
+    assert "keys" not in rows[1]["sef"] and "api_key_enc" not in rows[1]["sef"]

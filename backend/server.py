@@ -204,6 +204,7 @@ async def lifespan(app: FastAPI):
     await refresh_settings(force=True)
     await _migrate_calendar_billing()
     await _migrate_seat_prices()
+    await _migrate_sef_keys()
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at")
     await db.password_reset_tokens.create_index("user_id")
@@ -8048,30 +8049,44 @@ def _sef_target_client_id(user: User, client_id: Optional[str]) -> str:
     return user.client_id
 
 
+SEF_ENVS = ("demo", "production")
+
+
+def _sef_key_of(cfg: dict, env: str) -> dict:
+    """The stored key entry of one environment (`sef.keys.<env>`): enc, set_at, hint, last_check_*."""
+    return ((cfg.get("keys") or {}).get(env)) or {}
+
+
 def _sef_public(client: dict) -> Dict[str, Any]:
     cfg = client.get("sef") or {}
+    active = cfg.get("env") or "demo"
+    keys = {}
+    for env in SEF_ENVS:
+        k = _sef_key_of(cfg, env)
+        keys[env] = {
+            "set": bool(k.get("enc")), "set_at": k.get("set_at"), "hint": k.get("hint"),
+            "last_check_at": k.get("last_check_at"), "last_check_ok": k.get("last_check_ok"),
+            "last_check_message": k.get("last_check_message"),
+        }
     return {
         "enabled": bool(cfg.get("enabled")),
-        "env": cfg.get("env") or "demo",
-        "key_set": bool(cfg.get("api_key_enc")),
-        "key_set_at": cfg.get("key_set_at"),
-        "key_hint": cfg.get("key_hint"),
+        "env": active,  # the environment invoices go to; each environment has its own key
+        "keys": keys,
+        "key_set": keys[active]["set"],
         "payment_terms_days": cfg.get("payment_terms_days", 15),
-        "last_check_at": cfg.get("last_check_at"),
-        "last_check_ok": cfg.get("last_check_ok"),
-        "last_check_message": cfg.get("last_check_message"),
         "base_url_override": SEF_BASE_URL_OVERRIDE or None,
     }
 
 
-def _sef_client_from(client: dict) -> sef.SefClient:
+def _sef_client_from(client: dict, env: Optional[str] = None) -> sef.SefClient:
     cfg = client.get("sef") or {}
-    if not cfg.get("api_key_enc"):
-        raise HTTPException(status_code=400, detail="SEF API key is not set")
-    key = sef.decrypt_secret(cfg["api_key_enc"], _integration_secret())
+    env = env or cfg.get("env") or "demo"
+    entry = _sef_key_of(cfg, env)
+    if not entry.get("enc"):
+        raise HTTPException(status_code=400, detail=f"SEF API key is not set for {env}")
+    key = sef.decrypt_secret(entry["enc"], _integration_secret())
     if not key:
         raise HTTPException(status_code=400, detail="SEF API key cannot be read, set it again")
-    env = cfg.get("env") or "demo"
     return sef.SefClient(SEF_BASE_URL_OVERRIDE or sef.SEF_HOSTS[env], key)
 
 
@@ -8079,11 +8094,28 @@ async def _sef_call(fn, *args):
     return await run_in_threadpool(fn, *args)
 
 
+async def _migrate_sef_keys() -> None:
+    """One-off: a single key per client (`sef.api_key_enc`) becomes one entry per environment (`sef.keys.<env>`)."""
+    async for client in db.clients.find({"sef.api_key_enc": {"$exists": True}}, {"_id": 0, "id": 1, "sef": 1}):
+        cfg = client.get("sef") or {}
+        update: Dict[str, Any] = {"$unset": {f"sef.{f}": "" for f in ("api_key_enc", "key_set_at", "key_hint", "last_check_at", "last_check_ok", "last_check_message")}}
+        if cfg.get("api_key_enc"):
+            env = cfg.get("env") or "demo"
+            update["$set"] = {f"sef.keys.{env}": {
+                "enc": cfg["api_key_enc"], "set_at": cfg.get("key_set_at"), "hint": cfg.get("key_hint"),
+                "last_check_at": cfg.get("last_check_at"), "last_check_ok": cfg.get("last_check_ok"),
+                "last_check_message": cfg.get("last_check_message"),
+            }}
+        await db.clients.update_one({"id": client["id"]}, update)
+
+
 class SefSettingsInput(BaseModel):
     client_id: Optional[str] = None
     enabled: Optional[bool] = None
-    env: Optional[Literal["demo", "production"]] = None
+    env: Optional[Literal["demo", "production"]] = None  # the environment invoices are sent to
     api_key: Optional[str] = Field(default=None, max_length=200)  # None = keep, "" = remove
+    # which environment's key `api_key` is (default: the selected environment); demo and production are kept apart
+    key_env: Optional[Literal["demo", "production"]] = None
     payment_terms_days: Optional[int] = Field(default=None, ge=0, le=365)
 
 
@@ -8107,40 +8139,39 @@ async def put_sef_settings(inp: SefSettingsInput, current_user: User = Depends(_
         updates["sef.enabled"] = inp.enabled
     if inp.env is not None:
         updates["sef.env"] = inp.env
-        updates["sef.last_check_at"] = None  # the key belongs to one environment: check again
-        updates["sef.last_check_ok"] = None
-        updates["sef.last_check_message"] = None
     if inp.payment_terms_days is not None:
         updates["sef.payment_terms_days"] = inp.payment_terms_days
-    action = "sef.settings"
+    action, key_env = "sef.settings", inp.key_env or inp.env or (client.get("sef") or {}).get("env") or "demo"
     if inp.api_key is not None:
         key = inp.api_key.strip()
         if key:
-            updates["sef.api_key_enc"] = sef.encrypt_secret(key, _integration_secret())
-            updates["sef.key_set_at"] = now_iso()
-            updates["sef.key_hint"] = "…" + key[-4:] if len(key) > 8 else None
-            updates["sef.last_check_at"] = None
-            updates["sef.last_check_ok"] = None
-            updates["sef.last_check_message"] = None
+            updates[f"sef.keys.{key_env}"] = {
+                "enc": sef.encrypt_secret(key, _integration_secret()), "set_at": now_iso(),
+                "hint": "…" + key[-4:] if len(key) > 8 else None,
+            }
             action = "sef.key_set"
         else:
-            updates.update({"sef.api_key_enc": None, "sef.key_set_at": None, "sef.key_hint": None,
-                            "sef.last_check_at": None, "sef.last_check_ok": None, "sef.last_check_message": None})
+            updates[f"sef.keys.{key_env}"] = {}
             action = "sef.key_removed"
     if updates:
         await db.clients.update_one({"id": target}, {"$set": updates})
-        # the key itself is never logged: only that it was set or removed
-        await _audit(current_user, action, "client", target, client.get("name"), target)
+        # the key itself is never logged: only that it was set or removed (and for which environment)
+        await _audit(current_user, action, "client", target, client.get("name"), target,
+                     {"env": key_env} if action != "sef.settings" else None)
     return _sef_public(await db.clients.find_one({"id": target}, {"_id": 0, "sef": 1}) or {})
 
 
 @api_router.post("/integrations/sef/test")
-async def test_sef_connection(client_id: Optional[str] = None, current_user: User = Depends(_sef_manager)):
+async def test_sef_connection(
+    client_id: Optional[str] = None, env: Optional[Literal["demo", "production"]] = None,
+    current_user: User = Depends(_sef_manager),
+):
     target = _sef_target_client_id(current_user, client_id)
     client = await db.clients.find_one({"id": target}, {"_id": 0, "sef": 1})
     if client is None:
         raise HTTPException(status_code=404, detail="Not found")
-    api = _sef_client_from(client)
+    env = env or (client.get("sef") or {}).get("env") or "demo"
+    api = _sef_client_from(client, env)
     ok, message = True, None
     try:
         version = await _sef_call(api.version)
@@ -8149,9 +8180,10 @@ async def test_sef_connection(client_id: Optional[str] = None, current_user: Use
         ok, message = False, (f"{err.status}: " if err.status else "") + err.message
     await db.clients.update_one(
         {"id": target},
-        {"$set": {"sef.last_check_at": now_iso(), "sef.last_check_ok": ok, "sef.last_check_message": message}},
+        {"$set": {f"sef.keys.{env}.last_check_at": now_iso(), f"sef.keys.{env}.last_check_ok": ok,
+                  f"sef.keys.{env}.last_check_message": message}},
     )
-    return {"ok": ok, "message": message}
+    return {"ok": ok, "message": message, "env": env}
 
 
 class EinvoiceDates(BaseModel):
@@ -8272,7 +8304,7 @@ async def einvoice_preview(order_id: str, inp: EinvoiceDates, current_user: User
         "delivery_date": ctx["delivery_date"], "amounts": calc_invoice_amounts(ctx["order"]),
         "number_pending": ctx["number_pending"], "delivery_editable": ctx["delivery_editable"],
         "manual_numbering": ctx["manual_numbering"],
-        "sef": {"configured": bool(cfg.get("api_key_enc")), "enabled": bool(cfg.get("enabled")), "env": cfg.get("env") or "demo"},
+        "sef": {"configured": bool(_sef_key_of(cfg, cfg.get("env") or "demo").get("enc")), "enabled": bool(cfg.get("enabled")), "env": cfg.get("env") or "demo"},
         "current": _einvoice_public(await _latest_einvoice(order_id)), "validation": None, "xml": None,
     }
     if problems:

@@ -1,16 +1,24 @@
 // E-invoices through SEF (backend: sef.py, module `sef`).
 import type { Lang } from "@/lib/i18n";
 
-export type SefSettings = {
-  enabled: boolean;
-  env: "demo" | "production";
-  key_set: boolean;
-  key_set_at: string | null;
-  key_hint: string | null;
-  payment_terms_days: number;
+export type SefEnv = "demo" | "production";
+
+// Demo and production have a key each; `env` is the one invoices are sent to.
+export type SefKeyInfo = {
+  set: boolean;
+  set_at: string | null;
+  hint: string | null;
   last_check_at: string | null;
   last_check_ok: boolean | null;
   last_check_message: string | null;
+};
+
+export type SefSettings = {
+  enabled: boolean;
+  env: SefEnv;
+  keys: Record<SefEnv, SefKeyInfo>;
+  key_set: boolean; // the key of the selected environment is set
+  payment_terms_days: number;
   base_url_override: string | null;
 };
 
