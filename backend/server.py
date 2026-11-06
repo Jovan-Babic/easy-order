@@ -422,6 +422,11 @@ class Client(BaseModel):
     pib: Optional[str] = ""
     # Invoice settings (RBAC_PLAN.md 5a). Edited by the superadmin only.
     registration_number: Optional[str] = ""
+    street: Optional[str] = ""
+    city: Optional[str] = ""
+    postal_code: Optional[str] = ""
+    country: Optional[str] = "RS"
+    vat_payer: Optional[bool] = None
     bank_account: Optional[str] = ""
     logo: Optional[str] = ""
     invoice_prefix: Optional[str] = ""
@@ -451,7 +456,13 @@ class ClientInput(BaseModel):
     email: Optional[str] = ""
     phone: Optional[str] = ""
     pib: Optional[str] = ""
-    registration_number: Optional[str] = ""
+    registration_number: Optional[str] = None  # None = keep
+    # Structured address for e-invoices (None = keep); `address` stays as the free-text line.
+    street: Optional[str] = Field(default=None, max_length=100)
+    city: Optional[str] = Field(default=None, max_length=100)
+    postal_code: Optional[str] = Field(default=None, max_length=20)
+    country: Optional[str] = Field(default=None, max_length=2)
+    vat_payer: Optional[bool] = None  # in the VAT system? None = unknown/keep
     bank_account: Optional[str] = ""
     logo: Optional[str] = ""
     invoice_prefix: Optional[str] = ""
@@ -462,6 +473,38 @@ class ClientInput(BaseModel):
     modules: Optional[List[Module]] = None
     # Only ever raises the counter (to continue a series from an old system).
     invoice_next_seq: Optional[int] = Field(default=None, ge=1)
+
+
+    @field_validator("registration_number", "street", "city", "postal_code", "country", mode="before")
+    @classmethod
+    def _strip_address(cls, v):
+        return _stripped(v)
+
+    # The company's own identifiers end up on every invoice, so a typo is refused here: PIB = 9 digits with a valid
+    # check digit, registration number (matični broj) = exactly 8 digits. (Customers are checked more loosely.)
+    @field_validator("pib", mode="before")
+    @classmethod
+    def _company_pib_strip(cls, v):
+        return _stripped(v)
+
+    @field_validator("pib")
+    @classmethod
+    def _company_pib(cls, v):
+        if v and not pib_is_valid(v):
+            raise ValueError("PIB is not valid (9 digits with a correct check digit)")
+        return v
+
+    @field_validator("registration_number")
+    @classmethod
+    def _company_registration_number(cls, v):
+        if v and not re.fullmatch(r"[0-9]{8}", v):
+            raise ValueError("Registration number (matični broj) must have exactly 8 digits")
+        return v
+
+    @field_validator("country")
+    @classmethod
+    def _country_code(cls, v):
+        return _check_country(v)
 
 
 class ClientCreateInput(ClientInput):
@@ -609,8 +652,26 @@ class Customer(BaseModel):
     email: Optional[str] = ""
     phone: Optional[str] = ""
     pib: Optional[str] = ""
+    registration_number: Optional[str] = ""
+    street: Optional[str] = ""
+    city: Optional[str] = ""
+    postal_code: Optional[str] = ""
+    country: Optional[str] = "RS"
     active: bool = True
     created_at: str = Field(default_factory=now_iso)
+
+
+class CustomerOut(Customer):
+    # What an e-invoice still lacks for this customer (computed, never stored): pib, registration_number, street, ...
+    invoice_missing: List[str] = Field(default_factory=list)
+
+
+def _customer_invoice_missing(doc: dict) -> List[str]:
+    return [f for f in ("pib", "registration_number", "street", "city", "postal_code") if not (doc.get(f) or "").strip()]
+
+
+def _customer_out(doc: dict) -> CustomerOut:
+    return CustomerOut(**{**doc, "invoice_missing": _customer_invoice_missing(doc)})
 
 
 _EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -620,21 +681,72 @@ def _stripped(value):
     return value.strip() if isinstance(value, str) else value
 
 
+# Address / registration data an e-invoice needs (SEF: street, city and postal code are limited to 100/100/20 characters).
+_ADDRESS_FIELDS = ("registration_number", "street", "city", "postal_code", "country")
+
+
+def _check_registration_number(value):
+    if value and not re.fullmatch(r"[0-9]{6,15}", value):
+        raise ValueError("Registration number must contain 6-15 digits")
+    return value
+
+
+def _check_country(value):
+    if value:
+        value = value.upper()
+        if not re.fullmatch(r"[A-Z]{2}", value):
+            raise ValueError("Country must be a 2-letter code (RS)")
+    return value
+
+
+def pib_is_valid(value: str) -> bool:
+    """Serbian PIB: 9 digits, the last one is a check digit (ISO 7064 MOD 11,10)."""
+    if not re.fullmatch(r"[0-9]{9}", value):
+        return False
+    carry = 10
+    for ch in value[:8]:
+        total = (int(ch) + carry) % 10 or 10
+        carry = (2 * total) % 11
+    return (11 - carry) % 10 == int(value[8])
+
+
+def _without_unset_address(data: dict) -> dict:
+    """The address fields default to None = "not sent": drop them so an old client (the mobile app) that does not
+    know them never blanks what the portal stored."""
+    return {k: v for k, v in data.items() if not (k in _ADDRESS_FIELDS and v is None)}
+
+
 class CustomerInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     address: Optional[str] = Field(default="", max_length=300)
     email: Optional[str] = Field(default="", max_length=120)
     phone: Optional[str] = Field(default="", max_length=40)
     pib: Optional[str] = Field(default="", max_length=15)
+    # E-invoice data (None = keep): Serbian registration number (matični broj) and a structured address.
+    registration_number: Optional[str] = Field(default=None, max_length=15)
+    street: Optional[str] = Field(default=None, max_length=100)
+    city: Optional[str] = Field(default=None, max_length=100)
+    postal_code: Optional[str] = Field(default=None, max_length=20)
+    country: Optional[str] = Field(default=None, max_length=2)
     # None = keep (create: active). An inactive customer cannot get new orders; use it instead of deleting
     # a customer that has order history.
     active: Optional[bool] = None
     client_id: Optional[str] = None  # only honored for SUPERADMIN writes
 
-    @field_validator("name", "address", "email", "phone", "pib", mode="before")
+    @field_validator("name", "address", "email", "phone", "pib", "registration_number", "street", "city", "postal_code", "country", mode="before")
     @classmethod
     def _strip(cls, v):
         return _stripped(v)
+
+    @field_validator("registration_number")
+    @classmethod
+    def _registration_digits(cls, v):
+        return _check_registration_number(v)
+
+    @field_validator("country")
+    @classmethod
+    def _country_code(cls, v):
+        return _check_country(v)
 
     @field_validator("email")
     @classmethod
@@ -1785,12 +1897,12 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
 
     client_obj = Client(
         **{
-            **inp.dict(
+            **_without_unset_address({k: v for k, v in inp.dict(
                 exclude={
                     "admin_name", "admin_email", "invoice_next_seq", "expiry_alert_days", "modules",
                     "plan_id", "subscription_ends_at", "billing_cycle",
                 }
-            ),
+            ).items() if not (k == "vat_payer" and v is None)}),
             **settings,
         }
     )
@@ -1848,7 +1960,11 @@ async def update_client(client_id: str, inp: ClientInput, current_user: User = D
         if (existing.get("subscription") or {}).get("plan_id"):
             raise HTTPException(status_code=400, detail="Modules come from the client's plan - change the plan instead")
         settings["modules"] = validated_modules(inp.modules)
-    updated = {**existing, **inp.dict(exclude={"invoice_next_seq", "expiry_alert_days", "modules"}), **settings}
+    changes = inp.dict(exclude={"invoice_next_seq", "expiry_alert_days", "modules"})
+    changes = _without_unset_address(changes)
+    if changes.get("vat_payer") is None:
+        changes.pop("vat_payer", None)  # not sent = keep
+    updated = {**existing, **changes, **settings}
     await db.clients.replace_one({"id": client_id}, {**updated, "_id": client_id})
     await _audit(current_user, "client.update", "client", client_id, updated.get("name"), client_id)
     if existing.get("logo") != updated.get("logo"):
@@ -3439,8 +3555,11 @@ async def _billing_notice(raw: dict) -> Optional[dict]:
     next_due = dues[0] if dues else None
     blocks_on = None
     if next_due:
-        due = date.fromisoformat(next_due)
-        blocks_on = (date(due.year, due.month, int(setting("block_after_day"))) + timedelta(days=1)).isoformat()
+        block_day = _blocks_on(next_due)
+        # Announce a block date only if the debt would really block the account
+        # that day (a partial payment leaves less than a package unpaid: no block).
+        if subscription_state(sub, block_day)["status"] == "locked":
+            blocks_on = block_day.isoformat()
     out: Dict[str, Any] = {
         "status": state["status"], "lock_reason": state.get("lock_reason"), "next_due_date": next_due,
         "late": bool(next_due and next_due <= today.isoformat()), "blocks_on": blocks_on,
@@ -4715,34 +4834,36 @@ async def delete_user(user_id: str, current_user: User = Depends(require_manager
 
 
 # ---------------- Customers ----------------
-@api_router.get("/customers", response_model=List[Customer])
+@api_router.get("/customers", response_model=List[CustomerOut])
 async def list_customers(current_user: User = Depends(get_current_user)):
     query = _scope_query(current_user)
     if current_user.role == Role.OPERATOR:
         query = {**query, "active": {"$ne": False}}  # inactive customers get no new orders
     docs = await db.customers.find(query, {"_id": 0}).sort("name", 1).to_list(None)
-    return [Customer(**v) for v in docs]
+    return [_customer_out(v) for v in docs]
 
 
-@api_router.post("/customers", response_model=Customer)
+@api_router.post("/customers", response_model=CustomerOut)
 async def create_customer(inp: CustomerInput, current_user: User = Depends(require_manager)):
     client_id = await resolve_write_client_id(current_user, inp.client_id)
-    obj = Customer(**inp.dict(exclude={"client_id", "active"}), active=inp.active is not False, client_id=client_id)
+    obj = Customer(
+        **_without_unset_address(inp.dict(exclude={"client_id", "active"})), active=inp.active is not False, client_id=client_id
+    )
     await db.customers.insert_one({**obj.dict(), "_id": obj.id})
-    return obj
+    return _customer_out(obj.dict())
 
 
-@api_router.put("/customers/{customer_id}", response_model=Customer)
+@api_router.put("/customers/{customer_id}", response_model=CustomerOut)
 async def update_customer(customer_id: str, inp: CustomerInput, current_user: User = Depends(require_manager)):
     existing = await get_scoped_or_404("customers", customer_id, current_user)
-    changes = inp.dict(exclude={"client_id"})
+    changes = _without_unset_address(inp.dict(exclude={"client_id"}))
     if changes.get("active") is None:
         changes.pop("active", None)  # not sent = keep
     updated = {**existing, **changes}
     await db.customers.replace_one({"id": customer_id}, {**updated, "_id": customer_id})
     if "active" in changes and changes["active"] != existing.get("active", True):
         await _audit(current_user, "customer.active" if changes["active"] else "customer.deactivate", "customer", customer_id, existing.get("name"), existing.get("client_id"))
-    return Customer(**updated)
+    return _customer_out(updated)
 
 
 # ---------------- Customer import from Excel ----------------
@@ -4752,13 +4873,19 @@ _CUSTOMER_IMPORT_HEADERS = {
     "email": "email", "eposta": "email", "mail": "email",
     "phone": "phone", "telefon": "phone", "tel": "phone", "mobilni": "phone", "brojtelefona": "phone",
     "pib": "pib", "pibbroj": "pib", "taxid": "pib",
+    "maticnibroj": "registration_number", "mb": "registration_number", "registrationnumber": "registration_number",
+    "ulica": "street", "ulicaibroj": "street", "street": "street",
+    "grad": "city", "mesto": "city", "city": "city",
+    "postanskibroj": "postal_code", "postanskikod": "postal_code", "zip": "postal_code", "postalcode": "postal_code",
+    "drzava": "country", "country": "country",
 }
+_CUSTOMER_TEMPLATE_HEADERS = ["Naziv", "Adresa", "Email", "Telefon", "PIB", "Matični broj", "Ulica i broj", "Grad", "Poštanski broj", "Država"]
 _CUSTOMER_EXAMPLE_ROWS = [
-    ("Maxi Market d.o.o.", "Bulevar oslobođenja 1, Novi Sad", "nabavka@maxi.example", "+381 21 555 111", "101234567"),
-    ("Delikates Prodavnica", "Knez Mihailova 10, Beograd", "info@delikates.example", "+381 11 222 333", "107654321"),
-    ("Mini Market Zora", "Kralja Petra 5, Niš", "zora@example.com", "018 444 555", "102345678"),
-    ("Pekara Klas", "Cara Dušana 22, Kragujevac", None, "034 111 222", "103456789"),
-    ("Restoran Lipa", "Savska 3, Beograd", "lipa@example.com", None, None),
+    ("Maxi Market d.o.o.", "Bulevar oslobođenja 1, Novi Sad", "nabavka@maxi.example", "+381 21 555 111", "101234567", "08012345", "Bulevar oslobođenja 1", "Novi Sad", "21000", "RS"),
+    ("Delikates Prodavnica", "Knez Mihailova 10, Beograd", "info@delikates.example", "+381 11 222 333", "107654321", "17654321", "Knez Mihailova 10", "Beograd", "11000", "RS"),
+    ("Mini Market Zora", "Kralja Petra 5, Niš", "zora@example.com", "018 444 555", "102345678", "20234567", "Kralja Petra 5", "Niš", "18000", "RS"),
+    ("Pekara Klas", "Cara Dušana 22, Kragujevac", None, "034 111 222", "103456789", "21345678", "Cara Dušana 22", "Kragujevac", "34000", "RS"),
+    ("Restoran Lipa", "Savska 3, Beograd", "lipa@example.com", None, None, None, None, None, None, None),
 ]
 
 
@@ -4780,13 +4907,13 @@ async def customer_import_template(current_user: User = Depends(require_manager)
     wb = Workbook()
     ws = wb.active
     ws.title = "Kupci"
-    ws.append(["Naziv", "Adresa", "Email", "Telefon", "PIB"])
+    ws.append(_CUSTOMER_TEMPLATE_HEADERS)
     for row in _CUSTOMER_EXAMPLE_ROWS:
         ws.append(list(row))
-    for col in ("D", "E"):  # phone and PIB as text keep leading zeros / plus
+    for col in ("D", "E", "F", "I"):  # phone, PIB, registration number, postal code as text keep leading zeros / plus
         for cell in ws[col][1:]:
             cell.number_format = "@"
-    for col, width in zip("ABCDE", (28, 36, 28, 18, 14)):
+    for col, width in zip("ABCDEFGHIJ", (28, 36, 28, 18, 14, 16, 26, 16, 14, 8)):
         ws.column_dimensions[col].width = width
     buf = io.BytesIO()
     wb.save(buf)
@@ -4847,6 +4974,14 @@ async def import_customers(
             errors.append("PIB: digits only")
         if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
             errors.append("Email: invalid address")
+        registration = re.sub(r"\s+", "", values.get("registration_number", ""))
+        if registration and not re.fullmatch(r"\d{6,15}", registration):
+            errors.append("Matični broj: 6-15 digits")
+        country = values.get("country", "").upper()
+        if country and not re.fullmatch(r"[A-Z]{2}", country):
+            errors.append("Država: 2-letter code (RS)")
+        if len(values.get("street", "")) > 100 or len(values.get("city", "")) > 100 or len(values.get("postal_code", "")) > 20:
+            errors.append("Ulica/grad/poštanski broj: too long")
 
         customer = by_pib.get(pib) if pib else None
         if customer is None and name:
@@ -4871,7 +5006,11 @@ async def import_customers(
             "errors": errors,
         }
         if not errors:
-            vals = {"address": values.get("address", ""), "phone": values.get("phone", "")}
+            vals = {
+                "address": values.get("address", ""), "phone": values.get("phone", ""), "registration_number": registration,
+                "street": values.get("street", ""), "city": values.get("city", ""),
+                "postal_code": values.get("postal_code", ""), "country": country,
+            }
             vals = {k: v for k, v in vals.items() if v}
             if email:
                 vals["email"] = email
@@ -5075,6 +5214,12 @@ async def delete_product(product_id: str, current_user: User = Depends(require_m
 
 # ---------------- Units of measure (PLAN_JEDINICE_MERE.md) ----------------
 # (code, name_sr, name_en, symbol, group, base_code, factor)
+# UN/ECE Recommendation 20 codes SEF uses for `unitCode` (SEF lists them at GET /api/publicApi/get-unit-measures).
+UBL_UNIT_CODES = {
+    "kom": "H87", "g": "GRM", "kg": "KGM", "t": "TNE", "ml": "MLT", "l": "LTR", "hl": "HLT",
+    "mm": "MMT", "cm": "CMT", "m": "MTR",
+}
+
 DEFAULT_UNITS = [
     ("kom", "komad", "piece", "kom", "count", "kom", 1),
     ("g", "gram", "gram", "g", "mass", "g", 1),
@@ -5098,6 +5243,7 @@ class Unit(BaseModel):
     base_code: str  # the unit quantities are stored in (itself for a base unit)
     factor: int  # base units in one of this unit (kg = 1000 g)
     active: bool = True
+    ubl_code: Optional[str] = None  # UN/ECE code on e-invoices (H87, KGM, ...); a unit without it cannot be invoiced
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -5110,6 +5256,7 @@ class UnitInput(BaseModel):
     base_code: str = Field(pattern=r"^[a-z0-9]{1,10}$")
     factor: int = Field(ge=1, le=1_000_000_000)
     active: bool = True
+    ubl_code: Optional[str] = Field(default=None, pattern=r"^[A-Z0-9]{2,3}$")
 
 
 class UnitUpdate(BaseModel):
@@ -5121,6 +5268,7 @@ class UnitUpdate(BaseModel):
     group: Optional[str] = Field(default=None, pattern=r"^[a-z]{1,20}$")
     base_code: Optional[str] = Field(default=None, pattern=r"^[a-z0-9]{1,10}$")
     factor: Optional[int] = Field(default=None, ge=1, le=1_000_000_000)
+    ubl_code: Optional[str] = Field(default=None, pattern=r"^[A-Z0-9]{2,3}$")  # None = keep
 
 
 async def _seed_units() -> None:
@@ -5134,6 +5282,9 @@ async def _seed_units() -> None:
             }},
             upsert=True,
         )
+        # Built-ins stored before e-invoices existed get their code (a code set by the superadmin is never touched).
+        if code in UBL_UNIT_CODES:
+            await db.units.update_one({"code": code, "ubl_code": {"$in": [None, ""]}}, {"$set": {"ubl_code": UBL_UNIT_CODES[code]}})
 
 
 async def _unit_or_400(code: str, must_be_active: bool = True) -> dict:
@@ -5201,7 +5352,7 @@ async def update_unit(code: str, inp: UnitUpdate, current_user: User = Depends(r
     if not existing:
         raise HTTPException(status_code=404, detail="Unit not found")
     updated = {**existing}
-    for field in ("name_sr", "name_en", "symbol", "active"):
+    for field in ("name_sr", "name_en", "symbol", "active", "ubl_code"):
         value = getattr(inp, field)
         if value is not None:
             updated[field] = value

@@ -16,12 +16,21 @@ type Customer = {
   email?: string;
   phone?: string;
   pib?: string;
+  registration_number?: string;
+  street?: string;
+  city?: string;
+  postal_code?: string;
+  country?: string;
+  invoice_missing?: string[];
   active?: boolean;
 };
 
 type Client = { id: string; name: string };
 
-const emptyForm = { name: "", address: "", email: "", phone: "", pib: "", client_id: "" };
+const emptyForm = {
+  name: "", address: "", email: "", phone: "", pib: "",
+  registration_number: "", street: "", city: "", postal_code: "", country: "RS", client_id: "",
+};
 
 export default function CustomersPage() {
   const session = useSession();
@@ -37,6 +46,25 @@ export default function CustomersPage() {
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [pendingDelete, setPendingDelete] = useState<Customer | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const openEdit = (c: Customer) => {
+    setError(null);
+    setEditingId(c.id);
+    setForm({
+      name: c.name, address: c.address ?? "", email: c.email ?? "", phone: c.phone ?? "", pib: c.pib ?? "",
+      registration_number: c.registration_number ?? "", street: c.street ?? "", city: c.city ?? "",
+      postal_code: c.postal_code ?? "", country: c.country || "RS", client_id: c.client_id,
+    });
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const closeForm = () => {
+    setShowForm(false);
+    setEditingId(null);
+    setForm(emptyForm);
+    setError(null);
+  };
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name || id;
 
@@ -67,16 +95,23 @@ export default function CustomersPage() {
         email: form.email,
         phone: form.phone,
         pib: form.pib,
+        registration_number: form.registration_number,
+        street: form.street,
+        city: form.city,
+        postal_code: form.postal_code,
+        country: form.country || "RS",
       };
-      if (isSuperAdmin) payload.client_id = form.client_id;
-      const res = await fetch("/api/customers", { method: "POST", body: JSON.stringify(payload) });
+      if (isSuperAdmin && !editingId) payload.client_id = form.client_id;
+      const res = await fetch(editingId ? `/api/customers/${editingId}` : "/api/customers", {
+        method: editingId ? "PUT" : "POST",
+        body: JSON.stringify(payload),
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setError(localizedDetail(body.detail, t, t("failedCreateCustomer")));
         return;
       }
-      setForm(emptyForm);
-      setShowForm(false);
+      closeForm();
       await load();
     } finally {
       setSaving(false);
@@ -123,7 +158,7 @@ export default function CustomersPage() {
             {t("importButton")}
           </button>
           <button
-            onClick={() => setShowForm((v) => !v)}
+            onClick={() => (showForm ? closeForm() : setShowForm(true))}
             className="rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand"
           >
             {showForm ? t("cancel") : t("newCustomer")}
@@ -157,7 +192,25 @@ export default function CustomersPage() {
           <Field label={t("taxIdPib")}>
             <input inputMode="numeric" pattern="[0-9]{6,15}" title="6-15" maxLength={15} value={form.pib} onChange={(e) => setForm({ ...form, pib: e.target.value })} className={fieldInput} />
           </Field>
-          {isSuperAdmin && (
+          <Field label={t("registrationNumber")}>
+            <input inputMode="numeric" pattern="[0-9]{6,15}" title="6-15" maxLength={15} value={form.registration_number} onChange={(e) => setForm({ ...form, registration_number: e.target.value })} className={fieldInput} />
+          </Field>
+          <p className="-mb-1 mt-1 text-xs text-muted">{t("customerInvoiceHint")}</p>
+          <Field label={t("street")}>
+            <input maxLength={100} value={form.street} onChange={(e) => setForm({ ...form, street: e.target.value })} className={fieldInput} />
+          </Field>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label={t("city")}>
+              <input maxLength={100} value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className={fieldInput} />
+            </Field>
+            <Field label={t("postalCode")}>
+              <input maxLength={20} value={form.postal_code} onChange={(e) => setForm({ ...form, postal_code: e.target.value })} className={fieldInput} />
+            </Field>
+            <Field label={t("country")}>
+              <input maxLength={2} value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value.toUpperCase() })} className={fieldInput} />
+            </Field>
+          </div>
+          {isSuperAdmin && !editingId && (
             <Field label={t("client")}>
               <select required value={form.client_id} onChange={(e) => setForm({ ...form, client_id: e.target.value })} className={fieldInput}>
                 <option value="">{t("selectClient")}</option>
@@ -177,7 +230,7 @@ export default function CustomersPage() {
             disabled={saving}
             className="mt-1 rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand disabled:opacity-50"
           >
-            {saving ? t("creating") : t("createCustomer")}
+            {saving ? t("creating") : editingId ? t("saveChanges") : t("createCustomer")}
           </button>
         </form>
       )}
@@ -194,6 +247,7 @@ export default function CustomersPage() {
                 <th className="px-4 py-3">{t("address")}</th>
                 <th className="px-4 py-3">{t("email")}</th>
                 <th className="px-4 py-3">{t("phone")}</th>
+                <th className="px-4 py-3">{t("invoiceData")}</th>
                 {isSuperAdmin && <th className="px-4 py-3">{t("client")}</th>}
                 <th className="px-4 py-3" />
               </tr>
@@ -208,8 +262,20 @@ export default function CustomersPage() {
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.address || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.email || "-"}</td>
                   <td className="px-4 py-3 text-onSurfaceSecondary">{c.phone || "-"}</td>
+                  <td className="px-4 py-3 text-xs">
+                    {!c.invoice_missing?.length ? (
+                      <span className="text-success">{t("invoiceDataComplete")}</span>
+                    ) : (
+                      <span className="text-muted" title={c.invoice_missing.map((f) => t(`missing_${f}` as never)).join(", ")}>
+                        {t("invoiceDataMissing")}: {c.invoice_missing.map((f) => t(`missing_${f}` as never)).join(", ")}
+                      </span>
+                    )}
+                  </td>
                   {isSuperAdmin && <td className="px-4 py-3 text-onSurfaceSecondary">{clientName(c.client_id)}</td>}
                   <td className="space-x-4 px-4 py-3">
+                    <button onClick={() => openEdit(c)} className="font-semibold text-brand hover:underline">
+                      {t("edit")}
+                    </button>
                     <button onClick={() => toggleActive(c)} className="font-semibold text-onSurfaceSecondary hover:underline">
                       {c.active === false ? t("activate") : t("deactivate")}
                     </button>

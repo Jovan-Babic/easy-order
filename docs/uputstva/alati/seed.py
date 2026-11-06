@@ -28,7 +28,7 @@ def activate(email, temp):
 
 sa = session(SA_EMAIL, SA_PASSWORD)
 r = sa.post(f"{A}/clients", json={
-    "name": "Veleprodaja Morava d.o.o.", "address": "Industrijska 14, Kragujevac", "pib": "109876543",
+    "name": "Veleprodaja Morava d.o.o.", "address": "Industrijska 14, Kragujevac", "pib": "109876541",
     "invoice_prefix": "VM", "admin_name": "Jelena Admin", "admin_email": "jelena@morava-primer.rs",
 }); r.raise_for_status()
 admin = activate("jelena@morava-primer.rs", r.json()["temporary_password"])

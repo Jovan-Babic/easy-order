@@ -1,5 +1,6 @@
 "use client";
 
+import { localizedDetail } from "@/lib/errors";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useLanguage } from "@/lib/i18n";
@@ -80,7 +81,7 @@ export default function ClientsPage() {
       if (!res.ok) {
         if (uploaded) await deleteUploadedLogo(uploaded);
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || t("failedCreateClient"));
+        setError(localizedDetail(body.detail, t, t("failedCreateClient")));
         return;
       }
       const created = await res.json();
