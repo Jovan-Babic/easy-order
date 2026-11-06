@@ -2,7 +2,7 @@
 // The base (catalog, customers, orders, invoice, Excel import) is always on.
 import type { TranslationKey } from "@/lib/i18n";
 
-export type ModuleKey = "warehouse" | "stock" | "expiry" | "reports" | "focus" | "targets";
+export type ModuleKey = "warehouse" | "stock" | "expiry" | "reports" | "focus" | "targets" | "sef";
 
 export const MODULES: Array<{
   key: ModuleKey;
@@ -16,6 +16,7 @@ export const MODULES: Array<{
   { key: "reports", labelKey: "moduleReports", descKey: "moduleReportsDesc", requires: [] },
   { key: "focus", labelKey: "moduleFocus", descKey: "moduleFocusDesc", requires: [] },
   { key: "targets", labelKey: "moduleTargets", descKey: "moduleTargetsDesc", requires: [] },
+  { key: "sef", labelKey: "moduleSef", descKey: "moduleSefDesc", requires: [] },
 ];
 
 export const ALL_MODULES: ModuleKey[] = MODULES.map((m) => m.key);

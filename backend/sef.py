@@ -6,9 +6,18 @@ issuing company, the customer and the units into a UBL invoice (CIUS-RS profile)
 `calc.invoice_amounts`, so the invoice, the order screen and the statistics show the
 same cents. Only the standard VAT category `S` (10 % / 20 %) is supported for now.
 """
+import base64
+import hashlib
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 from datetime import date
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
+
+from cryptography.fernet import Fernet, InvalidToken
 
 from calc import invoice_amounts
 
@@ -218,3 +227,127 @@ def build_invoice_xml(
     ET.indent(root, space="  ")
     body = ET.tostring(root, encoding="unicode")
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + body
+
+
+# ---------------------------------------------------------------------------------------------
+# API key storage and the SEF HTTP client (plan phase S3)
+# ---------------------------------------------------------------------------------------------
+
+SEF_HOSTS = {"demo": "https://demoefaktura.mfin.gov.rs", "production": "https://efaktura.mfin.gov.rs"}
+
+# What SEF reports as `Status` -> our status. Anything else is kept as it is in `sef_status`.
+STATUS_MAP = {
+    "Sending": "sending", "New": "sent", "Draft": "sent", "Sent": "sent", "Seen": "sent", "Paid": "sent",
+    "Mistake": "sent", "OverDue": "sent", "Archived": "sent", "Approved": "approved", "Rejected": "rejected",
+    "Cancelled": "cancelled", "Storno": "storno", "Deleted": "cancelled",
+}
+
+
+def _fernet(secret: str) -> Fernet:
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest()))
+
+
+def encrypt_secret(plain: str, secret: str) -> str:
+    return _fernet(secret).encrypt(plain.encode("utf-8")).decode("ascii")
+
+
+def decrypt_secret(token: str, secret: str) -> Optional[str]:
+    try:
+        return _fernet(secret).decrypt(token.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return None  # a different secret or a damaged value: treated as "no key"
+
+
+class SefError(Exception):
+    """A failed SEF call. `status` is the HTTP status (None = no answer: network, timeout);
+    `retryable` = the same request may be repeated later (no answer, 5xx, 429)."""
+
+    def __init__(self, message: str, status: Optional[int] = None, code: Optional[str] = None, raw: str = ""):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+        self.code = code
+        self.raw = raw[:2000]
+
+    @property
+    def retryable(self) -> bool:
+        return self.status is None or self.status >= 500 or self.status == 429
+
+
+def _error_from_body(status: int, body: str) -> SefError:
+    message, code = body.strip()[:300] or f"HTTP {status}", None
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        lowered = {str(k).lower(): v for k, v in data.items()}
+        message = str(lowered.get("message") or lowered.get("detail") or lowered.get("title") or lowered.get("error") or message)
+        code = lowered.get("errorcode") or lowered.get("code")
+        errors = lowered.get("errors")
+        if isinstance(errors, dict) and errors:  # ASP.NET validation shape: {"errors": {"field": ["text"]}}
+            message = "; ".join(f"{k}: {', '.join(map(str, v)) if isinstance(v, list) else v}" for k, v in errors.items())
+    return SefError(message[:500], status=status, code=str(code) if code else None, raw=body)
+
+
+class SefClient:
+    """Blocking client (run it in a thread): the ApiKey goes only into the request header and
+    never into a message or log."""
+
+    def __init__(self, base_url: str, api_key: str, timeout: float = 25):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def _call(self, method: str, path: str, query: Optional[dict] = None, body: Optional[bytes] = None,
+              content_type: Optional[str] = None) -> Any:
+        url = f"{self.base_url}/api/publicApi/{path}"
+        if query:
+            url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
+        headers = {"ApiKey": self.api_key, "Accept": "application/json"}
+        if content_type:
+            headers["Content-Type"] = content_type
+        request = urllib.request.Request(url, data=body, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310 (host is fixed by config)
+                raw = response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as err:
+            raise _error_from_body(err.code, err.read().decode("utf-8", "replace")) from None
+        except (urllib.error.URLError, TimeoutError, OSError) as err:
+            reason = getattr(err, "reason", err)
+            raise SefError(f"No answer from SEF ({type(reason).__name__})") from None
+        if not raw.strip():
+            return {}
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return {"raw": raw[:2000]}
+
+    def version(self) -> Dict[str, Any]:
+        return self._call("GET", "getEfakturaVersion")
+
+    def upload(self, xml: str, request_id: str, validate_only: bool = False) -> Dict[str, Any]:
+        boundary = uuid.uuid4().hex
+        part = (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"ublFile\"; filename=\"invoice.xml\"\r\n"
+            "Content-Type: text/xml\r\n\r\n"
+        ).encode("utf-8") + xml.encode("utf-8") + f"\r\n--{boundary}--\r\n".encode("ascii")
+        return self._call(
+            "POST", "sales-invoice/ubl/upload",
+            {"requestId": request_id, "executeValidation": "true" if validate_only else "false"},
+            part, f"multipart/form-data; boundary={boundary}",
+        )
+
+    def status(self, invoice_id: int) -> Dict[str, Any]:
+        return self._call("GET", "sales-invoice", {"invoiceId": invoice_id})
+
+    def cancel(self, invoice_id: int, comment: str) -> Dict[str, Any]:
+        body = json.dumps({"invoiceId": invoice_id, "cancelComments": comment}).encode("utf-8")
+        return self._call("POST", "sales-invoice/cancel", body=body, content_type="application/json")
+
+    def storno(self, invoice_id: int, number: Optional[str], comment: str) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"invoiceId": invoice_id, "stornoComment": comment}
+        if number:
+            payload["stornoNumber"] = number
+        return self._call("POST", "sales-invoice/storno", body=json.dumps(payload).encode("utf-8"),
+                          content_type="application/json")

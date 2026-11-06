@@ -218,6 +218,25 @@ Stranica **Narudžbine** prikazuje sve porudžbine firme, najnovije prve.
 2. **Broj fakture** i podaci o kupcu, stavke sa količinom, cenom, popustom i ukupnim iznosom, pa osnovica, PDV i ukupno. Ako je poslato manje nego što je naručeno, ispod ukupnog iznosa piše **Naručeno** sa prvobitnim iznosom.
 3. **Štampaj / Sačuvaj PDF** – štampa ili čuva dokument.
 
+### E-faktura preko SEF-a (paket „SEF“)
+
+Ako vaša firma ima paket **SEF**, u meniju postoji stranica **Integracije**, a uz otpremljene porudžbine dugme **SEF**.
+
+**Podešavanje (jednom):**
+1. Na SEF portalu (Podešavanja → API menadžment) administrator firme napravi **API ključ**. Za probu koristite **demo** SEF, a ključ za demo i za produkciju su različiti.
+2. Na stranici **Integracije** izaberite okruženje (**Demo** ili **Produkcija**), upišite ključ i kliknite *Sačuvaj*. Ključ se čuva šifrovan i posle čuvanja se više ne prikazuje (vidi se samo njegov kraj).
+3. Kliknite **Proveri vezu**. Treba da piše „Veza radi“.
+4. Uključite **Slanje faktura na SEF** i po potrebi podesite **rok plaćanja** (dana).
+
+**Izdavanje fakture:** na stranici **Porudžbine** kliknite **SEF** uz otpremljenu porudžbinu.
+- Program pokazuje šta još nedostaje (na primer kupcu matični broj ili adresa, firmi PIB ili tekući račun, jedinici mere UBL šifra). Podatke kupca dopunjujete na stranici **Kupci**, a podatke firme (PIB, matični broj, adresa, PDV status, tekući račun) i šifre jedinica mere menja vlasnik sistema, pa mu se obratite. Posle dopune otvorite prozor ponovo.
+- Prikazani su datum izdavanja (uvek današnji), datum prometa (datum otpreme), rok plaćanja i iznosi po stopi PDV-a.
+- **Proveri na SEF-u (demo)** proverava fakturu bez izdavanja, a samo je dostupno na demo okruženju.
+- **Pošalji na SEF** izdaje fakturu i troši njen broj. Dvostruki klik ne pravi dve fakture.
+- **Osveži status** pokazuje šta SEF kaže (poslata, odobrena, odbijena). **Otkaži** radi dok kupac nije odobrio fakturu, a posle odobrenja ostaje **Storniraj** (razlog je obavezan).
+- Ako SEF ne odgovori, status ostaje „Slanje u toku“. Dugme **Pokušaj ponovo** šalje isti zahtev i ne pravi drugu fakturu.
+- Ako SEF odbije fakturu, razlog se prikazuje u prozoru (greška i šifra).
+
 ### Šta znače statusi
 | Status | Značenje |
 |---|---|

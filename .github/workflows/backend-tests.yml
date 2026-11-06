@@ -33,6 +33,8 @@ jobs:
       # and real purging switched on - this database is throwaway.
       CRON_SECRET: ci-cron-secret
       AUTO_PURGE_ENABLED: "true"
+      # SEF module (tests/test_sef_integration.py): the API talks to the fake SEF the tests start.
+      SEF_BASE_URL: http://127.0.0.1:8765
     steps:
       - uses: actions/checkout@v4
         with:

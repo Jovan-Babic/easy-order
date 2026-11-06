@@ -1,6 +1,7 @@
 from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, File, Query, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from starlette.concurrency import run_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -34,7 +35,8 @@ from urllib.parse import quote
 import cloudinary
 import cloudinary.uploader
 
-from calc import compute_order_totals, effective_qty, line_net, line_vat
+import sef
+from calc import compute_order_totals, effective_qty, invoice_amounts as calc_invoice_amounts, line_net, line_vat
 
 
 ROOT_DIR = Path(__file__).parent
@@ -145,6 +147,8 @@ async def lifespan(app: FastAPI):
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     db = mongo_client[os.environ["DB_NAME"]]
     await db.customers.create_index("client_id")
+    await db.einvoices.create_index("request_id", unique=True)
+    await db.einvoices.create_index([("client_id", 1), ("order_id", 1), ("created_at", -1)])
     await db.products.create_index("client_id")
     await db.focus_items.create_index([("client_id", 1), ("product_id", 1)], unique=True)
     await db.targets.create_index(
@@ -242,9 +246,12 @@ class Module(str, Enum):
     REPORTS = "reports"  # order reports
     FOCUS = "focus"  # goods in focus: products the sales reps should push (PLAN_FOKUS_I_CILJEVI.md)
     TARGETS = "targets"  # sales targets and progress per sales rep
+    SEF = "sef"  # e-invoices through SEF (Serbia): sold as a separate package, never on by default
 
 
 ALL_MODULES = [m.value for m in Module]
+# What a client without a stored choice (old clients, new clients before a plan) gets: SEF is a paid add-on.
+DEFAULT_MODULES = [m for m in ALL_MODULES if m != Module.SEF.value]
 # A module can only be on when the ones it builds on are on too.
 MODULE_REQUIRES: Dict[Module, List[Module]] = {Module.STOCK: [Module.WAREHOUSE], Module.EXPIRY: [Module.STOCK]}
 
@@ -252,7 +259,7 @@ MODULE_REQUIRES: Dict[Module, List[Module]] = {Module.STOCK: [Module.WAREHOUSE],
 def effective_modules(client_doc: Optional[dict]) -> List[str]:
     """Clients created before modules existed (no field) keep everything."""
     stored = (client_doc or {}).get("modules")
-    return list(ALL_MODULES) if stored is None else [m for m in ALL_MODULES if m in stored]
+    return list(DEFAULT_MODULES) if stored is None else [m for m in ALL_MODULES if m in stored]
 
 
 def validated_modules(values: List[Module]) -> List[str]:
@@ -434,7 +441,7 @@ class Client(BaseModel):
     # Days before expiry at which batches show up as warnings (warehouse/admin).
     expiry_alert_days: List[int] = Field(default_factory=lambda: list(setting("expiry_alert_days")))
     # Enabled modules (Module values); a stored client without the field has all.
-    modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
+    modules: List[str] = Field(default_factory=lambda: list(DEFAULT_MODULES))
     # Subscription (superadmin manages it in /subscriptions): plan_id, plan_name,
     # starts_at, ends_at, note, source, canceled_at, purge_paused, purged_at.
     subscription: Optional[Dict[str, Any]] = None
@@ -1893,7 +1900,7 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
         settings["modules"] = list(plan["modules"])
         settings["subscription"] = _new_subscription(plan, inp.subscription_ends_at or _today().isoformat(), None, "manual")
     else:
-        settings["modules"] = validated_modules(inp.modules if inp.modules is not None else list(Module))
+        settings["modules"] = validated_modules(inp.modules if inp.modules is not None else [Module(m) for m in DEFAULT_MODULES])
 
     client_obj = Client(
         **{
@@ -7893,6 +7900,369 @@ async def seed_data():
 
 
 app = FastAPI(lifespan=lifespan)
+# ---------------- SEF e-invoices (module `sef`, plan .claude/DOCS/PLAN_SEF_MODUL.md, phase S3) ----------------
+INTEGRATION_SECRET = os.environ.get("INTEGRATION_SECRET", "")
+# Tests and local development can point the client at a fake SEF; never in production.
+SEF_BASE_URL_OVERRIDE = "" if IS_PRODUCTION else os.environ.get("SEF_BASE_URL", "").rstrip("/")
+_SEF_ACTIVE = ("sending", "sent", "approved")  # statuses of an invoice that blocks issuing another one for the order
+_sef_manager = require_module(Module.SEF, Role.ADMIN, Role.SUPERADMIN)
+
+
+def _integration_secret() -> str:
+    if INTEGRATION_SECRET:
+        return INTEGRATION_SECRET
+    if IS_PRODUCTION:
+        raise HTTPException(status_code=503, detail="Integration secret is not configured")
+    return JWT_SECRET
+
+
+def _belgrade_today() -> date:
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("Europe/Belgrade")).date()
+    except Exception:  # no tz database: UTC+1 is close enough for a date
+        return (datetime.now(timezone.utc) + timedelta(hours=1)).date()
+
+
+def _sef_target_client_id(user: User, client_id: Optional[str]) -> str:
+    if user.role == Role.SUPERADMIN:
+        if not client_id:
+            raise HTTPException(status_code=400, detail="client_id is required for superadmin")
+        return client_id
+    return user.client_id
+
+
+def _sef_public(client: dict) -> Dict[str, Any]:
+    cfg = client.get("sef") or {}
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "env": cfg.get("env") or "demo",
+        "key_set": bool(cfg.get("api_key_enc")),
+        "key_set_at": cfg.get("key_set_at"),
+        "key_hint": cfg.get("key_hint"),
+        "payment_terms_days": cfg.get("payment_terms_days", 15),
+        "last_check_at": cfg.get("last_check_at"),
+        "last_check_ok": cfg.get("last_check_ok"),
+        "last_check_message": cfg.get("last_check_message"),
+        "base_url_override": SEF_BASE_URL_OVERRIDE or None,
+    }
+
+
+def _sef_client_from(client: dict) -> sef.SefClient:
+    cfg = client.get("sef") or {}
+    if not cfg.get("api_key_enc"):
+        raise HTTPException(status_code=400, detail="SEF API key is not set")
+    key = sef.decrypt_secret(cfg["api_key_enc"], _integration_secret())
+    if not key:
+        raise HTTPException(status_code=400, detail="SEF API key cannot be read, set it again")
+    env = cfg.get("env") or "demo"
+    return sef.SefClient(SEF_BASE_URL_OVERRIDE or sef.SEF_HOSTS[env], key)
+
+
+async def _sef_call(fn, *args):
+    return await run_in_threadpool(fn, *args)
+
+
+class SefSettingsInput(BaseModel):
+    client_id: Optional[str] = None
+    enabled: Optional[bool] = None
+    env: Optional[Literal["demo", "production"]] = None
+    api_key: Optional[str] = Field(default=None, max_length=200)  # None = keep, "" = remove
+    payment_terms_days: Optional[int] = Field(default=None, ge=0, le=365)
+
+
+@api_router.get("/integrations/sef")
+async def get_sef_settings(client_id: Optional[str] = None, current_user: User = Depends(_sef_manager)):
+    target = _sef_target_client_id(current_user, client_id)
+    client = await db.clients.find_one({"id": target}, {"_id": 0, "sef": 1})
+    if client is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return _sef_public(client)
+
+
+@api_router.put("/integrations/sef")
+async def put_sef_settings(inp: SefSettingsInput, current_user: User = Depends(_sef_manager)):
+    target = _sef_target_client_id(current_user, inp.client_id)
+    client = await db.clients.find_one({"id": target}, {"_id": 0, "sef": 1, "name": 1})
+    if client is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    updates: Dict[str, Any] = {}
+    if inp.enabled is not None:
+        updates["sef.enabled"] = inp.enabled
+    if inp.env is not None:
+        updates["sef.env"] = inp.env
+        updates["sef.last_check_at"] = None  # the key belongs to one environment: check again
+        updates["sef.last_check_ok"] = None
+        updates["sef.last_check_message"] = None
+    if inp.payment_terms_days is not None:
+        updates["sef.payment_terms_days"] = inp.payment_terms_days
+    action = "sef.settings"
+    if inp.api_key is not None:
+        key = inp.api_key.strip()
+        if key:
+            updates["sef.api_key_enc"] = sef.encrypt_secret(key, _integration_secret())
+            updates["sef.key_set_at"] = now_iso()
+            updates["sef.key_hint"] = "…" + key[-4:] if len(key) > 8 else None
+            updates["sef.last_check_at"] = None
+            updates["sef.last_check_ok"] = None
+            updates["sef.last_check_message"] = None
+            action = "sef.key_set"
+        else:
+            updates.update({"sef.api_key_enc": None, "sef.key_set_at": None, "sef.key_hint": None,
+                            "sef.last_check_at": None, "sef.last_check_ok": None, "sef.last_check_message": None})
+            action = "sef.key_removed"
+    if updates:
+        await db.clients.update_one({"id": target}, {"$set": updates})
+        # the key itself is never logged: only that it was set or removed
+        await _audit(current_user, action, "client", target, client.get("name"), target)
+    return _sef_public(await db.clients.find_one({"id": target}, {"_id": 0, "sef": 1}) or {})
+
+
+@api_router.post("/integrations/sef/test")
+async def test_sef_connection(client_id: Optional[str] = None, current_user: User = Depends(_sef_manager)):
+    target = _sef_target_client_id(current_user, client_id)
+    client = await db.clients.find_one({"id": target}, {"_id": 0, "sef": 1})
+    if client is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    api = _sef_client_from(client)
+    ok, message = True, None
+    try:
+        version = await _sef_call(api.version)
+        message = f"SEF {version.get('Version')}" if isinstance(version, dict) and version.get("Version") else "OK"
+    except sef.SefError as err:
+        ok, message = False, (f"{err.status}: " if err.status else "") + err.message
+    await db.clients.update_one(
+        {"id": target},
+        {"$set": {"sef.last_check_at": now_iso(), "sef.last_check_ok": ok, "sef.last_check_message": message}},
+    )
+    return {"ok": ok, "message": message}
+
+
+class EinvoiceDates(BaseModel):
+    issue_date: Optional[str] = None
+    delivery_date: Optional[str] = None
+    due_date: Optional[str] = None
+    validate_on_sef: bool = False  # preview only: also ask SEF to validate (demo environment only)
+    include_xml: bool = False
+
+
+class EinvoiceActionInput(BaseModel):
+    comment: str = Field(min_length=1, max_length=500)
+    storno_number: Optional[str] = Field(default=None, max_length=100)
+
+
+def _einvoice_public(doc: Optional[dict]) -> Optional[dict]:
+    if not doc:
+        return None
+    return {k: v for k, v in doc.items() if k not in ("_id", "ubl_xml")}
+
+
+async def _einvoice_context(order_id: str, user: User, dates: Optional[EinvoiceDates]) -> Dict[str, Any]:
+    order = await get_scoped_or_404("orders", order_id, user)
+    client = await db.clients.find_one({"id": order["client_id"]}, {"_id": 0}) or {}
+    customer = await db.customers.find_one({"id": order.get("customer_id"), "client_id": order["client_id"]}, {"_id": 0}) or {}
+    units = {u["_id"]: u async for u in db.units.find({})}
+    cfg = client.get("sef") or {}
+    today = _belgrade_today()
+    dates = dates or EinvoiceDates()
+    issue_date = dates.issue_date or today.isoformat()
+    delivery_date = dates.delivery_date or (order.get("shipped_at") or "")[:10] or None
+    problems: List[str] = []
+    for field, value in (("issue_date", issue_date), ("delivery_date", delivery_date)):
+        if value:
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                problems.append(field)
+    due_date = dates.due_date
+    if not due_date and "issue_date" not in problems:
+        due_date = (date.fromisoformat(issue_date) + timedelta(days=int(cfg.get("payment_terms_days", 15)))).isoformat()
+    if "issue_date" not in problems and issue_date != today.isoformat():
+        problems.append("issue_date_not_today")  # SEF refuses an issue date that is not today's (to be confirmed on demo)
+    if _status_value(order) != OrderStatus.SHIPPED.value:
+        problems.append("not_shipped")
+    if not order.get("invoice_number"):
+        problems.append("invoice_number")
+    if not customer:
+        problems.append("buyer.missing")
+    if delivery_date and "issue_date" not in problems and "delivery_date" not in problems and delivery_date > issue_date:
+        problems.append("delivery_after_issue")
+    if due_date and "issue_date" not in problems and due_date < issue_date:
+        problems.append("due_before_issue")
+    problems += sef.invoice_problems(order, client, customer, units, delivery_date)
+    return {
+        "order": order, "client": client, "customer": customer, "units": units, "problems": list(dict.fromkeys(problems)),
+        "issue_date": issue_date, "due_date": due_date, "delivery_date": delivery_date, "number": order.get("invoice_number"),
+    }
+
+
+async def _latest_einvoice(order_id: str) -> Optional[dict]:
+    return await db.einvoices.find_one({"order_id": order_id}, {"_id": 0}, sort=[("created_at", -1)])
+
+
+def _build_xml(ctx: Dict[str, Any]) -> str:
+    return sef.build_invoice_xml(
+        ctx["order"], ctx["client"], ctx["customer"], ctx["units"], ctx["number"],
+        ctx["issue_date"], ctx["due_date"], ctx["delivery_date"],
+    )
+
+
+@api_router.post("/orders/{order_id}/einvoice/preview")
+async def einvoice_preview(order_id: str, inp: EinvoiceDates, current_user: User = Depends(_sef_manager)):
+    ctx = await _einvoice_context(order_id, current_user, inp)
+    problems = ctx["problems"]
+    cfg = ctx["client"].get("sef") or {}
+    out: Dict[str, Any] = {
+        "problems": problems, "number": ctx["number"], "issue_date": ctx["issue_date"], "due_date": ctx["due_date"],
+        "delivery_date": ctx["delivery_date"], "amounts": calc_invoice_amounts(ctx["order"]),
+        "sef": {"configured": bool(cfg.get("api_key_enc")), "enabled": bool(cfg.get("enabled")), "env": cfg.get("env") or "demo"},
+        "current": _einvoice_public(await _latest_einvoice(order_id)), "validation": None, "xml": None,
+    }
+    if problems:
+        return out
+    xml = _build_xml(ctx)
+    if inp.include_xml:
+        out["xml"] = xml
+    if inp.validate_on_sef:
+        if (cfg.get("env") or "demo") != "demo":
+            # How `executeValidation` behaves is confirmed on the demo environment first.
+            out["validation"] = {"ok": False, "message": "SEF validation is available on the demo environment only"}
+        else:
+            api = _sef_client_from(ctx["client"])
+            try:
+                await _sef_call(api.upload, xml, f"EO-VAL-{uuid.uuid4().hex[:16]}", True)
+                out["validation"] = {"ok": True, "message": None}
+            except sef.SefError as err:
+                out["validation"] = {"ok": False, "message": err.message, "code": err.code, "status": err.status}
+    return out
+
+
+async def _sef_upload_and_store(doc: dict, api: "sef.SefClient") -> dict:
+    """Sends the stored XML with the stored requestId (so a repeat after a network failure
+    cannot create a second invoice) and records the outcome."""
+    update: Dict[str, Any]
+    try:
+        result = await _sef_call(api.upload, doc["ubl_xml"], doc["request_id"], False)
+        ids = result if isinstance(result, dict) else {}
+        update = {
+            "status": "sent", "sent_at": now_iso(), "error_code": None, "error_text": None,
+            "sef_invoice_id": ids.get("SalesInvoiceId"), "sef_input_id": ids.get("InvoiceId"),
+            "sef_purchase_id": ids.get("PurchaseInvoiceId"),
+        }
+    except sef.SefError as err:
+        # No answer / 5xx: the request may or may not have arrived, keep `sending` and let the user repeat it.
+        update = {
+            "status": "sending" if err.retryable else "error", "error_code": err.code,
+            "error_text": err.message, "error_http": err.status,
+        }
+    update["updated_at"] = now_iso()
+    await db.einvoices.update_one({"id": doc["id"]}, {"$set": update})
+    return {**doc, **update}
+
+
+@api_router.post("/orders/{order_id}/einvoice")
+async def einvoice_send(order_id: str, inp: EinvoiceDates, current_user: User = Depends(_sef_manager)):
+    ctx = await _einvoice_context(order_id, current_user, inp)
+    cfg = ctx["client"].get("sef") or {}
+    if not cfg.get("enabled"):
+        raise HTTPException(status_code=400, detail="SEF is not enabled for this client")
+    api = _sef_client_from(ctx["client"])
+    existing = await _latest_einvoice(order_id)
+    if existing and existing["status"] in _SEF_ACTIVE:
+        if existing["status"] == "sending" and not existing.get("sef_invoice_id"):
+            # An earlier send got no answer: repeat the very same request.
+            doc = await _sef_upload_and_store(existing, api)
+            await _audit(current_user, "sef.send", "order", order_id, ctx["number"], ctx["order"]["client_id"], {"retry": True})
+            return _einvoice_public(doc)
+        raise HTTPException(status_code=409, detail="Invoice was already issued for this order")
+    if ctx["problems"]:
+        raise HTTPException(status_code=422, detail={"problems": ctx["problems"]})
+    attempt = await db.einvoices.count_documents({"order_id": order_id}) + 1
+    amounts = calc_invoice_amounts(ctx["order"])
+    doc = {
+        "id": str(uuid.uuid4()), "client_id": ctx["order"]["client_id"], "order_id": order_id,
+        "request_id": f"EO-{order_id}-{attempt}", "number": ctx["number"], "kind": "invoice", "env": cfg.get("env") or "demo",
+        "issue_date": ctx["issue_date"], "due_date": ctx["due_date"], "delivery_date": ctx["delivery_date"],
+        "amounts": {k: amounts[k] for k in ("subtotal", "vat", "grand", "categories")},
+        "ubl_xml": _build_xml(ctx), "status": "sending", "sef_status": None, "sef_invoice_id": None,
+        "error_code": None, "error_text": None, "created_by": current_user.id, "created_by_name": current_user.name,
+        "created_at": now_iso(), "updated_at": now_iso(), "sent_at": None,
+    }
+    try:
+        await db.einvoices.insert_one({"_id": doc["id"], **doc})
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Invoice is being issued")  # a parallel request took this requestId
+    doc = await _sef_upload_and_store(doc, api)
+    await _audit(current_user, "sef.send", "order", order_id, ctx["number"], ctx["order"]["client_id"],
+                 {"status": doc["status"], "env": doc["env"]})
+    return _einvoice_public(doc)
+
+
+@api_router.get("/orders/{order_id}/einvoice")
+async def einvoice_status(order_id: str, refresh: bool = True, current_user: User = Depends(_sef_manager)):
+    order = await get_scoped_or_404("orders", order_id, current_user)
+    doc = await _latest_einvoice(order_id)
+    out = {"current": _einvoice_public(doc), "refresh_error": None}
+    if doc and refresh and doc.get("sef_invoice_id") and doc["status"] in ("sent", "approved", "rejected"):
+        client = await db.clients.find_one({"id": order["client_id"]}, {"_id": 0}) or {}
+        try:
+            data = await _sef_call(_sef_client_from(client).status, doc["sef_invoice_id"])
+        except sef.SefError as err:
+            out["refresh_error"] = err.message
+        except HTTPException as err:
+            out["refresh_error"] = str(err.detail)
+        else:
+            raw = data.get("Status") if isinstance(data, dict) else None
+            update = {
+                "sef_status": raw, "status": sef.STATUS_MAP.get(raw, doc["status"]) if raw else doc["status"],
+                "sef_comment": (data or {}).get("Comment"), "updated_at": now_iso(),
+            }
+            await db.einvoices.update_one({"id": doc["id"]}, {"$set": update})
+            out["current"] = _einvoice_public({**doc, **update})
+    return out
+
+
+@api_router.get("/orders/{order_id}/einvoice/xml")
+async def einvoice_xml(order_id: str, current_user: User = Depends(_sef_manager)):
+    await get_scoped_or_404("orders", order_id, current_user)
+    doc = await db.einvoices.find_one({"order_id": order_id}, {"_id": 0, "ubl_xml": 1}, sort=[("created_at", -1)])
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(content=doc["ubl_xml"], media_type="application/xml")
+
+
+async def _einvoice_act(order_id: str, inp: EinvoiceActionInput, user: User, kind: str) -> dict:
+    order = await get_scoped_or_404("orders", order_id, user)
+    doc = await _latest_einvoice(order_id)
+    if not doc or not doc.get("sef_invoice_id") or doc["status"] not in ("sent", "approved", "rejected"):
+        raise HTTPException(status_code=409, detail="There is no invoice on SEF to " + kind)
+    client = await db.clients.find_one({"id": order["client_id"]}, {"_id": 0}) or {}
+    api = _sef_client_from(client)
+    try:
+        if kind == "cancel":
+            await _sef_call(api.cancel, doc["sef_invoice_id"], inp.comment.strip())
+        else:
+            await _sef_call(api.storno, doc["sef_invoice_id"], (inp.storno_number or "").strip() or None, inp.comment.strip())
+    except sef.SefError as err:
+        raise HTTPException(status_code=422, detail={"sef_error": err.message, "code": err.code, "status": err.status})
+    update = {"status": "cancelled" if kind == "cancel" else "storno", "updated_at": now_iso(),
+              "cancel_comment" if kind == "cancel" else "storno_comment": inp.comment.strip()}
+    await db.einvoices.update_one({"id": doc["id"]}, {"$set": update})
+    await _audit(user, f"sef.{kind}", "order", order_id, doc.get("number"), order["client_id"], {"comment": inp.comment.strip()})
+    return _einvoice_public({**doc, **update})
+
+
+@api_router.post("/orders/{order_id}/einvoice/cancel")
+async def einvoice_cancel(order_id: str, inp: EinvoiceActionInput, current_user: User = Depends(_sef_manager)):
+    return await _einvoice_act(order_id, inp, current_user, "cancel")
+
+
+@api_router.post("/orders/{order_id}/einvoice/storno")
+async def einvoice_storno(order_id: str, inp: EinvoiceActionInput, current_user: User = Depends(_sef_manager)):
+    return await _einvoice_act(order_id, inp, current_user, "storno")
+
+
 app.include_router(api_router)
 # Not every OS registers .apk (Windows doesn't), and without it StaticFiles
 # serves the APK as text/plain, which some Android browsers won't install.

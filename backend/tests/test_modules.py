@@ -50,7 +50,7 @@ def test_login_returns_modules(superadmin_client):
     assert client["modules"] == ["warehouse"]
     # superadmin is not tied to a client: every module
     me = superadmin_client.get(f"{API}/auth/me").json()
-    assert me["modules"] == ["warehouse", "stock", "expiry", "reports", "focus", "targets"]
+    assert me["modules"] == ["warehouse", "stock", "expiry", "reports", "focus", "targets", "sef"]
 
 
 def test_dependencies_are_validated(superadmin_client):
