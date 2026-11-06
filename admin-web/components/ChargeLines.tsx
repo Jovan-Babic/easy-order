@@ -4,6 +4,7 @@ import { ROLE_KEYS } from "@/components/SeatsPanel";
 import { ChargeLine, LedgerCharge } from "@/lib/billing";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { money } from "@/lib/payments";
+import { MODULES } from "@/lib/modules";
 import type { SeatRole } from "@/lib/seats";
 
 export function useLineLabel() {
@@ -14,6 +15,11 @@ export function useLineLabel() {
       const months = line.months && line.months > 1 ? ` × ${line.months} ${t("billingMonths")}` : "";
       const what = line.kind === "seats_prorated" ? t("billingSeatsToYearEnd") : t("billingExtraSeats");
       return `${what}: ${role} ${line.qty} × ${money(line.unit_price ?? 0)}${months}`;
+    }
+    if (line.kind === "module") {
+      const key = MODULES.find((m) => m.key === line.module)?.labelKey;
+      const months = line.months && line.months > 1 ? ` × ${line.months} ${t("billingMonths")}` : "";
+      return `${t("billingModule")}: ${key ? t(key) : line.module}${months}`;
     }
     if (line.kind === "discount") return `${t("seatsDiscount")} ${line.label}`;
     if (line.kind === "free") return t("billingFreeMonth");

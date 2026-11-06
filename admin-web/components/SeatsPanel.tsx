@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Modal, input, primary, secondary, useSubmit } from "@/components/SubscriptionDialogs";
 import { useLanguage, type TranslationKey } from "@/lib/i18n";
 import { money } from "@/lib/payments";
+import { MODULES, toggleModule, type ModuleKey } from "@/lib/modules";
 import { ChargePreview, SEAT_ROLES, SeatRole, SeatsOut } from "@/lib/seats";
 import { detailOf } from "@/lib/subscriptions";
 
@@ -48,11 +49,32 @@ export function SeatsSummary({ data }: { data: SeatsOut }) {
           </tbody>
         </table>
       </div>
+      {data.modules.length > 0 && (
+        <div className="mt-4 text-sm">
+          <p className="font-semibold text-onSurface">{t("seatsExtraModules")}</p>
+          <ul className="mt-1 space-y-0.5 text-onSurfaceSecondary">
+            {data.modules.map((m) => {
+              const key = MODULES.find((x) => x.key === m.module)?.labelKey;
+              return (
+                <li key={m.module}>
+                  {key ? t(key) : m.module} — {m.price !== null ? money(m.price, data.currency) : t("seatsModuleNoPrice")}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
       <dl className="mt-4 grid max-w-sm grid-cols-[1fr_auto] gap-y-1 text-sm">
         <dt className="text-muted">{t("seatsPackagePrice")}</dt>
         <dd className="text-right text-onSurface">{data.package_price !== null ? money(data.package_price, data.currency) : "-"}</dd>
         <dt className="text-muted">{t("seatsExtraAmount")}</dt>
         <dd className="text-right text-onSurface">{money(data.extra_amount, data.currency)}</dd>
+        {data.modules_amount > 0 && (
+          <>
+            <dt className="text-muted">{t("seatsModulesAmount")}</dt>
+            <dd className="text-right text-onSurface">{money(data.modules_amount, data.currency)}</dd>
+          </>
+        )}
         {data.discount_percent > 0 && (
           <>
             <dt className="text-muted">{t("seatsDiscount")}</dt>
@@ -82,6 +104,9 @@ export function SeatsEditDialog({
     Object.fromEntries(SEAT_ROLES.map((r) => [r, String(data.seats.find((s) => s.role === r)?.extra ?? 0)]))
   );
   const [discount, setDiscount] = useState(String(data.discount_percent || 0));
+  // modules on top of the package; the ones the package includes are fixed
+  const [extraModules, setExtraModules] = useState<string[]>(data.modules.map((m) => m.module));
+  const selected = MODULES.map((m) => m.key).filter((k) => data.plan_modules.includes(k) || extraModules.includes(k));
   const { busy, error, send } = useSubmit(onDone);
   const roles = SEAT_ROLES.filter((r) => data.seats.some((s) => s.role === r));
   return (
@@ -93,6 +118,7 @@ export function SeatsEditDialog({
           send(`/api/subscriptions/${clientId}/seats`, "PUT", {
             extra_seats: Object.fromEntries(roles.map((r) => [r, Math.max(0, Math.floor(Number(extra[r]) || 0))])),
             discount_percent: Number(discount) || 0,
+            extra_modules: extraModules,
           });
         }}
       >
@@ -104,6 +130,28 @@ export function SeatsEditDialog({
               <input type="number" min="0" step="1" value={extra[r]} onChange={(e) => setExtra({ ...extra, [r]: e.target.value })} className={`${input} mt-1`} />
             </label>
           ))}
+        </div>
+        <div className="grid gap-1">
+          <p className="text-sm font-semibold text-onSurface">{t("seatsExtraModules")}</p>
+          <p className="text-xs text-muted">{t("seatsModulesHint")}</p>
+          {MODULES.map((m) => {
+            const inPlan = data.plan_modules.includes(m.key);
+            const price = data.module_prices[m.key];
+            return (
+              <label key={m.key} className={`flex items-center gap-2 text-sm ${inPlan ? "text-muted" : "text-onSurface"}`}>
+                <input
+                  type="checkbox"
+                  disabled={inPlan}
+                  checked={selected.includes(m.key)}
+                  onChange={(e) =>
+                    setExtraModules(toggleModule(selected, m.key as ModuleKey, e.target.checked).filter((k) => !data.plan_modules.includes(k)))
+                  }
+                />
+                {t(m.labelKey)}
+                {inPlan ? ` (${t("seatsInPackage")})` : price ? ` — ${money(price, data.currency)}` : ` — ${t("seatsModuleNoPrice")}`}
+              </label>
+            );
+          })}
         </div>
         <label className="text-sm font-semibold text-onSurface">
           {t("seatsDiscount")}

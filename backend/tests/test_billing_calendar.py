@@ -43,7 +43,7 @@ def cleanup(superadmin_client):
 def _plan(sa, **extra):
     body = {
         "name": f"TEST_Cal_{uuid.uuid4().hex[:6]}", "modules": [], "prices": {"1": 10000, "12": 100000},
-        "included_seats": {"operator": 1}, "seat_prices": {"operator": 1000}, **extra,
+        "included_seats": {"operator": 1}, **extra,
     }
     r = sa.post(f"{API}/plans", json=body)
     assert r.status_code == 200, r.text

@@ -203,6 +203,7 @@ async def lifespan(app: FastAPI):
     await _seed_units()
     await refresh_settings(force=True)
     await _migrate_calendar_billing()
+    await _migrate_seat_prices()
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at")
     await db.password_reset_tokens.create_index("user_id")
@@ -318,6 +319,10 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     "billing_from_name": "",
     "billing_reply_to": "",
     "bilingual_emails": True,
+    # price list (one place for every client): monthly price of one extra account per role, and of an
+    # optional module per module key (missing = the module has no separate price)
+    "seat_prices": {"operator": 1000, "warehouse": 1500, "admin": 2000},
+    "module_prices": {},
 }
 SETTINGS_TTL_SECONDS = 60
 _settings_cache: Dict[str, Any] = {}
@@ -2014,7 +2019,6 @@ class Plan(BaseModel):
     # Accounts the package includes per role (admin/warehouse/operator); an empty map
     # or a missing role = no limit. Price per extra account per month.
     included_seats: Dict[str, int] = Field(default_factory=dict)
-    seat_prices: Dict[str, float] = Field(default_factory=dict)
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -2025,9 +2029,9 @@ class PlanInput(BaseModel):
     active: bool = True
     # months -> amount; None = keep the stored prices (update) / no prices (create).
     prices: Optional[Dict[str, float]] = None
-    # role -> count / monthly price; None = keep (update) / none (create).
+    # role -> count; None = keep (update) / none (create). The price of an extra account is
+    # one for everybody: settings `seat_prices`.
     included_seats: Optional[Dict[str, int]] = None
-    seat_prices: Optional[Dict[str, float]] = None
     # On update: also rewrite the modules of every client currently on this plan.
     apply_to_clients: bool = False
 
@@ -2120,6 +2124,18 @@ def _validated_seat_map(values: Optional[Dict[str, float]], name: str, integer: 
     return out
 
 
+def _modules_union(plan_modules: Optional[List[str]], extra: Optional[List[str]]) -> List[str]:
+    """The client's modules on a plan: the plan's plus the extra (separately priced) ones."""
+    both = set(plan_modules or []) | set(extra or [])
+    return [m for m in ALL_MODULES if m in both]
+
+
+def _extra_modules_of(plan: Optional[dict], sub: Optional[dict]) -> List[str]:
+    """Contracted extra modules that the plan does not already include."""
+    included = set((plan or {}).get("modules") or [])
+    return [m for m in ALL_MODULES if m in ((sub or {}).get("extra_modules") or []) and m not in included]
+
+
 def _seat_figures(plan: Optional[dict], sub: Optional[dict]) -> dict:
     """Per role: included (plan) + extra (contract) = limit; None = unlimited."""
     included = (plan or {}).get("included_seats") or {}
@@ -2131,7 +2147,7 @@ def _seat_figures(plan: Optional[dict], sub: Optional[dict]) -> dict:
         out[role] = {
             "included": inc, "extra": ext,
             "limit": None if inc is None else int(inc) + ext,
-            "price": ((plan or {}).get("seat_prices") or {}).get(role),
+            "price": (setting("seat_prices") or {}).get(role),
         }
     return out
 
@@ -2249,7 +2265,6 @@ async def create_plan(inp: PlanInput, current_user: User = Depends(require_roles
         name=inp.name.strip(), description=inp.description or "", modules=validated_modules(inp.modules), active=inp.active,
         prices=_validated_prices(inp.prices),
         included_seats=_validated_seat_map(inp.included_seats, "included_seats", integer=True),
-        seat_prices=_validated_seat_map(inp.seat_prices, "seat_prices", integer=False),
     )
     await db.plans.insert_one({**plan.dict(), "_id": plan.id})
     await _audit(current_user, "plan.create", "plan", plan.id, plan.name)
@@ -2272,15 +2287,17 @@ async def update_plan(plan_id: str, inp: PlanInput, current_user: User = Depends
         updated["prices"] = _validated_prices(inp.prices)
     if inp.included_seats is not None:
         updated["included_seats"] = _validated_seat_map(inp.included_seats, "included_seats", integer=True)
-    if inp.seat_prices is not None:
-        updated["seat_prices"] = _validated_seat_map(inp.seat_prices, "seat_prices", integer=False)
     await db.plans.replace_one({"id": plan_id}, {**updated, "_id": plan_id})
     await _audit(current_user, "plan.update", "plan", plan_id, updated["name"], data={"apply_to_clients": inp.apply_to_clients})
     # Clients keep their own copy of the plan name; refresh it, and optionally the modules.
     await db.clients.update_many({"subscription.plan_id": plan_id}, {"$set": {"subscription.plan_name": updated["name"]}})
     if inp.apply_to_clients:
-        async for client in db.clients.find({"subscription.plan_id": plan_id}, {"_id": 0, "id": 1}):
-            await db.clients.update_one({"id": client["id"]}, {"$set": {"modules": updated["modules"]}})
+        async for client in db.clients.find({"subscription.plan_id": plan_id}, {"_id": 0, "id": 1, "subscription": 1}):
+            extra = _extra_modules_of(updated, client.get("subscription"))
+            await db.clients.update_one(
+                {"id": client["id"]},
+                {"$set": {"modules": _modules_union(updated["modules"], extra), "subscription.extra_modules": extra}},
+            )
     return Plan(**updated)
 
 
@@ -2321,7 +2338,12 @@ async def assign_subscription(
     for kept in ("extra_seats", "discount_percent", *_BILLING_KEPT_FIELDS):
         if (client.get("subscription") or {}).get(kept) is not None:
             subscription[kept] = client["subscription"][kept]
-    await db.clients.update_one({"id": client_id}, {"$set": {"subscription": subscription, "modules": plan["modules"]}})
+    extra_modules = _extra_modules_of(plan, client.get("subscription"))  # separately priced modules stay on a new plan
+    if extra_modules:
+        subscription["extra_modules"] = extra_modules
+    await db.clients.update_one(
+        {"id": client_id}, {"$set": {"subscription": subscription, "modules": _modules_union(plan["modules"], extra_modules)}}
+    )
     await _log_subscription_event(
         client_id, "assigned", current_user, note=inp.note, plan_name=plan["name"], ends_at=subscription["ends_at"]
     )
@@ -2339,6 +2361,8 @@ async def assign_subscription(
 class SeatsInput(BaseModel):
     # Contracted accounts on top of the package, per role. None = keep.
     extra_seats: Optional[Dict[str, int]] = None
+    # Modules on top of the package (priced in settings `module_prices`). None = keep.
+    extra_modules: Optional[List[Module]] = None
     # Percent off the monthly total (package + extra accounts). None = keep.
     discount_percent: Optional[float] = Field(default=None, ge=0, le=100)
 
@@ -2352,12 +2376,21 @@ class SeatRow(BaseModel):
     price: Optional[float] = None  # monthly price of one extra account
 
 
+class ModuleRow(BaseModel):
+    module: str
+    price: Optional[float] = None  # monthly price (None = no separate price)
+
+
 class SeatsOut(BaseModel):
     plan_name: Optional[str] = None
     currency: str = "RSD"
     seats: List[SeatRow]
+    modules: List[ModuleRow] = Field(default_factory=list)  # extra modules on top of the package
+    plan_modules: List[str] = Field(default_factory=list)  # what the package itself includes
+    module_prices: Dict[str, float] = Field(default_factory=dict)  # the price list (superadmin's edit dialog)
     package_price: Optional[float] = None  # monthly list price of the package
     extra_amount: float = 0
+    modules_amount: float = 0
     discount_percent: float = 0
     monthly_total: Optional[float] = None
 
@@ -2376,14 +2409,18 @@ async def _seats_out(client_id: str, include_prices: bool = True) -> SeatsOut:
         f = figures[role]
         rows.append(SeatRow(role=role, used=used, included=f["included"], extra=f["extra"], limit=f["limit"], price=f["price"]))
         extra_amount += f["extra"] * (f["price"] or 0)
+    module_rows = [ModuleRow(module=m, price=(setting("module_prices") or {}).get(m)) for m in _extra_modules_of(plan, sub)]
+    modules_amount = sum(row.price or 0 for row in module_rows)
     package_price = ((plan or {}).get("prices") or {}).get("1")
     discount = float((sub or {}).get("discount_percent") or 0)
     total = None
-    if plan and (package_price is not None or extra_amount):
-        total = round(((package_price or 0) + extra_amount) * (1 - discount / 100), 2)
+    if plan and (package_price is not None or extra_amount or modules_amount):
+        total = round(((package_price or 0) + extra_amount + modules_amount) * (1 - discount / 100), 2)
     return SeatsOut(
         plan_name=(sub or {}).get("plan_name"), currency=(plan or {}).get("currency", "RSD"), seats=rows,
-        package_price=package_price, extra_amount=round(extra_amount, 2), discount_percent=discount, monthly_total=total,
+        modules=module_rows, plan_modules=list((plan or {}).get("modules") or []),
+        module_prices=dict(setting("module_prices") or {}), package_price=package_price, extra_amount=round(extra_amount, 2),
+        modules_amount=round(modules_amount, 2), discount_percent=discount, monthly_total=total,
     )
 
 
@@ -2408,6 +2445,11 @@ async def set_client_seats(client_id: str, inp: SeatsInput, current_user: User =
     if not sub or not sub.get("plan_id"):
         raise HTTPException(status_code=400, detail="Client has no subscription - assign a plan first")
     changes = {}
+    if inp.extra_modules is not None:
+        plan = await db.plans.find_one({"id": sub["plan_id"]}, {"_id": 0}) or {}
+        extra = _extra_modules_of(plan, {"extra_modules": [m.value for m in inp.extra_modules]})
+        changes["modules"] = validated_modules([Module(m) for m in _modules_union(plan.get("modules"), extra)])
+        changes["subscription.extra_modules"] = extra
     if inp.extra_seats is not None:
         changes["subscription.extra_seats"] = _validated_seat_map(inp.extra_seats, "extra_seats", integer=True)
     if inp.discount_percent is not None:
@@ -2415,7 +2457,7 @@ async def set_client_seats(client_id: str, inp: SeatsInput, current_user: User =
     if changes:
         await db.clients.update_one({"id": client_id}, {"$set": changes})
         await _log_subscription_event(
-            client_id, "seats", current_user, data={k.split(".")[1]: v for k, v in changes.items()}
+            client_id, "seats", current_user, data={k.split(".")[-1]: v for k, v in changes.items()}
         )
         await _apply_ledger(client_id, current_user)
     return await _seats_out(client_id)
@@ -2950,10 +2992,11 @@ def _month_label(day: date) -> str:
 
 
 class ChargeLine(BaseModel):
-    kind: str  # package | seats | seats_prorated | discount | manual | free
+    kind: str  # package | seats | seats_prorated | module | discount | manual | free
     label: str
     amount: float
     role: Optional[str] = None
+    module: Optional[str] = None  # kind module
     qty: Optional[int] = None
     unit_price: Optional[float] = None
     months: Optional[int] = None
@@ -3129,6 +3172,13 @@ async def _draft_lines(client: dict, cycle: str, period_start: date, period_end:
                 "kind": "seats", "label": f"extra:{role}", "role": role, "qty": f["extra"],
                 "unit_price": f["price"], "months": months, "amount": round(f["extra"] * f["price"] * months, 2),
             })
+    for key in _extra_modules_of(plan, sub):
+        price = (setting("module_prices") or {}).get(key)
+        if price:
+            lines.append({
+                "kind": "module", "label": f"module:{key}", "module": key, "qty": 1, "unit_price": price,
+                "months": months, "amount": round(price * months, 2),
+            })
     discount = float(sub.get("discount_percent") or 0)
     subtotal = round(sum(line["amount"] for line in lines), 2)
     if discount and subtotal:
@@ -3157,7 +3207,16 @@ async def _prorated_seat_lines(client: dict, today: date) -> Tuple[List[dict], D
                 "unit_price": figures[role]["price"], "months": months,
                 "amount": round(added * figures[role]["price"] * months, 2),
             })
-    return lines, {r: figures[r]["extra"] for r in SEAT_ROLES}
+    billed_modules = {f"module:{m}": 1 for m in _extra_modules_of(plan, sub) if f"module:{m}" in billed}
+    for key in _extra_modules_of(plan, sub):
+        price = (setting("module_prices") or {}).get(key)
+        if price and f"module:{key}" not in billed:
+            lines.append({
+                "kind": "module", "label": f"module:{key}", "module": key, "qty": 1, "unit_price": price,
+                "months": months, "amount": round(price * months, 2),
+            })
+        billed_modules[f"module:{key}"] = 1
+    return lines, {**{r: figures[r]["extra"] for r in SEAT_ROLES}, **billed_modules}
 
 
 async def _make_drafts(today: date, client_ids: Optional[List[str]] = None, force: bool = False) -> List[dict]:
@@ -3192,7 +3251,10 @@ async def _make_drafts(today: date, client_ids: Optional[List[str]] = None, forc
         lines, _ = await _draft_lines(client, cycle, start, period_end)
         if not lines:
             continue  # nothing priced (free plan)
-        billed = (sub.get("extra_seats") or {}) if cycle == "annual" else None
+        billed = (
+            {**(sub.get("extra_seats") or {}), **{f"module:{m}": 1 for m in _extra_modules_of(await db.plans.find_one({"id": sub["plan_id"]}, {"_id": 0}), sub)}}
+            if cycle == "annual" else None
+        )
         made.append(await _insert_draft(client, cycle, start, period_end, lines, billed))
     return made
 
@@ -3399,7 +3461,9 @@ async def _enroll_calendar(
     aligned = _month_end(max(ends, today) if from_today else ends)
     updates: Dict[str, Any] = {"subscription.billing_cycle": cycle, "subscription.ends_at": aligned.isoformat()}
     if cycle == "annual" and sub.get("extra_seats_billed") is None:
-        updates["subscription.extra_seats_billed"] = sub.get("extra_seats") or {}
+        updates["subscription.extra_seats_billed"] = {
+            **(sub.get("extra_seats") or {}), **{f"module:{m}": 1 for m in (sub.get("extra_modules") or [])},
+        }
     await db.clients.update_one({"id": client_id}, {"$set": updates})
     if free_month and not sub.get("billing_cycle") and aligned == _month_end(today) and setting("first_month_free"):
         month_start = date(today.year, today.month, 1)
@@ -3418,6 +3482,26 @@ async def _enroll_calendar(
         data={"cycle": cycle}, source=source,
     )
     await _apply_ledger(client_id, user)
+
+
+async def _migrate_seat_prices() -> None:
+    """One-off: the price of an extra account used to be set per plan; it is one price list now (settings
+    `seat_prices`). A role's price is taken from the plans when they all agree, else the default stays."""
+    plans = await db.plans.find({"seat_prices": {"$exists": True}}, {"_id": 0, "id": 1, "name": 1, "seat_prices": 1}).to_list(None)
+    if not plans:
+        return
+    stored = (await db.app_settings.find_one({"_id": "global"}) or {}).get("seat_prices")
+    if stored is None:
+        chosen = dict(SETTINGS_DEFAULTS["seat_prices"])
+        for role in SEAT_ROLES:
+            values = {float(p["seat_prices"][role]) for p in plans if (p.get("seat_prices") or {}).get(role) is not None}
+            if len(values) == 1:
+                chosen[role] = values.pop()
+            elif len(values) > 1:
+                logger.warning("Seat price for %s differs between plans (%s): the default is used", role, sorted(values))
+        await db.app_settings.update_one({"_id": "global"}, {"$set": {"seat_prices": chosen}}, upsert=True)
+        await refresh_settings(force=True)
+    await db.plans.update_many({}, {"$unset": {"seat_prices": ""}})
 
 
 async def _migrate_calendar_billing() -> None:
@@ -3660,6 +3744,10 @@ async def client_billing_qr(client_id: str, current_user: User = Depends(require
 # address). Every email is logged in `billing_emails` (also when it isn't sent:
 # `skipped` = disabled / no_recipients / smtp_off) and charge emails are marked
 # on the charge (`notified.<event>`), so the daily cron never sends one twice.
+_MODULE_NAMES = {
+    "sr": {"warehouse": "Magacin", "stock": "Stanje", "expiry": "Rokovi", "reports": "Izveštaji", "focus": "Roba u fokusu", "targets": "Ciljevi", "sef": "SEF (e-fakture)"},
+    "en": {"warehouse": "Warehouse", "stock": "Stock", "expiry": "Expiry", "reports": "Reports", "focus": "Goods in focus", "targets": "Targets", "sef": "SEF (e-invoices)"},
+}
 _ROLE_NAMES = {
     "sr": {"admin": "administrator", "operator": "komercijalista", "warehouse": "magacioner"},
     "en": {"admin": "admin", "operator": "sales rep", "warehouse": "warehouse"},
@@ -3698,6 +3786,12 @@ def _line_text(line: dict, lang: str) -> str:
         months = line.get("months") or 1
         head = "Dodatni nalozi" if lang == "sr" else "Extra accounts"
         text = f"{head}: {role} × {line.get('qty')}"
+        if months > 1:
+            text += f" × {months} {'mes.' if lang == 'sr' else 'mo.'}"
+        return text
+    if kind == "module":
+        months = line.get("months") or 1
+        text = f"{'Modul' if lang == 'sr' else 'Module'}: {_MODULE_NAMES[lang].get(line.get('module') or '', line.get('module') or '')}"
         if months > 1:
             text += f" × {months} {'mes.' if lang == 'sr' else 'mo.'}"
         return text
@@ -4306,6 +4400,8 @@ class SettingsInput(BaseModel):
     billing_from_name: Optional[str] = Field(default=None, max_length=80)
     billing_reply_to: Optional[str] = Field(default=None, max_length=254)
     bilingual_emails: Optional[bool] = None
+    seat_prices: Optional[Dict[str, float]] = None  # role -> monthly price of an extra account (a role not sent keeps its price)
+    module_prices: Optional[Dict[str, float]] = None  # module -> monthly price (0 / missing = no separate price)
 
 
 class SettingsOut(BaseModel):
@@ -4330,6 +4426,18 @@ def normalize_bank_account(value: str) -> str:
     if int(raw) % 97 != 1:
         raise ValueError("Account control number is not valid")
     return raw
+
+
+def _validated_module_prices(values: Dict[str, float]) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for key, amount in values.items():
+        if key not in ALL_MODULES:
+            raise HTTPException(status_code=400, detail=f"module_prices: unknown module {key}")
+        if float(amount) < 0 or float(amount) > 1_000_000_000:
+            raise HTTPException(status_code=400, detail=f"module_prices: invalid price for {key}")
+        if float(amount) > 0:  # 0 = no separate price
+            out[key] = round(float(amount), 2)
+    return out
 
 
 def _validated_settings(inp: SettingsInput) -> Dict[str, Any]:
@@ -4358,6 +4466,10 @@ def _validated_settings(inp: SettingsInput) -> Dict[str, Any]:
             raise HTTPException(status_code=400, detail=f"{field}: {exc}")
         if field == "expiry_alert_days":
             value = _validated_alert_days(value)
+        elif field == "seat_prices":
+            value = {**setting("seat_prices"), **_validated_seat_map(value, "seat_prices", integer=False)}
+        elif field == "module_prices":
+            value = _validated_module_prices(value)
         changes[field] = value
     merged = {**effective_settings(), **{k: (SETTINGS_DEFAULTS[k] if v is None else v) for k, v in changes.items()}}
     if merged["block_after_day"] < merged["due_day"]:
