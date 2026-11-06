@@ -4,6 +4,7 @@ export type ChargeLine = {
   label: string;
   amount: number;
   role?: string | null;
+  module?: string | null;
   qty?: number | null;
   unit_price?: number | null;
   months?: number | null;

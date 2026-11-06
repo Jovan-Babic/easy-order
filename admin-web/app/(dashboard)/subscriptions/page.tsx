@@ -256,9 +256,6 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
   const [included, setIncluded] = useState<Record<string, string>>(
     Object.fromEntries(SEAT_ROLES.map((r) => [r, plan?.included_seats?.[r] !== undefined ? String(plan.included_seats[r]) : ""]))
   );
-  const [seatPrices, setSeatPrices] = useState<Record<string, string>>(
-    Object.fromEntries(SEAT_ROLES.map((r) => [r, plan?.seat_prices?.[r] !== undefined ? String(plan.seat_prices[r]) : ""]))
-  );
   const { busy, error, send } = useSubmit(onDone);
   return (
     <Modal title={plan ? t("editPlan") : t("newPlan")} onClose={onClose}>
@@ -273,7 +270,6 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
             active,
             apply_to_clients: apply,
             included_seats: Object.fromEntries(Object.entries(included).filter(([, v]) => v !== "").map(([r, v]) => [r, Math.max(0, Math.floor(Number(v)))])),
-            seat_prices: Object.fromEntries(Object.entries(seatPrices).filter(([, v]) => v !== "").map(([r, v]) => [r, Math.max(0, Number(v))])),
             // Prices of other periods (set elsewhere) are kept by sending them back.
             prices: {
               ...Object.fromEntries(Object.entries(plan?.prices ?? {}).filter(([m]) => !PRICE_PERIODS.includes(Number(m)))),
@@ -334,17 +330,6 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
                   step="1"
                   value={included[r]}
                   onChange={(e) => setIncluded({ ...included, [r]: e.target.value })}
-                  className={`${input} mt-0.5 block w-full text-onSurface`}
-                />
-              </label>
-              <label className="text-[11px] text-muted">
-                {t("planSeatPrice")}
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={seatPrices[r]}
-                  onChange={(e) => setSeatPrices({ ...seatPrices, [r]: e.target.value })}
                   className={`${input} mt-0.5 block w-full text-onSurface`}
                 />
               </label>

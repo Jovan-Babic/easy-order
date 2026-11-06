@@ -1,6 +1,7 @@
 from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, File, Query, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from starlette.concurrency import run_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -34,7 +35,8 @@ from urllib.parse import quote
 import cloudinary
 import cloudinary.uploader
 
-from calc import compute_order_totals, effective_qty, line_net, line_vat
+import sef
+from calc import compute_order_totals, effective_qty, invoice_amounts as calc_invoice_amounts, line_net, line_vat
 
 
 ROOT_DIR = Path(__file__).parent
@@ -145,6 +147,8 @@ async def lifespan(app: FastAPI):
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     db = mongo_client[os.environ["DB_NAME"]]
     await db.customers.create_index("client_id")
+    await db.einvoices.create_index("request_id", unique=True)
+    await db.einvoices.create_index([("client_id", 1), ("order_id", 1), ("created_at", -1)])
     await db.products.create_index("client_id")
     await db.focus_items.create_index([("client_id", 1), ("product_id", 1)], unique=True)
     await db.targets.create_index(
@@ -199,6 +203,7 @@ async def lifespan(app: FastAPI):
     await _seed_units()
     await refresh_settings(force=True)
     await _migrate_calendar_billing()
+    await _migrate_seat_prices()
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at")
     await db.password_reset_tokens.create_index("user_id")
@@ -242,9 +247,12 @@ class Module(str, Enum):
     REPORTS = "reports"  # order reports
     FOCUS = "focus"  # goods in focus: products the sales reps should push (PLAN_FOKUS_I_CILJEVI.md)
     TARGETS = "targets"  # sales targets and progress per sales rep
+    SEF = "sef"  # e-invoices through SEF (Serbia): sold as a separate package, never on by default
 
 
 ALL_MODULES = [m.value for m in Module]
+# What a client without a stored choice (old clients, new clients before a plan) gets: SEF is a paid add-on.
+DEFAULT_MODULES = [m for m in ALL_MODULES if m != Module.SEF.value]
 # A module can only be on when the ones it builds on are on too.
 MODULE_REQUIRES: Dict[Module, List[Module]] = {Module.STOCK: [Module.WAREHOUSE], Module.EXPIRY: [Module.STOCK]}
 
@@ -252,7 +260,7 @@ MODULE_REQUIRES: Dict[Module, List[Module]] = {Module.STOCK: [Module.WAREHOUSE],
 def effective_modules(client_doc: Optional[dict]) -> List[str]:
     """Clients created before modules existed (no field) keep everything."""
     stored = (client_doc or {}).get("modules")
-    return list(ALL_MODULES) if stored is None else [m for m in ALL_MODULES if m in stored]
+    return list(DEFAULT_MODULES) if stored is None else [m for m in ALL_MODULES if m in stored]
 
 
 def validated_modules(values: List[Module]) -> List[str]:
@@ -311,6 +319,10 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     "billing_from_name": "",
     "billing_reply_to": "",
     "bilingual_emails": True,
+    # price list (one place for every client): monthly price of one extra account per role, and of an
+    # optional module per module key (missing = the module has no separate price)
+    "seat_prices": {"operator": 1000, "warehouse": 1500, "admin": 2000},
+    "module_prices": {},
 }
 SETTINGS_TTL_SECONDS = 60
 _settings_cache: Dict[str, Any] = {}
@@ -434,7 +446,7 @@ class Client(BaseModel):
     # Days before expiry at which batches show up as warnings (warehouse/admin).
     expiry_alert_days: List[int] = Field(default_factory=lambda: list(setting("expiry_alert_days")))
     # Enabled modules (Module values); a stored client without the field has all.
-    modules: List[str] = Field(default_factory=lambda: list(ALL_MODULES))
+    modules: List[str] = Field(default_factory=lambda: list(DEFAULT_MODULES))
     # Subscription (superadmin manages it in /subscriptions): plan_id, plan_name,
     # starts_at, ends_at, note, source, canceled_at, purge_paused, purged_at.
     subscription: Optional[Dict[str, Any]] = None
@@ -1893,7 +1905,7 @@ async def create_client(inp: ClientCreateInput, current_user: User = Depends(req
         settings["modules"] = list(plan["modules"])
         settings["subscription"] = _new_subscription(plan, inp.subscription_ends_at or _today().isoformat(), None, "manual")
     else:
-        settings["modules"] = validated_modules(inp.modules if inp.modules is not None else list(Module))
+        settings["modules"] = validated_modules(inp.modules if inp.modules is not None else [Module(m) for m in DEFAULT_MODULES])
 
     client_obj = Client(
         **{
@@ -2007,7 +2019,6 @@ class Plan(BaseModel):
     # Accounts the package includes per role (admin/warehouse/operator); an empty map
     # or a missing role = no limit. Price per extra account per month.
     included_seats: Dict[str, int] = Field(default_factory=dict)
-    seat_prices: Dict[str, float] = Field(default_factory=dict)
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -2018,9 +2029,9 @@ class PlanInput(BaseModel):
     active: bool = True
     # months -> amount; None = keep the stored prices (update) / no prices (create).
     prices: Optional[Dict[str, float]] = None
-    # role -> count / monthly price; None = keep (update) / none (create).
+    # role -> count; None = keep (update) / none (create). The price of an extra account is
+    # one for everybody: settings `seat_prices`.
     included_seats: Optional[Dict[str, int]] = None
-    seat_prices: Optional[Dict[str, float]] = None
     # On update: also rewrite the modules of every client currently on this plan.
     apply_to_clients: bool = False
 
@@ -2113,6 +2124,18 @@ def _validated_seat_map(values: Optional[Dict[str, float]], name: str, integer: 
     return out
 
 
+def _modules_union(plan_modules: Optional[List[str]], extra: Optional[List[str]]) -> List[str]:
+    """The client's modules on a plan: the plan's plus the extra (separately priced) ones."""
+    both = set(plan_modules or []) | set(extra or [])
+    return [m for m in ALL_MODULES if m in both]
+
+
+def _extra_modules_of(plan: Optional[dict], sub: Optional[dict]) -> List[str]:
+    """Contracted extra modules that the plan does not already include."""
+    included = set((plan or {}).get("modules") or [])
+    return [m for m in ALL_MODULES if m in ((sub or {}).get("extra_modules") or []) and m not in included]
+
+
 def _seat_figures(plan: Optional[dict], sub: Optional[dict]) -> dict:
     """Per role: included (plan) + extra (contract) = limit; None = unlimited."""
     included = (plan or {}).get("included_seats") or {}
@@ -2124,7 +2147,7 @@ def _seat_figures(plan: Optional[dict], sub: Optional[dict]) -> dict:
         out[role] = {
             "included": inc, "extra": ext,
             "limit": None if inc is None else int(inc) + ext,
-            "price": ((plan or {}).get("seat_prices") or {}).get(role),
+            "price": (setting("seat_prices") or {}).get(role),
         }
     return out
 
@@ -2242,7 +2265,6 @@ async def create_plan(inp: PlanInput, current_user: User = Depends(require_roles
         name=inp.name.strip(), description=inp.description or "", modules=validated_modules(inp.modules), active=inp.active,
         prices=_validated_prices(inp.prices),
         included_seats=_validated_seat_map(inp.included_seats, "included_seats", integer=True),
-        seat_prices=_validated_seat_map(inp.seat_prices, "seat_prices", integer=False),
     )
     await db.plans.insert_one({**plan.dict(), "_id": plan.id})
     await _audit(current_user, "plan.create", "plan", plan.id, plan.name)
@@ -2265,15 +2287,17 @@ async def update_plan(plan_id: str, inp: PlanInput, current_user: User = Depends
         updated["prices"] = _validated_prices(inp.prices)
     if inp.included_seats is not None:
         updated["included_seats"] = _validated_seat_map(inp.included_seats, "included_seats", integer=True)
-    if inp.seat_prices is not None:
-        updated["seat_prices"] = _validated_seat_map(inp.seat_prices, "seat_prices", integer=False)
     await db.plans.replace_one({"id": plan_id}, {**updated, "_id": plan_id})
     await _audit(current_user, "plan.update", "plan", plan_id, updated["name"], data={"apply_to_clients": inp.apply_to_clients})
     # Clients keep their own copy of the plan name; refresh it, and optionally the modules.
     await db.clients.update_many({"subscription.plan_id": plan_id}, {"$set": {"subscription.plan_name": updated["name"]}})
     if inp.apply_to_clients:
-        async for client in db.clients.find({"subscription.plan_id": plan_id}, {"_id": 0, "id": 1}):
-            await db.clients.update_one({"id": client["id"]}, {"$set": {"modules": updated["modules"]}})
+        async for client in db.clients.find({"subscription.plan_id": plan_id}, {"_id": 0, "id": 1, "subscription": 1}):
+            extra = _extra_modules_of(updated, client.get("subscription"))
+            await db.clients.update_one(
+                {"id": client["id"]},
+                {"$set": {"modules": _modules_union(updated["modules"], extra), "subscription.extra_modules": extra}},
+            )
     return Plan(**updated)
 
 
@@ -2314,7 +2338,12 @@ async def assign_subscription(
     for kept in ("extra_seats", "discount_percent", *_BILLING_KEPT_FIELDS):
         if (client.get("subscription") or {}).get(kept) is not None:
             subscription[kept] = client["subscription"][kept]
-    await db.clients.update_one({"id": client_id}, {"$set": {"subscription": subscription, "modules": plan["modules"]}})
+    extra_modules = _extra_modules_of(plan, client.get("subscription"))  # separately priced modules stay on a new plan
+    if extra_modules:
+        subscription["extra_modules"] = extra_modules
+    await db.clients.update_one(
+        {"id": client_id}, {"$set": {"subscription": subscription, "modules": _modules_union(plan["modules"], extra_modules)}}
+    )
     await _log_subscription_event(
         client_id, "assigned", current_user, note=inp.note, plan_name=plan["name"], ends_at=subscription["ends_at"]
     )
@@ -2332,6 +2361,8 @@ async def assign_subscription(
 class SeatsInput(BaseModel):
     # Contracted accounts on top of the package, per role. None = keep.
     extra_seats: Optional[Dict[str, int]] = None
+    # Modules on top of the package (priced in settings `module_prices`). None = keep.
+    extra_modules: Optional[List[Module]] = None
     # Percent off the monthly total (package + extra accounts). None = keep.
     discount_percent: Optional[float] = Field(default=None, ge=0, le=100)
 
@@ -2345,12 +2376,21 @@ class SeatRow(BaseModel):
     price: Optional[float] = None  # monthly price of one extra account
 
 
+class ModuleRow(BaseModel):
+    module: str
+    price: Optional[float] = None  # monthly price (None = no separate price)
+
+
 class SeatsOut(BaseModel):
     plan_name: Optional[str] = None
     currency: str = "RSD"
     seats: List[SeatRow]
+    modules: List[ModuleRow] = Field(default_factory=list)  # extra modules on top of the package
+    plan_modules: List[str] = Field(default_factory=list)  # what the package itself includes
+    module_prices: Dict[str, float] = Field(default_factory=dict)  # the price list (superadmin's edit dialog)
     package_price: Optional[float] = None  # monthly list price of the package
     extra_amount: float = 0
+    modules_amount: float = 0
     discount_percent: float = 0
     monthly_total: Optional[float] = None
 
@@ -2369,14 +2409,18 @@ async def _seats_out(client_id: str, include_prices: bool = True) -> SeatsOut:
         f = figures[role]
         rows.append(SeatRow(role=role, used=used, included=f["included"], extra=f["extra"], limit=f["limit"], price=f["price"]))
         extra_amount += f["extra"] * (f["price"] or 0)
+    module_rows = [ModuleRow(module=m, price=(setting("module_prices") or {}).get(m)) for m in _extra_modules_of(plan, sub)]
+    modules_amount = sum(row.price or 0 for row in module_rows)
     package_price = ((plan or {}).get("prices") or {}).get("1")
     discount = float((sub or {}).get("discount_percent") or 0)
     total = None
-    if plan and (package_price is not None or extra_amount):
-        total = round(((package_price or 0) + extra_amount) * (1 - discount / 100), 2)
+    if plan and (package_price is not None or extra_amount or modules_amount):
+        total = round(((package_price or 0) + extra_amount + modules_amount) * (1 - discount / 100), 2)
     return SeatsOut(
         plan_name=(sub or {}).get("plan_name"), currency=(plan or {}).get("currency", "RSD"), seats=rows,
-        package_price=package_price, extra_amount=round(extra_amount, 2), discount_percent=discount, monthly_total=total,
+        modules=module_rows, plan_modules=list((plan or {}).get("modules") or []),
+        module_prices=dict(setting("module_prices") or {}), package_price=package_price, extra_amount=round(extra_amount, 2),
+        modules_amount=round(modules_amount, 2), discount_percent=discount, monthly_total=total,
     )
 
 
@@ -2401,6 +2445,11 @@ async def set_client_seats(client_id: str, inp: SeatsInput, current_user: User =
     if not sub or not sub.get("plan_id"):
         raise HTTPException(status_code=400, detail="Client has no subscription - assign a plan first")
     changes = {}
+    if inp.extra_modules is not None:
+        plan = await db.plans.find_one({"id": sub["plan_id"]}, {"_id": 0}) or {}
+        extra = _extra_modules_of(plan, {"extra_modules": [m.value for m in inp.extra_modules]})
+        changes["modules"] = validated_modules([Module(m) for m in _modules_union(plan.get("modules"), extra)])
+        changes["subscription.extra_modules"] = extra
     if inp.extra_seats is not None:
         changes["subscription.extra_seats"] = _validated_seat_map(inp.extra_seats, "extra_seats", integer=True)
     if inp.discount_percent is not None:
@@ -2408,7 +2457,7 @@ async def set_client_seats(client_id: str, inp: SeatsInput, current_user: User =
     if changes:
         await db.clients.update_one({"id": client_id}, {"$set": changes})
         await _log_subscription_event(
-            client_id, "seats", current_user, data={k.split(".")[1]: v for k, v in changes.items()}
+            client_id, "seats", current_user, data={k.split(".")[-1]: v for k, v in changes.items()}
         )
         await _apply_ledger(client_id, current_user)
     return await _seats_out(client_id)
@@ -2943,10 +2992,11 @@ def _month_label(day: date) -> str:
 
 
 class ChargeLine(BaseModel):
-    kind: str  # package | seats | seats_prorated | discount | manual | free
+    kind: str  # package | seats | seats_prorated | module | discount | manual | free
     label: str
     amount: float
     role: Optional[str] = None
+    module: Optional[str] = None  # kind module
     qty: Optional[int] = None
     unit_price: Optional[float] = None
     months: Optional[int] = None
@@ -3122,6 +3172,13 @@ async def _draft_lines(client: dict, cycle: str, period_start: date, period_end:
                 "kind": "seats", "label": f"extra:{role}", "role": role, "qty": f["extra"],
                 "unit_price": f["price"], "months": months, "amount": round(f["extra"] * f["price"] * months, 2),
             })
+    for key in _extra_modules_of(plan, sub):
+        price = (setting("module_prices") or {}).get(key)
+        if price:
+            lines.append({
+                "kind": "module", "label": f"module:{key}", "module": key, "qty": 1, "unit_price": price,
+                "months": months, "amount": round(price * months, 2),
+            })
     discount = float(sub.get("discount_percent") or 0)
     subtotal = round(sum(line["amount"] for line in lines), 2)
     if discount and subtotal:
@@ -3150,7 +3207,16 @@ async def _prorated_seat_lines(client: dict, today: date) -> Tuple[List[dict], D
                 "unit_price": figures[role]["price"], "months": months,
                 "amount": round(added * figures[role]["price"] * months, 2),
             })
-    return lines, {r: figures[r]["extra"] for r in SEAT_ROLES}
+    billed_modules = {f"module:{m}": 1 for m in _extra_modules_of(plan, sub) if f"module:{m}" in billed}
+    for key in _extra_modules_of(plan, sub):
+        price = (setting("module_prices") or {}).get(key)
+        if price and f"module:{key}" not in billed:
+            lines.append({
+                "kind": "module", "label": f"module:{key}", "module": key, "qty": 1, "unit_price": price,
+                "months": months, "amount": round(price * months, 2),
+            })
+        billed_modules[f"module:{key}"] = 1
+    return lines, {**{r: figures[r]["extra"] for r in SEAT_ROLES}, **billed_modules}
 
 
 async def _make_drafts(today: date, client_ids: Optional[List[str]] = None, force: bool = False) -> List[dict]:
@@ -3185,7 +3251,10 @@ async def _make_drafts(today: date, client_ids: Optional[List[str]] = None, forc
         lines, _ = await _draft_lines(client, cycle, start, period_end)
         if not lines:
             continue  # nothing priced (free plan)
-        billed = (sub.get("extra_seats") or {}) if cycle == "annual" else None
+        billed = (
+            {**(sub.get("extra_seats") or {}), **{f"module:{m}": 1 for m in _extra_modules_of(await db.plans.find_one({"id": sub["plan_id"]}, {"_id": 0}), sub)}}
+            if cycle == "annual" else None
+        )
         made.append(await _insert_draft(client, cycle, start, period_end, lines, billed))
     return made
 
@@ -3392,7 +3461,9 @@ async def _enroll_calendar(
     aligned = _month_end(max(ends, today) if from_today else ends)
     updates: Dict[str, Any] = {"subscription.billing_cycle": cycle, "subscription.ends_at": aligned.isoformat()}
     if cycle == "annual" and sub.get("extra_seats_billed") is None:
-        updates["subscription.extra_seats_billed"] = sub.get("extra_seats") or {}
+        updates["subscription.extra_seats_billed"] = {
+            **(sub.get("extra_seats") or {}), **{f"module:{m}": 1 for m in (sub.get("extra_modules") or [])},
+        }
     await db.clients.update_one({"id": client_id}, {"$set": updates})
     if free_month and not sub.get("billing_cycle") and aligned == _month_end(today) and setting("first_month_free"):
         month_start = date(today.year, today.month, 1)
@@ -3411,6 +3482,26 @@ async def _enroll_calendar(
         data={"cycle": cycle}, source=source,
     )
     await _apply_ledger(client_id, user)
+
+
+async def _migrate_seat_prices() -> None:
+    """One-off: the price of an extra account used to be set per plan; it is one price list now (settings
+    `seat_prices`). A role's price is taken from the plans when they all agree, else the default stays."""
+    plans = await db.plans.find({"seat_prices": {"$exists": True}}, {"_id": 0, "id": 1, "name": 1, "seat_prices": 1}).to_list(None)
+    if not plans:
+        return
+    stored = (await db.app_settings.find_one({"_id": "global"}) or {}).get("seat_prices")
+    if stored is None:
+        chosen = dict(SETTINGS_DEFAULTS["seat_prices"])
+        for role in SEAT_ROLES:
+            values = {float(p["seat_prices"][role]) for p in plans if (p.get("seat_prices") or {}).get(role) is not None}
+            if len(values) == 1:
+                chosen[role] = values.pop()
+            elif len(values) > 1:
+                logger.warning("Seat price for %s differs between plans (%s): the default is used", role, sorted(values))
+        await db.app_settings.update_one({"_id": "global"}, {"$set": {"seat_prices": chosen}}, upsert=True)
+        await refresh_settings(force=True)
+    await db.plans.update_many({}, {"$unset": {"seat_prices": ""}})
 
 
 async def _migrate_calendar_billing() -> None:
@@ -3653,6 +3744,10 @@ async def client_billing_qr(client_id: str, current_user: User = Depends(require
 # address). Every email is logged in `billing_emails` (also when it isn't sent:
 # `skipped` = disabled / no_recipients / smtp_off) and charge emails are marked
 # on the charge (`notified.<event>`), so the daily cron never sends one twice.
+_MODULE_NAMES = {
+    "sr": {"warehouse": "Magacin", "stock": "Stanje", "expiry": "Rokovi", "reports": "Izveštaji", "focus": "Roba u fokusu", "targets": "Ciljevi", "sef": "SEF (e-fakture)"},
+    "en": {"warehouse": "Warehouse", "stock": "Stock", "expiry": "Expiry", "reports": "Reports", "focus": "Goods in focus", "targets": "Targets", "sef": "SEF (e-invoices)"},
+}
 _ROLE_NAMES = {
     "sr": {"admin": "administrator", "operator": "komercijalista", "warehouse": "magacioner"},
     "en": {"admin": "admin", "operator": "sales rep", "warehouse": "warehouse"},
@@ -3691,6 +3786,12 @@ def _line_text(line: dict, lang: str) -> str:
         months = line.get("months") or 1
         head = "Dodatni nalozi" if lang == "sr" else "Extra accounts"
         text = f"{head}: {role} × {line.get('qty')}"
+        if months > 1:
+            text += f" × {months} {'mes.' if lang == 'sr' else 'mo.'}"
+        return text
+    if kind == "module":
+        months = line.get("months") or 1
+        text = f"{'Modul' if lang == 'sr' else 'Module'}: {_MODULE_NAMES[lang].get(line.get('module') or '', line.get('module') or '')}"
         if months > 1:
             text += f" × {months} {'mes.' if lang == 'sr' else 'mo.'}"
         return text
@@ -4299,6 +4400,8 @@ class SettingsInput(BaseModel):
     billing_from_name: Optional[str] = Field(default=None, max_length=80)
     billing_reply_to: Optional[str] = Field(default=None, max_length=254)
     bilingual_emails: Optional[bool] = None
+    seat_prices: Optional[Dict[str, float]] = None  # role -> monthly price of an extra account (a role not sent keeps its price)
+    module_prices: Optional[Dict[str, float]] = None  # module -> monthly price (0 / missing = no separate price)
 
 
 class SettingsOut(BaseModel):
@@ -4323,6 +4426,18 @@ def normalize_bank_account(value: str) -> str:
     if int(raw) % 97 != 1:
         raise ValueError("Account control number is not valid")
     return raw
+
+
+def _validated_module_prices(values: Dict[str, float]) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for key, amount in values.items():
+        if key not in ALL_MODULES:
+            raise HTTPException(status_code=400, detail=f"module_prices: unknown module {key}")
+        if float(amount) < 0 or float(amount) > 1_000_000_000:
+            raise HTTPException(status_code=400, detail=f"module_prices: invalid price for {key}")
+        if float(amount) > 0:  # 0 = no separate price
+            out[key] = round(float(amount), 2)
+    return out
 
 
 def _validated_settings(inp: SettingsInput) -> Dict[str, Any]:
@@ -4351,6 +4466,10 @@ def _validated_settings(inp: SettingsInput) -> Dict[str, Any]:
             raise HTTPException(status_code=400, detail=f"{field}: {exc}")
         if field == "expiry_alert_days":
             value = _validated_alert_days(value)
+        elif field == "seat_prices":
+            value = {**setting("seat_prices"), **_validated_seat_map(value, "seat_prices", integer=False)}
+        elif field == "module_prices":
+            value = _validated_module_prices(value)
         changes[field] = value
     merged = {**effective_settings(), **{k: (SETTINGS_DEFAULTS[k] if v is None else v) for k, v in changes.items()}}
     if merged["block_after_day"] < merged["due_day"]:
@@ -6066,6 +6185,7 @@ async def update_order(order_id: str, inp: OrderInput, current_user: User = Depe
     creator (operator) or an admin. Prices are re-snapshotted from the
     current catalog, like on creation."""
     order = await _get_order_for_processing(order_id, current_user)
+    await _require_no_active_einvoice(order_id)
     if _status_value(order) != OrderStatus.NEW.value:
         raise HTTPException(status_code=409, detail="Only new orders can be edited")
     customer, items = await _resolve_order_lines(order["client_id"], inp)
@@ -6087,6 +6207,7 @@ async def update_order(order_id: str, inp: OrderInput, current_user: User = Depe
 @api_router.delete("/orders/{order_id}")
 async def delete_order(order_id: str, current_user: User = Depends(require_manager)):
     order = await get_scoped_or_404("orders", order_id, current_user)
+    await _require_no_active_einvoice(order_id)
     if _status_value(order) != OrderStatus.NEW.value:
         raise HTTPException(status_code=409, detail="Only new orders can be deleted - cancel the order instead")
     await db.orders.delete_one({"id": order_id})
@@ -6198,6 +6319,7 @@ async def change_order_status(
     order_id: str, inp: StatusChangeInput, current_user: User = Depends(get_current_user)
 ):
     order = await _get_order_for_processing(order_id, current_user)
+    await _require_no_active_einvoice(order_id)
     _require_not_taken_by_other(order, current_user)
     current = _status_value(order)
     target = inp.status.value
@@ -7893,6 +8015,412 @@ async def seed_data():
 
 
 app = FastAPI(lifespan=lifespan)
+# ---------------- SEF e-invoices (module `sef`, plan .claude/DOCS/PLAN_SEF_MODUL.md, phase S3) ----------------
+INTEGRATION_SECRET = os.environ.get("INTEGRATION_SECRET", "")
+# Tests and local development can point the client at a fake SEF; never in production.
+SEF_BASE_URL_OVERRIDE = "" if IS_PRODUCTION else os.environ.get("SEF_BASE_URL", "").rstrip("/")
+_SEF_ACTIVE = ("sending", "sent", "approved")  # statuses of an invoice that blocks issuing another one for the order
+_sef_manager = require_module(Module.SEF, Role.ADMIN, Role.SUPERADMIN)
+
+
+def _integration_secret() -> str:
+    if INTEGRATION_SECRET:
+        return INTEGRATION_SECRET
+    if IS_PRODUCTION:
+        raise HTTPException(status_code=503, detail="Integration secret is not configured")
+    return JWT_SECRET
+
+
+def _belgrade_today() -> date:
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("Europe/Belgrade")).date()
+    except Exception:  # no tz database: UTC+1 is close enough for a date
+        return (datetime.now(timezone.utc) + timedelta(hours=1)).date()
+
+
+def _sef_target_client_id(user: User, client_id: Optional[str]) -> str:
+    if user.role == Role.SUPERADMIN:
+        if not client_id:
+            raise HTTPException(status_code=400, detail="client_id is required for superadmin")
+        return client_id
+    return user.client_id
+
+
+def _sef_public(client: dict) -> Dict[str, Any]:
+    cfg = client.get("sef") or {}
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "env": cfg.get("env") or "demo",
+        "key_set": bool(cfg.get("api_key_enc")),
+        "key_set_at": cfg.get("key_set_at"),
+        "key_hint": cfg.get("key_hint"),
+        "payment_terms_days": cfg.get("payment_terms_days", 15),
+        "last_check_at": cfg.get("last_check_at"),
+        "last_check_ok": cfg.get("last_check_ok"),
+        "last_check_message": cfg.get("last_check_message"),
+        "base_url_override": SEF_BASE_URL_OVERRIDE or None,
+    }
+
+
+def _sef_client_from(client: dict) -> sef.SefClient:
+    cfg = client.get("sef") or {}
+    if not cfg.get("api_key_enc"):
+        raise HTTPException(status_code=400, detail="SEF API key is not set")
+    key = sef.decrypt_secret(cfg["api_key_enc"], _integration_secret())
+    if not key:
+        raise HTTPException(status_code=400, detail="SEF API key cannot be read, set it again")
+    env = cfg.get("env") or "demo"
+    return sef.SefClient(SEF_BASE_URL_OVERRIDE or sef.SEF_HOSTS[env], key)
+
+
+async def _sef_call(fn, *args):
+    return await run_in_threadpool(fn, *args)
+
+
+class SefSettingsInput(BaseModel):
+    client_id: Optional[str] = None
+    enabled: Optional[bool] = None
+    env: Optional[Literal["demo", "production"]] = None
+    api_key: Optional[str] = Field(default=None, max_length=200)  # None = keep, "" = remove
+    payment_terms_days: Optional[int] = Field(default=None, ge=0, le=365)
+
+
+@api_router.get("/integrations/sef")
+async def get_sef_settings(client_id: Optional[str] = None, current_user: User = Depends(_sef_manager)):
+    target = _sef_target_client_id(current_user, client_id)
+    client = await db.clients.find_one({"id": target}, {"_id": 0, "sef": 1})
+    if client is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return _sef_public(client)
+
+
+@api_router.put("/integrations/sef")
+async def put_sef_settings(inp: SefSettingsInput, current_user: User = Depends(_sef_manager)):
+    target = _sef_target_client_id(current_user, inp.client_id)
+    client = await db.clients.find_one({"id": target}, {"_id": 0, "sef": 1, "name": 1})
+    if client is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    updates: Dict[str, Any] = {}
+    if inp.enabled is not None:
+        updates["sef.enabled"] = inp.enabled
+    if inp.env is not None:
+        updates["sef.env"] = inp.env
+        updates["sef.last_check_at"] = None  # the key belongs to one environment: check again
+        updates["sef.last_check_ok"] = None
+        updates["sef.last_check_message"] = None
+    if inp.payment_terms_days is not None:
+        updates["sef.payment_terms_days"] = inp.payment_terms_days
+    action = "sef.settings"
+    if inp.api_key is not None:
+        key = inp.api_key.strip()
+        if key:
+            updates["sef.api_key_enc"] = sef.encrypt_secret(key, _integration_secret())
+            updates["sef.key_set_at"] = now_iso()
+            updates["sef.key_hint"] = "…" + key[-4:] if len(key) > 8 else None
+            updates["sef.last_check_at"] = None
+            updates["sef.last_check_ok"] = None
+            updates["sef.last_check_message"] = None
+            action = "sef.key_set"
+        else:
+            updates.update({"sef.api_key_enc": None, "sef.key_set_at": None, "sef.key_hint": None,
+                            "sef.last_check_at": None, "sef.last_check_ok": None, "sef.last_check_message": None})
+            action = "sef.key_removed"
+    if updates:
+        await db.clients.update_one({"id": target}, {"$set": updates})
+        # the key itself is never logged: only that it was set or removed
+        await _audit(current_user, action, "client", target, client.get("name"), target)
+    return _sef_public(await db.clients.find_one({"id": target}, {"_id": 0, "sef": 1}) or {})
+
+
+@api_router.post("/integrations/sef/test")
+async def test_sef_connection(client_id: Optional[str] = None, current_user: User = Depends(_sef_manager)):
+    target = _sef_target_client_id(current_user, client_id)
+    client = await db.clients.find_one({"id": target}, {"_id": 0, "sef": 1})
+    if client is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    api = _sef_client_from(client)
+    ok, message = True, None
+    try:
+        version = await _sef_call(api.version)
+        message = f"SEF {version.get('Version')}" if isinstance(version, dict) and version.get("Version") else "OK"
+    except sef.SefError as err:
+        ok, message = False, (f"{err.status}: " if err.status else "") + err.message
+    await db.clients.update_one(
+        {"id": target},
+        {"$set": {"sef.last_check_at": now_iso(), "sef.last_check_ok": ok, "sef.last_check_message": message}},
+    )
+    return {"ok": ok, "message": message}
+
+
+class EinvoiceDates(BaseModel):
+    issue_date: Optional[str] = None
+    delivery_date: Optional[str] = None
+    due_date: Optional[str] = None
+    invoice_number: Optional[str] = Field(default=None, max_length=100)  # manual numbering, orders not shipped yet
+    validate_on_sef: bool = False  # preview only: also ask SEF to validate (demo environment only)
+    include_xml: bool = False
+
+
+class EinvoiceActionInput(BaseModel):
+    comment: str = Field(min_length=1, max_length=500)
+    storno_number: Optional[str] = Field(default=None, max_length=100)
+
+
+def _einvoice_public(doc: Optional[dict]) -> Optional[dict]:
+    if not doc:
+        return None
+    return {k: v for k, v in doc.items() if k not in ("_id", "ubl_xml")}
+
+
+async def _assign_order_invoice_number(order: dict, manual_number: Optional[str]) -> str:
+    """Gives an order that was not shipped (client without the warehouse module) its invoice number, once.
+    A parallel request that got there first wins and its number is used."""
+    drawn = await _assign_invoice_number(order, manual_number)
+    result = await db.orders.update_one(
+        {"id": order["id"], "$or": [{"invoice_number": None}, {"invoice_number": {"$exists": False}}]},
+        {"$set": drawn},
+    )
+    if result.modified_count == 0:
+        await _release_invoice_seq(order["client_id"], drawn.get("invoice_seq"))
+        current = await db.orders.find_one({"id": order["id"]}, {"_id": 0, "invoice_number": 1})
+        return (current or {}).get("invoice_number") or drawn["invoice_number"]
+    return drawn["invoice_number"]
+
+
+async def _require_no_active_einvoice(order_id: str) -> None:
+    """An order with an issued e-invoice is frozen: change the invoice first (storno), then the order."""
+    if await db.einvoices.find_one({"order_id": order_id, "status": {"$in": list(_SEF_ACTIVE)}}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Order has an issued e-invoice")
+
+
+async def _einvoice_context(order_id: str, user: User, dates: Optional[EinvoiceDates]) -> Dict[str, Any]:
+    order = await get_scoped_or_404("orders", order_id, user)
+    client = await db.clients.find_one({"id": order["client_id"]}, {"_id": 0}) or {}
+    customer = await db.customers.find_one({"id": order.get("customer_id"), "client_id": order["client_id"]}, {"_id": 0}) or {}
+    units = {u["_id"]: u async for u in db.units.find({})}
+    cfg = client.get("sef") or {}
+    today = _belgrade_today()
+    dates = dates or EinvoiceDates()
+    issue_date = dates.issue_date or today.isoformat()
+    # A client with the warehouse module invoices shipped orders (delivery date = shipment). A client without it has
+    # no shipping step: the invoice is issued from the new order, the admin picks the delivery date, and the number is
+    # assigned when the invoice is sent (typed by hand when the client numbers manually).
+    no_warehouse = Module.WAREHOUSE.value not in effective_modules(client)
+    direct = no_warehouse and _status_value(order) == OrderStatus.NEW.value
+    delivery_date = dates.delivery_date or (order.get("shipped_at") or "")[:10] or (today.isoformat() if direct else None)
+    problems: List[str] = []
+    for field, value in (("issue_date", issue_date), ("delivery_date", delivery_date)):
+        if value:
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                problems.append(field)
+    due_date = dates.due_date
+    if not due_date and "issue_date" not in problems:
+        due_date = (date.fromisoformat(issue_date) + timedelta(days=int(cfg.get("payment_terms_days", 15)))).isoformat()
+    if "issue_date" not in problems and issue_date != today.isoformat():
+        problems.append("issue_date_not_today")  # SEF refuses an issue date that is not today's (to be confirmed on demo)
+    if _status_value(order) != OrderStatus.SHIPPED.value and not direct:
+        problems.append("not_shipped")
+    number = order.get("invoice_number")
+    manual = client.get("invoice_numbering", "auto") == "manual"
+    if not number and direct:
+        if manual:
+            number = (dates.invoice_number or "").strip() or None
+            if not number:
+                problems.append("invoice_number")
+            elif await db.orders.find_one({"client_id": order["client_id"], "invoice_number": number}, {"_id": 1}):
+                problems.append("invoice_number_used")
+        elif not client.get("invoice_prefix"):
+            problems.append("invoice_prefix")
+    elif not number:
+        problems.append("invoice_number")
+    if not customer:
+        problems.append("buyer.missing")
+    if delivery_date and "issue_date" not in problems and "delivery_date" not in problems and delivery_date > issue_date:
+        problems.append("delivery_after_issue")
+    if due_date and "issue_date" not in problems and due_date < issue_date:
+        problems.append("due_before_issue")
+    problems += sef.invoice_problems(order, client, customer, units, delivery_date)
+    return {
+        "order": order, "client": client, "customer": customer, "units": units, "problems": list(dict.fromkeys(problems)),
+        "issue_date": issue_date, "due_date": due_date, "delivery_date": delivery_date, "number": number,
+        "number_pending": not order.get("invoice_number"), "delivery_editable": direct, "manual_numbering": manual,
+    }
+
+
+async def _latest_einvoice(order_id: str) -> Optional[dict]:
+    return await db.einvoices.find_one({"order_id": order_id}, {"_id": 0}, sort=[("created_at", -1)])
+
+
+def _build_xml(ctx: Dict[str, Any]) -> str:
+    return sef.build_invoice_xml(
+        ctx["order"], ctx["client"], ctx["customer"], ctx["units"], ctx["number"],
+        ctx["issue_date"], ctx["due_date"], ctx["delivery_date"],
+    )
+
+
+@api_router.post("/orders/{order_id}/einvoice/preview")
+async def einvoice_preview(order_id: str, inp: EinvoiceDates, current_user: User = Depends(_sef_manager)):
+    ctx = await _einvoice_context(order_id, current_user, inp)
+    problems = ctx["problems"]
+    cfg = ctx["client"].get("sef") or {}
+    out: Dict[str, Any] = {
+        "problems": problems, "number": ctx["number"], "issue_date": ctx["issue_date"], "due_date": ctx["due_date"],
+        "delivery_date": ctx["delivery_date"], "amounts": calc_invoice_amounts(ctx["order"]),
+        "number_pending": ctx["number_pending"], "delivery_editable": ctx["delivery_editable"],
+        "manual_numbering": ctx["manual_numbering"],
+        "sef": {"configured": bool(cfg.get("api_key_enc")), "enabled": bool(cfg.get("enabled")), "env": cfg.get("env") or "demo"},
+        "current": _einvoice_public(await _latest_einvoice(order_id)), "validation": None, "xml": None,
+    }
+    if problems:
+        return out
+    xml = _build_xml({**ctx, "number": ctx["number"] or "PREVIEW/0000"})  # a number still to be assigned is not drawn here
+    if inp.include_xml:
+        out["xml"] = xml
+    if inp.validate_on_sef:
+        if (cfg.get("env") or "demo") != "demo":
+            # How `executeValidation` behaves is confirmed on the demo environment first.
+            out["validation"] = {"ok": False, "message": "SEF validation is available on the demo environment only"}
+        else:
+            api = _sef_client_from(ctx["client"])
+            try:
+                await _sef_call(api.upload, xml, f"EO-VAL-{uuid.uuid4().hex[:16]}", True)
+                out["validation"] = {"ok": True, "message": None}
+            except sef.SefError as err:
+                out["validation"] = {"ok": False, "message": err.message, "code": err.code, "status": err.status}
+    return out
+
+
+async def _sef_upload_and_store(doc: dict, api: "sef.SefClient") -> dict:
+    """Sends the stored XML with the stored requestId (so a repeat after a network failure
+    cannot create a second invoice) and records the outcome."""
+    update: Dict[str, Any]
+    try:
+        result = await _sef_call(api.upload, doc["ubl_xml"], doc["request_id"], False)
+        ids = result if isinstance(result, dict) else {}
+        update = {
+            "status": "sent", "sent_at": now_iso(), "error_code": None, "error_text": None,
+            "sef_invoice_id": ids.get("SalesInvoiceId"), "sef_input_id": ids.get("InvoiceId"),
+            "sef_purchase_id": ids.get("PurchaseInvoiceId"),
+        }
+    except sef.SefError as err:
+        # No answer / 5xx: the request may or may not have arrived, keep `sending` and let the user repeat it.
+        update = {
+            "status": "sending" if err.retryable else "error", "error_code": err.code,
+            "error_text": err.message, "error_http": err.status,
+        }
+    update["updated_at"] = now_iso()
+    await db.einvoices.update_one({"id": doc["id"]}, {"$set": update})
+    return {**doc, **update}
+
+
+@api_router.post("/orders/{order_id}/einvoice")
+async def einvoice_send(order_id: str, inp: EinvoiceDates, current_user: User = Depends(_sef_manager)):
+    ctx = await _einvoice_context(order_id, current_user, inp)
+    cfg = ctx["client"].get("sef") or {}
+    if not cfg.get("enabled"):
+        raise HTTPException(status_code=400, detail="SEF is not enabled for this client")
+    api = _sef_client_from(ctx["client"])
+    existing = await _latest_einvoice(order_id)
+    if existing and existing["status"] in _SEF_ACTIVE:
+        if existing["status"] == "sending" and not existing.get("sef_invoice_id"):
+            # An earlier send got no answer: repeat the very same request.
+            doc = await _sef_upload_and_store(existing, api)
+            await _audit(current_user, "sef.send", "order", order_id, ctx["number"], ctx["order"]["client_id"], {"retry": True})
+            return _einvoice_public(doc)
+        raise HTTPException(status_code=409, detail="Invoice was already issued for this order")
+    if ctx["problems"]:
+        raise HTTPException(status_code=422, detail={"problems": ctx["problems"]})
+    if ctx["number_pending"]:
+        ctx["number"] = await _assign_order_invoice_number(ctx["order"], inp.invoice_number)
+    attempt = await db.einvoices.count_documents({"order_id": order_id}) + 1
+    amounts = calc_invoice_amounts(ctx["order"])
+    doc = {
+        "id": str(uuid.uuid4()), "client_id": ctx["order"]["client_id"], "order_id": order_id,
+        "request_id": f"EO-{order_id}-{attempt}", "number": ctx["number"], "kind": "invoice", "env": cfg.get("env") or "demo",
+        "issue_date": ctx["issue_date"], "due_date": ctx["due_date"], "delivery_date": ctx["delivery_date"],
+        "amounts": {k: amounts[k] for k in ("subtotal", "vat", "grand", "categories")},
+        "ubl_xml": _build_xml(ctx), "status": "sending", "sef_status": None, "sef_invoice_id": None,
+        "error_code": None, "error_text": None, "created_by": current_user.id, "created_by_name": current_user.name,
+        "created_at": now_iso(), "updated_at": now_iso(), "sent_at": None,
+    }
+    try:
+        await db.einvoices.insert_one({"_id": doc["id"], **doc})
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Invoice is being issued")  # a parallel request took this requestId
+    doc = await _sef_upload_and_store(doc, api)
+    await _audit(current_user, "sef.send", "order", order_id, ctx["number"], ctx["order"]["client_id"],
+                 {"status": doc["status"], "env": doc["env"]})
+    return _einvoice_public(doc)
+
+
+@api_router.get("/orders/{order_id}/einvoice")
+async def einvoice_status(order_id: str, refresh: bool = True, current_user: User = Depends(_sef_manager)):
+    order = await get_scoped_or_404("orders", order_id, current_user)
+    doc = await _latest_einvoice(order_id)
+    out = {"current": _einvoice_public(doc), "refresh_error": None}
+    if doc and refresh and doc.get("sef_invoice_id") and doc["status"] in ("sent", "approved", "rejected"):
+        client = await db.clients.find_one({"id": order["client_id"]}, {"_id": 0}) or {}
+        try:
+            data = await _sef_call(_sef_client_from(client).status, doc["sef_invoice_id"])
+        except sef.SefError as err:
+            out["refresh_error"] = err.message
+        except HTTPException as err:
+            out["refresh_error"] = str(err.detail)
+        else:
+            raw = data.get("Status") if isinstance(data, dict) else None
+            update = {
+                "sef_status": raw, "status": sef.STATUS_MAP.get(raw, doc["status"]) if raw else doc["status"],
+                "sef_comment": (data or {}).get("Comment"), "updated_at": now_iso(),
+            }
+            await db.einvoices.update_one({"id": doc["id"]}, {"$set": update})
+            out["current"] = _einvoice_public({**doc, **update})
+    return out
+
+
+@api_router.get("/orders/{order_id}/einvoice/xml")
+async def einvoice_xml(order_id: str, current_user: User = Depends(_sef_manager)):
+    await get_scoped_or_404("orders", order_id, current_user)
+    doc = await db.einvoices.find_one({"order_id": order_id}, {"_id": 0, "ubl_xml": 1}, sort=[("created_at", -1)])
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(content=doc["ubl_xml"], media_type="application/xml")
+
+
+async def _einvoice_act(order_id: str, inp: EinvoiceActionInput, user: User, kind: str) -> dict:
+    order = await get_scoped_or_404("orders", order_id, user)
+    doc = await _latest_einvoice(order_id)
+    if not doc or not doc.get("sef_invoice_id") or doc["status"] not in ("sent", "approved", "rejected"):
+        raise HTTPException(status_code=409, detail="There is no invoice on SEF to " + kind)
+    client = await db.clients.find_one({"id": order["client_id"]}, {"_id": 0}) or {}
+    api = _sef_client_from(client)
+    try:
+        if kind == "cancel":
+            await _sef_call(api.cancel, doc["sef_invoice_id"], inp.comment.strip())
+        else:
+            await _sef_call(api.storno, doc["sef_invoice_id"], (inp.storno_number or "").strip() or None, inp.comment.strip())
+    except sef.SefError as err:
+        raise HTTPException(status_code=422, detail={"sef_error": err.message, "code": err.code, "status": err.status})
+    update = {"status": "cancelled" if kind == "cancel" else "storno", "updated_at": now_iso(),
+              "cancel_comment" if kind == "cancel" else "storno_comment": inp.comment.strip()}
+    await db.einvoices.update_one({"id": doc["id"]}, {"$set": update})
+    await _audit(user, f"sef.{kind}", "order", order_id, doc.get("number"), order["client_id"], {"comment": inp.comment.strip()})
+    return _einvoice_public({**doc, **update})
+
+
+@api_router.post("/orders/{order_id}/einvoice/cancel")
+async def einvoice_cancel(order_id: str, inp: EinvoiceActionInput, current_user: User = Depends(_sef_manager)):
+    return await _einvoice_act(order_id, inp, current_user, "cancel")
+
+
+@api_router.post("/orders/{order_id}/einvoice/storno")
+async def einvoice_storno(order_id: str, inp: EinvoiceActionInput, current_user: User = Depends(_sef_manager)):
+    return await _einvoice_act(order_id, inp, current_user, "storno")
+
+
 app.include_router(api_router)
 # Not every OS registers .apk (Windows doesn't), and without it StaticFiles
 # serves the APK as text/plain, which some Android browsers won't install.

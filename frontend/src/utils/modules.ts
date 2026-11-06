@@ -1,6 +1,6 @@
 import type { User } from "@/src/api";
 
-export type ModuleKey = "warehouse" | "stock" | "expiry" | "reports" | "focus" | "targets";
+export type ModuleKey = "warehouse" | "stock" | "expiry" | "reports" | "focus" | "targets" | "sef";
 
 /** Whether the user's client has a module (backend `Module`; the base is always on).
  *  Superadmin and an older backend that sends no list count as "all". */

@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:mfin.gov.rs:srbdt:2022</cbc:CustomizationID>
+  <cbc:ID>TEST/0001</cbc:ID>
+  <cbc:IssueDate>2026-11-10</cbc:IssueDate>
+  <cbc:DueDate>2026-11-25</cbc:DueDate>
+  <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+  <cbc:DocumentCurrencyCode>RSD</cbc:DocumentCurrencyCode>
+  <cac:InvoicePeriod>
+    <cbc:DescriptionCode>35</cbc:DescriptionCode>
+  </cac:InvoicePeriod>
+  <cac:AccountingSupplierParty>
+    <cac:Party>
+      <cbc:EndpointID schemeID="9948">109876541</cbc:EndpointID>
+      <cac:PartyName>
+        <cbc:Name>Veleprodaja Test d.o.o.</cbc:Name>
+      </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>Bulevar 1</cbc:StreetName>
+        <cbc:CityName>Beograd</cbc:CityName>
+        <cbc:PostalZone>11000</cbc:PostalZone>
+        <cac:Country>
+          <cbc:IdentificationCode>RS</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>
+      <cac:PartyTaxScheme>
+        <cbc:CompanyID>RS109876541</cbc:CompanyID>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:PartyTaxScheme>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>Veleprodaja Test d.o.o.</cbc:RegistrationName>
+        <cbc:CompanyID>20869500</cbc:CompanyID>
+      </cac:PartyLegalEntity>
+    </cac:Party>
+  </cac:AccountingSupplierParty>
+  <cac:AccountingCustomerParty>
+    <cac:Party>
+      <cbc:EndpointID schemeID="9948">100000000</cbc:EndpointID>
+      <cac:PartyName>
+        <cbc:Name>Prodavnica Kupac</cbc:Name>
+      </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>Ulica 5</cbc:StreetName>
+        <cbc:CityName>Novi Sad</cbc:CityName>
+        <cbc:PostalZone>21000</cbc:PostalZone>
+        <cac:Country>
+          <cbc:IdentificationCode>RS</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>
+      <cac:PartyTaxScheme>
+        <cbc:CompanyID>RS100000000</cbc:CompanyID>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:PartyTaxScheme>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>Prodavnica Kupac</cbc:RegistrationName>
+        <cbc:CompanyID>12345678</cbc:CompanyID>
+      </cac:PartyLegalEntity>
+    </cac:Party>
+  </cac:AccountingCustomerParty>
+  <cac:Delivery>
+    <cbc:ActualDeliveryDate>2026-11-09</cbc:ActualDeliveryDate>
+  </cac:Delivery>
+  <cac:PaymentMeans>
+    <cbc:PaymentMeansCode>30</cbc:PaymentMeansCode>
+    <cac:PayeeFinancialAccount>
+      <cbc:ID>160-0000000012345-98</cbc:ID>
+    </cac:PayeeFinancialAccount>
+  </cac:PaymentMeans>
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="RSD">91.50</cbc:TaxAmount>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="RSD">382.50</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="RSD">76.50</cbc:TaxAmount>
+      <cac:TaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>20</cbc:Percent>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:TaxCategory>
+    </cac:TaxSubtotal>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="RSD">149.97</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="RSD">15.00</cbc:TaxAmount>
+      <cac:TaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>10</cbc:Percent>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:TaxCategory>
+    </cac:TaxSubtotal>
+  </cac:TaxTotal>
+  <cac:LegalMonetaryTotal>
+    <cbc:LineExtensionAmount currencyID="RSD">532.47</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="RSD">532.47</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="RSD">623.97</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount currencyID="RSD">623.97</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="LTR">4.5</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="RSD">382.50</cbc:LineExtensionAmount>
+    <cac:AllowanceCharge>
+      <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+      <cbc:AllowanceChargeReason>Rabat</cbc:AllowanceChargeReason>
+      <cbc:Amount currencyID="RSD">67.50</cbc:Amount>
+      <cbc:BaseAmount currencyID="RSD">450.00</cbc:BaseAmount>
+    </cac:AllowanceCharge>
+    <cac:Item>
+      <cbc:Name>Mleko 1l</cbc:Name>
+      <cac:ClassifiedTaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>20</cbc:Percent>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:ClassifiedTaxCategory>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="RSD">100</cbc:PriceAmount>
+    </cac:Price>
+  </cac:InvoiceLine>
+  <cac:InvoiceLine>
+    <cbc:ID>2</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="H87">3</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="RSD">149.97</cbc:LineExtensionAmount>
+    <cac:Item>
+      <cbc:Name>Hleb</cbc:Name>
+      <cac:ClassifiedTaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>10</cbc:Percent>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:ClassifiedTaxCategory>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="RSD">49.99</cbc:PriceAmount>
+    </cac:Price>
+  </cac:InvoiceLine>
+</Invoice>

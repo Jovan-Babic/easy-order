@@ -49,7 +49,6 @@ export type Plan = {
   active: boolean;
   prices?: Record<string, number>; // months -> amount
   included_seats?: Record<string, number>; // role -> accounts in the package
-  seat_prices?: Record<string, number>; // role -> monthly price of an extra account
   currency?: string;
 };
 

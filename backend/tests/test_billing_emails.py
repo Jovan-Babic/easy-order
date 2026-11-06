@@ -47,7 +47,7 @@ def cleanup(superadmin_client):
 def _client(sa):
     plan = sa.post(f"{API}/plans", json={
         "name": f"TEST_Mail_{uuid.uuid4().hex[:6]}", "modules": [], "prices": {"1": 10000},
-        "included_seats": {"operator": 1}, "seat_prices": {"operator": 1000},
+        "included_seats": {"operator": 1},
     }).json()
     S.plans.append(plan["id"])
     suffix = uuid.uuid4().hex[:8]

@@ -16,6 +16,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/dashboard", labelKey: "dashboard", roles: ["superadmin", "admin"] },
   { href: "/clients", labelKey: "clients", roles: ["superadmin"] },
   { href: "/subscriptions", labelKey: "subscriptions", roles: ["superadmin"] },
+  { href: "/pricing", labelKey: "pricingTitle", roles: ["superadmin"] },
   { href: "/payments", labelKey: "payments", roles: ["superadmin"] },
   { href: "/billing-drafts", labelKey: "draftsTitle", roles: ["superadmin"] },
   { href: "/users", labelKey: "users", roles: ["superadmin", "admin"] },
@@ -34,6 +35,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/reports", labelKey: "reports", roles: ["admin"], module: "reports" },
   { href: "/focus", labelKey: "focus", roles: ["admin"], module: "focus" },
   { href: "/targets", labelKey: "targets", roles: ["admin"], module: "targets" },
+  { href: "/integrations", labelKey: "integrations", roles: ["admin"], module: "sef" },
   { href: "/stock", labelKey: "stock", roles: ["admin", "warehouse"], module: "stock" },
   { href: "/orders", labelKey: "orders", roles: ["admin", "warehouse"] },
   { href: "/guide", labelKey: "guide", roles: ["admin", "warehouse"] },
@@ -42,8 +44,8 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
 
 // Menu order per role (an item missing from a list goes to the end).
 const NAV_ORDER: Record<string, string[]> = {
-  superadmin: ["/dashboard", "/clients", "/subscriptions", "/payments", "/billing-drafts", "/users", "/announcements", "/audit", "/units", "/settings", "/app"],
-  admin: ["/dashboard", "/seats", "/billing", "/users", "/customers", "/products", "/orders", "/warehouse", "/stock", "/focus", "/targets", "/reports", "/guide", "/app"],
+  superadmin: ["/dashboard", "/clients", "/subscriptions", "/pricing", "/payments", "/billing-drafts", "/users", "/announcements", "/audit", "/units", "/settings", "/app"],
+  admin: ["/dashboard", "/seats", "/billing", "/users", "/customers", "/products", "/orders", "/warehouse", "/stock", "/focus", "/targets", "/reports", "/integrations", "/guide", "/app"],
   warehouse: ["/warehouse", "/stock", "/orders", "/guide", "/app"],
 };
 

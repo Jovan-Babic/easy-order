@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { useSession } from "@/lib/session-provider";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { EinvoiceModal } from "@/components/EinvoiceModal";
 import { OrderPrintModal } from "@/components/OrderPrintModal";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Order, OrderStatus, STATUS_LABEL_KEYS, money } from "@/lib/orders";
@@ -14,6 +15,10 @@ export default function OrdersPage() {
   const { t } = useLanguage();
   const session = useSession();
   const isSuperAdmin = session.role === "superadmin";
+  const canSef = (session.role === "admin" || session.role === "superadmin") && session.modules.includes("sef");
+  // Without the warehouse module there is no shipping: a new order is invoiced directly (a superadmin sees every client's orders).
+  const hasWarehouse = session.role !== "superadmin" && session.modules.includes("warehouse");
+  const [einvoiceOrderId, setEinvoiceOrderId] = useState<string | null>(null);
   const canDelete = session.role === "superadmin" || session.role === "admin";
   const [orders, setOrders] = useState<Order[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
@@ -114,6 +119,15 @@ export default function OrdersPage() {
                   >
                     {t("details")}
                   </button>
+                  {canSef && (o.status === "shipped" || (o.status === "new" && !hasWarehouse)) && (
+                    <button
+                      type="button"
+                      onClick={() => setEinvoiceOrderId(o.id)}
+                      className="ml-2 rounded-md border border-brand px-3 py-1.5 text-sm font-semibold text-brand hover:bg-brandSecondary"
+                    >
+                      {t("sefInvoice")}
+                    </button>
+                  )}
                   {canDelete && o.status === "new" && (
                     <button
                       type="button"
@@ -138,6 +152,7 @@ export default function OrdersPage() {
       </div>
 
       {selectedOrder && <OrderPrintModal order={selectedOrder} onClose={() => setSelectedOrder(null)} />}
+      {einvoiceOrderId && <EinvoiceModal orderId={einvoiceOrderId} onClose={() => setEinvoiceOrderId(null)} />}
       {pendingDelete && (
         <ConfirmDialog itemName={pendingDelete.customer_name} onCancel={() => setPendingDelete(null)} onConfirm={remove} />
       )}

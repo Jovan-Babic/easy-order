@@ -62,13 +62,14 @@ class TestPlanFields:
         bad = {"name": f"TEST_Bad_{uuid.uuid4().hex[:6]}", "modules": []}
         assert superadmin_client.post(f"{API}/plans", json={**bad, "included_seats": {"boss": 1}}).status_code == 400
         assert superadmin_client.post(f"{API}/plans", json={**bad, "included_seats": {"admin": -1}}).status_code == 400
-        assert superadmin_client.post(f"{API}/plans", json={**bad, "seat_prices": {"operator": -5}}).status_code == 400
+        assert superadmin_client.put(f"{API}/settings", json={"seat_prices": {"operator": -5}}).status_code == 400
+        assert superadmin_client.put(f"{API}/settings", json={"seat_prices": {"boss": 5}}).status_code == 400
 
     def test_update_keeps_when_omitted(self, superadmin_client):
-        plan = _plan(superadmin_client, included_seats={"operator": 3}, seat_prices={"operator": 1200})
+        plan = _plan(superadmin_client, included_seats={"operator": 3})
         r = superadmin_client.put(f"{API}/plans/{plan['id']}", json={"name": plan["name"], "modules": ["warehouse"]})
         assert r.json()["included_seats"] == {"operator": 3}
-        assert r.json()["seat_prices"] == {"operator": 1200}
+        assert "seat_prices" not in r.json()  # the price of an extra account is in the settings now
         r = superadmin_client.put(
             f"{API}/plans/{plan['id']}",
             json={"name": plan["name"], "modules": ["warehouse"], "included_seats": {"operator": 4}},
@@ -124,9 +125,10 @@ class TestLimits:
 
 class TestAmounts:
     def test_monthly_total_with_discount(self, superadmin_client):
+        superadmin_client.put(f"{API}/settings", json={"seat_prices": {"operator": 1000, "warehouse": 1800}})
         plan = _plan(
             superadmin_client, prices={"1": 10000, "12": 100000},
-            included_seats={"admin": 1, "operator": 2, "warehouse": 1}, seat_prices={"operator": 1000, "warehouse": 1800},
+            included_seats={"admin": 1, "operator": 2, "warehouse": 1},
         )
         client, admin = _client(superadmin_client, plan)
         r = superadmin_client.put(
@@ -144,6 +146,7 @@ class TestAmounts:
         mine = admin.get(f"{API}/clients/me/seats")
         assert mine.status_code == 200 and mine.json()["monthly_total"] == out["monthly_total"]
         _user(admin, "operator")
+        superadmin_client.put(f"{API}/settings", json={"seat_prices": None})  # back to the default price list
 
     def test_warehouse_row_hidden_without_module(self, superadmin_client):
         plan = _plan(superadmin_client, modules=[], included_seats={"warehouse": 1})

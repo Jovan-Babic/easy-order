@@ -15,6 +15,10 @@ export type SeatsOut = {
   plan_name: string | null;
   currency: string;
   seats: SeatRow[];
+  modules: Array<{ module: string; price: number | null }>; // extra modules on top of the package
+  plan_modules: string[];
+  module_prices: Record<string, number>;
+  modules_amount: number;
   package_price: number | null;
   extra_amount: number;
   discount_percent: number;

@@ -18,7 +18,7 @@ sa.put(f"{A}/settings", json={
 }).raise_for_status()
 plan = sa.post(f"{A}/plans", json={
     "name": "Standard", "description": "Svi moduli", "modules": ["warehouse", "stock", "expiry", "reports", "focus", "targets"],
-    "prices": {"1": 6900, "12": 69000}, "included_seats": {"admin": 1, "operator": 3, "warehouse": 1}, "seat_prices": {"operator": 1200, "warehouse": 900},
+    "prices": {"1": 6900, "12": 69000}, "included_seats": {"admin": 1, "operator": 3, "warehouse": 1},
 }); plan.raise_for_status()
 client_id = next(c["id"] for c in sa.get(f"{A}/clients").json() if c["name"].startswith("Veleprodaja Morava"))
 ends = date.today().isoformat()  # moved to the end of this month -> the next month is billed

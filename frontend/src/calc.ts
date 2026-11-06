@@ -39,15 +39,36 @@ export function lineVat(it: OrderItem, shipped = false): number {
 
 export type Totals = { subtotal: number; vat: number; grand: number };
 
+/** Round half up to 2 decimals on the shortest decimal form (1.005 gives 1.01).
+ * Mirrors backend/calc.py round2. */
+export function round2(value: number): number {
+  if (Math.abs(value) < 1e-9) return 0;
+  const text = String(value);
+  if (text.includes("e")) return Math.round(value * 100) / 100;
+  const sign = value < 0 ? -1 : 1;
+  return (sign * Number(Math.round(Number(Math.abs(Number(text)) + "e2")) + "e-2")) || 0;
+}
+
+/** Totals as the e-invoice states them (backend/calc.py invoice_amounts): every line
+ * rounded to 2 decimals, the base of a VAT rate = sum of its rounded lines, VAT =
+ * round(base x rate). Keep in sync with the backend. */
 export function computeTotals(order: Order): Totals {
   const shipped = isShipped(order);
+  const taxable = new Map<number, number>();
+  for (const it of order.items) {
+    if (effectiveQty(it, shipped) <= 0) continue;
+    const rate = it.vat_rate ?? 20;
+    taxable.set(rate, round2((taxable.get(rate) ?? 0) + round2(lineNet(it, shipped))));
+  }
   let subtotal = 0;
   let vat = 0;
-  for (const it of order.items) {
-    subtotal += lineNet(it, shipped);
-    vat += lineVat(it, shipped);
+  for (const [rate, base] of taxable) {
+    subtotal += base;
+    vat += round2((base * rate) / 100);
   }
-  return { subtotal, vat, grand: subtotal + vat };
+  subtotal = round2(subtotal);
+  vat = round2(vat);
+  return { subtotal, vat, grand: round2(subtotal + vat) };
 }
 
 export function money(n: number): string {
