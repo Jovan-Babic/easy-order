@@ -33,6 +33,9 @@ export default function TabsLayout() {
     <SafeAreaInsetsContext.Provider value={bannerShown ? { ...insets, top: 0 } : insets}>
     <Tabs
       initialRouteName={isWarehouse ? "home" : "index"}
+      // Android "back" goes to the start tab, not to the first tab in the list: that is "home", the warehouse
+      // start screen, which a sales rep must never land on.
+      backBehavior="initialRoute"
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.brand,
