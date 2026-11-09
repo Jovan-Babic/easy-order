@@ -13,6 +13,7 @@ import { AppProvider } from "@/src/context/AppContext";
 import { AuthProvider, useAuth } from "@/src/context/AuthContext";
 import { useApp } from "@/src/context/AppContext";
 import { api } from "@/src/api";
+import { money } from "@/src/calc";
 
 // Keep the native splash visible from cold start until icon fonts register.
 SplashScreen.preventAutoHideAsync();
@@ -106,7 +107,7 @@ function RouteGuard({
     const due = billing.next_due_date ? billing.next_due_date.split("-").reverse().join(".") + "." : "";
     Alert.alert(
       t("billingMobileTitle"),
-      `${t("billingToPay")}: ${billing.to_pay.toFixed(2)} RSD${due ? `, ${t("billingDueShort")} ${due}` : ""}.\n\n${t("billingSeePortal")}`,
+      `${t("billingToPay")}: ${money(billing.to_pay)} RSD${due ? `, ${t("billingDueShort")} ${due}` : ""}.\n\n${t("billingSeePortal")}`,
     );
   }, [status, user, mustChangePassword, t]);
 
