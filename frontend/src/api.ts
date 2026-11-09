@@ -122,6 +122,38 @@ export type Product = {
   created_at?: string;
 };
 
+// Visit plan (module `visits`): the sales rep's plan of shops to visit or call.
+export type VisitStatus = "planned" | "done" | "skipped";
+export type Visit = {
+  id: string;
+  customer_id: string;
+  customer_name: string;
+  date: string; // YYYY-MM-DD
+  channel: "visit" | "call";
+  status: VisitStatus;
+  note: string | null;
+  order_id: string | null;
+  street: string;
+  city: string;
+  address: string;
+  phone: string;
+  zone_name: string | null;
+  last_order: string | null;
+};
+export type DueRow = {
+  customer_id: string;
+  name: string;
+  street: string;
+  city: string;
+  zone_name: string | null;
+  channel: "visit" | "call";
+  last_visit: string | null;
+  last_order: string | null;
+  days_overdue: number;
+  planned: Array<{ visit_id: string; user_name: string; date: string }>;
+};
+export type VisitSuggestion = { days: Array<{ date: string; items: DueRow[] }>; left_out: number; claimed: number };
+
 // Sales targets (module `targets`): the sales rep's own monthly progress.
 export type TargetMetric = "revenue" | "orders" | "customers" | "focus_revenue";
 export type TargetMonth = {
@@ -381,6 +413,18 @@ export const api = {
 
   // orders
   myTargets: () => req<TargetMe>("/targets/me"),
+  visitsPlan: (from: string, to: string) => req<Visit[]>(`/visits/plan?from=${from}&to=${to}`),
+  visitsDue: (horizonDays = 7) => req<DueRow[]>(`/visits/due?horizon_days=${horizonDays}`),
+  visitsSuggest: (from: string, to: string) =>
+    req<VisitSuggestion>("/visits/plan/suggest", { method: "POST", body: JSON.stringify({ from, to }) }),
+  visitsAdd: (items: Array<{ customer_id: string; date: string }>) =>
+    req<{ created: Visit[]; warnings: unknown[] }>("/visits/plan", { method: "POST", body: JSON.stringify({ items }) }),
+  visitDone: (id: string, body: { note?: string; order_id?: string } = {}) =>
+    req<Visit>(`/visits/${id}/done`, { method: "POST", body: JSON.stringify(body) }),
+  visitSkip: (id: string, note: string) =>
+    req<Visit>(`/visits/${id}/skip`, { method: "POST", body: JSON.stringify({ note }) }),
+  visitNow: (customerId: string, note?: string) =>
+    req<Visit>("/visits", { method: "POST", body: JSON.stringify({ customer_id: customerId, note }) }),
   getGuide: (role?: Guide["role"]) => req<Guide>(`/guide${role ? `?role=${role}` : ""}`),
   listOrders: (opts?: { customerId?: string; status?: OrderStatus[] }) => {
     const qs = new URLSearchParams();
