@@ -3,6 +3,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
+import { money } from "@/src/calc";
 import { colors, font, spacing } from "@/src/theme";
 
 type Notice = { key: string; level: "info" | "warning"; text: string };
@@ -22,7 +23,7 @@ export function useTopNotices(): Notice[] {
   const dmy = (iso: string | null) => (iso ? iso.split("-").reverse().join(".") + "." : "");
   if (billing) {
     // Calendar billing: the charge instead of the end date.
-    const amount = typeof billing.to_pay === "number" && billing.to_pay > 0 ? ` ${t("billingToPay")}: ${billing.to_pay.toFixed(2)} RSD.` : "";
+    const amount = typeof billing.to_pay === "number" && billing.to_pay > 0 ? ` ${t("billingToPay")}: ${money(billing.to_pay)} RSD.` : "";
     if (billing.late && sub?.status !== "locked") {
       notices.push({ key: "sub", level: "warning", text: `${billing.blocks_on ? `${t("billingLate")} ${dmy(billing.blocks_on)}.` : t("billingPartial")}${amount}` });
     } else if (billing.next_due_date && typeof billing.to_pay === "number" && billing.to_pay > 0 && sub?.status !== "locked") {

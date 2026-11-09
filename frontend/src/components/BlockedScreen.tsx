@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
 import { Button } from "@/src/components/Button";
+import { money } from "@/src/calc";
 import { colors, font, radius, spacing } from "@/src/theme";
 
 /** Shown instead of the app while the client is blocked on calendar billing.
@@ -21,7 +22,7 @@ export function BlockedScreen() {
         <Text style={styles.text}>{t(billing?.lock_reason === "manual" ? "billingBlockedManual" : "billingBlocked")}</Text>
         {typeof billing?.to_pay === "number" && (
           <Text style={styles.amount}>
-            {t("billingToPay")}: {billing.to_pay.toFixed(2)} RSD
+            {t("billingToPay")}: {money(billing.to_pay)} RSD
           </Text>
         )}
         <Text style={styles.hint}>{t("billingSeePortal")}</Text>
