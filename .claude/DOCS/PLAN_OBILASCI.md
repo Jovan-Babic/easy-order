@@ -1,6 +1,6 @@
 # Plan obilaska radnji (modul „Obilasci")
 
-Datum: 2026-11-09 · Status: predlog za odobrenje (ništa nije implementirano)
+Datum: 2026-11-09 · Status: **V1 implementiran** (vidi „Stanje“ na dnu), V2 i V3 nisu
 
 ## 1. Cilj i obim
 
@@ -104,3 +104,18 @@ Modul `visits` (nije u `DEFAULT_MODULES`), svi endpointi iza `require_module(Mod
 - Integracioni testovi: tenancy i uloge (komercijalista vidi samo svoje, magacin 403), „na redu" (kašnjenje, učestalost, neaktivni kupci), „zauzeto", plan/predlog (zone i radni dani), označavanje i neplanirana poseta, izveštaj, brisanje zone u upotrebi, uvoz kupaca sa novim kolonama.
 - Uputstva: `komercijalista.md` (tab Obilazak) i `admin.md` (zone, plan, izveštaj), nova slika snimljena iz test okruženja, `publish_guides.py`.
 - CLAUDE.md: paragraf „Visits module".
+
+## 10. Stanje (2026-11-09)
+
+**Urađeno (V1):** modul `visits`, zone, polja kupca (učestalost, način, zona), „na redu", plan nedelje i meseca (`GET /visits/plan` prima bilo koji period do 93 dana), predlog nedelje, označavanje (obiđeno, preskočeno, premeštanje, neplanirana poseta), izveštaj, portal stranica `/visits`, mobilni tab „Obilazak", porudžbina iz posete, uputstva, testovi (`test_visits.py`, `test_visits_due.py`).
+
+**Ostalo od V1 (male stvari):**
+- Kolone za Excel uvoz kupaca: `Zona`, `Učestalost obilaska (dana)`, `Način`.
+- Mesečni pregled plana u portalu i aplikaciji (podaci postoje, ekrani prikazuju nedelju).
+- Superadmin ekran za modul (API prima `client_id`, portal stranica je samo za admina).
+
+**V2 (traži novi APK):** `expo-location`, opcija „traži lokaciju" po klijentu, koordinate radnje iz prve potvrde (`customers.location`), odstupanje od lokacije, sortiranje po blizini, navigacija sa više tačaka, red za slanje van mreže.
+
+**V3 (samo ako pilot pokaže potrebu):** redosled obilaska unutar dana, eventualno spoljni servis za rute, metrika „posete" u ciljevima (`TARGET_METRICS`).
+
+**Čeka:** pilot klijent i komercijalista (još nisu izabrani).
