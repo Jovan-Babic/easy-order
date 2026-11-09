@@ -147,6 +147,9 @@ async def lifespan(app: FastAPI):
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     db = mongo_client[os.environ["DB_NAME"]]
     await db.customers.create_index("client_id")
+    await db.zones.create_index([("client_id", 1), ("name", 1)], unique=True)
+    await db.visits.create_index([("client_id", 1), ("user_id", 1), ("date", 1)])
+    await db.visits.create_index([("client_id", 1), ("customer_id", 1), ("status", 1)])
     await db.einvoices.create_index("request_id", unique=True)
     await db.einvoices.create_index([("client_id", 1), ("order_id", 1), ("created_at", -1)])
     await db.products.create_index("client_id")
@@ -249,11 +252,12 @@ class Module(str, Enum):
     FOCUS = "focus"  # goods in focus: products the sales reps should push (PLAN_FOKUS_I_CILJEVI.md)
     TARGETS = "targets"  # sales targets and progress per sales rep
     SEF = "sef"  # e-invoices through SEF (Serbia): sold as a separate package, never on by default
+    VISITS = "visits"  # visit plan for sales reps (PLAN_OBILASCI.md): an add-on module like SEF
 
 
 ALL_MODULES = [m.value for m in Module]
 # What a client without a stored choice (old clients, new clients before a plan) gets: SEF is a paid add-on.
-DEFAULT_MODULES = [m for m in ALL_MODULES if m != Module.SEF.value]
+DEFAULT_MODULES = [m for m in ALL_MODULES if m not in (Module.SEF.value, Module.VISITS.value)]
 # A module can only be on when the ones it builds on are on too.
 MODULE_REQUIRES: Dict[Module, List[Module]] = {Module.STOCK: [Module.WAREHOUSE], Module.EXPIRY: [Module.STOCK]}
 
@@ -670,6 +674,11 @@ class Customer(BaseModel):
     city: Optional[str] = ""
     postal_code: Optional[str] = ""
     country: Optional[str] = "RS"
+    # Visit plan (module `visits`): every how many days the shop is visited (None = not in rotation), how
+    # (visit in person or a phone call) and the zone it belongs to.
+    visit_every_days: Optional[int] = None
+    visit_channel: str = "visit"
+    zone_id: Optional[str] = None
     active: bool = True
     created_at: str = Field(default_factory=now_iso)
 
@@ -695,7 +704,7 @@ def _stripped(value):
 
 
 # Address / registration data an e-invoice needs (SEF: street, city and postal code are limited to 100/100/20 characters).
-_ADDRESS_FIELDS = ("registration_number", "street", "city", "postal_code", "country")
+_ADDRESS_FIELDS = ("registration_number", "street", "city", "postal_code", "country", "visit_every_days", "visit_channel", "zone_id")
 
 
 def _check_registration_number(value):
@@ -741,6 +750,10 @@ class CustomerInput(BaseModel):
     city: Optional[str] = Field(default=None, max_length=100)
     postal_code: Optional[str] = Field(default=None, max_length=20)
     country: Optional[str] = Field(default=None, max_length=2)
+    # Visit plan (None = keep): visit_every_days 0 and zone_id "" clear the value.
+    visit_every_days: Optional[int] = Field(default=None, ge=0, le=365)
+    visit_channel: Optional[Literal["visit", "call"]] = None
+    zone_id: Optional[str] = Field(default=None, max_length=64)
     # None = keep (create: active). An inactive customer cannot get new orders; use it instead of deleting
     # a customer that has order history.
     active: Optional[bool] = None
@@ -4966,9 +4979,8 @@ async def list_customers(current_user: User = Depends(get_current_user)):
 @api_router.post("/customers", response_model=CustomerOut)
 async def create_customer(inp: CustomerInput, current_user: User = Depends(require_manager)):
     client_id = await resolve_write_client_id(current_user, inp.client_id)
-    obj = Customer(
-        **_without_unset_address(inp.dict(exclude={"client_id", "active"})), active=inp.active is not False, client_id=client_id
-    )
+    fields = await _clean_customer_visit_fields(client_id, _without_unset_address(inp.dict(exclude={"client_id", "active"})))
+    obj = Customer(**fields, active=inp.active is not False, client_id=client_id)
     await db.customers.insert_one({**obj.dict(), "_id": obj.id})
     return _customer_out(obj.dict())
 
@@ -4976,7 +4988,7 @@ async def create_customer(inp: CustomerInput, current_user: User = Depends(requi
 @api_router.put("/customers/{customer_id}", response_model=CustomerOut)
 async def update_customer(customer_id: str, inp: CustomerInput, current_user: User = Depends(require_manager)):
     existing = await get_scoped_or_404("customers", customer_id, current_user)
-    changes = _without_unset_address(inp.dict(exclude={"client_id"}))
+    changes = await _clean_customer_visit_fields(existing["client_id"], _without_unset_address(inp.dict(exclude={"client_id"})))
     if changes.get("active") is None:
         changes.pop("active", None)  # not sent = keep
     updated = {**existing, **changes}
@@ -8016,6 +8028,482 @@ async def seed_data():
 
 
 app = FastAPI(lifespan=lifespan)
+# ---------------- Visits (module `visits`, plan .claude/DOCS/PLAN_OBILASCI.md, phase V1) ----------------
+# A sales rep's plan of shops to visit (or call): customers carry a visit frequency, a channel and a zone;
+# `visits` hold the planned and done visits. Customers are shared between reps (nobody "owns" one): a customer
+# already in someone's plan is only flagged. "Due" and "last visit" are computed, never stored.
+_visits_user = require_module(Module.VISITS, Role.OPERATOR, Role.ADMIN, Role.SUPERADMIN)
+_visits_manager = require_module(Module.VISITS, Role.ADMIN, Role.SUPERADMIN)
+VISIT_DEFAULT_SETTINGS = {"plan_days": [0, 1, 2, 3, 4], "max_per_day": 8}  # weekdays Monday=0; shops per day in a suggestion
+
+
+def _visit_client_id(user: User, client_id: Optional[str]) -> str:
+    if user.role == Role.SUPERADMIN:
+        if not client_id:
+            raise HTTPException(status_code=400, detail="client_id is required for superadmin")
+        return client_id
+    return user.client_id
+
+
+def _visit_day(value: Optional[str], field: str = "date") -> date:
+    try:
+        return date.fromisoformat(value or "")
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{field}: use YYYY-MM-DD")
+
+
+async def _clean_customer_visit_fields(client_id: str, changes: dict) -> dict:
+    """Customer write: frequency 0 and an empty zone clear the value; a zone must belong to the same client."""
+    if "visit_every_days" in changes and changes["visit_every_days"] == 0:
+        changes["visit_every_days"] = None
+    if "zone_id" in changes:
+        zone_id = changes["zone_id"] or None
+        if zone_id and not await db.zones.find_one({"id": zone_id, "client_id": client_id}, {"_id": 1}):
+            raise HTTPException(status_code=400, detail="Zone not found")
+        changes["zone_id"] = zone_id
+    return changes
+
+
+class ZoneInput(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    active: bool = True
+    client_id: Optional[str] = None  # superadmin only
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        return _stripped(v)
+
+
+@api_router.get("/zones")
+async def list_zones(client_id: Optional[str] = None, current_user: User = Depends(_visits_user)):
+    cid = _visit_client_id(current_user, client_id)
+    zones = await db.zones.find({"client_id": cid}, {"_id": 0}).sort("name", 1).to_list(None)
+    counts: Dict[str, int] = {}
+    async for row in db.customers.find({"client_id": cid, "zone_id": {"$ne": None}}, {"_id": 0, "zone_id": 1}):
+        counts[row["zone_id"]] = counts.get(row["zone_id"], 0) + 1
+    return [{**z, "customer_count": counts.get(z["id"], 0)} for z in zones]
+
+
+@api_router.post("/zones")
+async def create_zone(inp: ZoneInput, current_user: User = Depends(_visits_manager)):
+    cid = _visit_client_id(current_user, inp.client_id)
+    if await db.zones.find_one({"client_id": cid, "name": inp.name}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="A zone with that name already exists")
+    zone = {"id": str(uuid.uuid4()), "client_id": cid, "name": inp.name, "active": inp.active, "created_at": now_iso()}
+    await db.zones.insert_one({**zone, "_id": zone["id"]})
+    await _audit(current_user, "zone.create", "zone", zone["id"], inp.name, cid)
+    return zone
+
+
+@api_router.put("/zones/{zone_id}")
+async def update_zone(zone_id: str, inp: ZoneInput, current_user: User = Depends(_visits_manager)):
+    zone = await get_scoped_or_404("zones", zone_id, current_user)
+    if await db.zones.find_one({"client_id": zone["client_id"], "name": inp.name, "id": {"$ne": zone_id}}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="A zone with that name already exists")
+    await db.zones.update_one({"id": zone_id}, {"$set": {"name": inp.name, "active": inp.active}})
+    await _audit(current_user, "zone.update", "zone", zone_id, inp.name, zone["client_id"])
+    return {**zone, "name": inp.name, "active": inp.active}
+
+
+@api_router.delete("/zones/{zone_id}")
+async def delete_zone(zone_id: str, current_user: User = Depends(_visits_manager)):
+    zone = await get_scoped_or_404("zones", zone_id, current_user)
+    if await db.customers.find_one({"client_id": zone["client_id"], "zone_id": zone_id}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Zone is used by customers - move them first")
+    await db.zones.delete_one({"id": zone_id})
+    await _audit(current_user, "zone.delete", "zone", zone_id, zone.get("name"), zone["client_id"])
+    return {"ok": True}
+
+
+class VisitSettingsInput(BaseModel):
+    plan_days: Optional[List[int]] = None  # weekdays visits are planned on, Monday = 0
+    max_per_day: Optional[int] = Field(default=None, ge=1, le=60)
+    client_id: Optional[str] = None
+
+
+def _visit_settings_of(client: Optional[dict]) -> dict:
+    return {**VISIT_DEFAULT_SETTINGS, **((client or {}).get("visit_settings") or {})}
+
+
+@api_router.get("/visits/settings")
+async def get_visit_settings(client_id: Optional[str] = None, current_user: User = Depends(_visits_user)):
+    cid = _visit_client_id(current_user, client_id)
+    return _visit_settings_of(await db.clients.find_one({"id": cid}, {"_id": 0, "visit_settings": 1}))
+
+
+@api_router.put("/visits/settings")
+async def put_visit_settings(inp: VisitSettingsInput, current_user: User = Depends(_visits_manager)):
+    cid = _visit_client_id(current_user, inp.client_id)
+    client = await db.clients.find_one({"id": cid}, {"_id": 0, "visit_settings": 1})
+    if client is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    settings = _visit_settings_of(client)
+    if inp.plan_days is not None:
+        days = sorted(set(inp.plan_days))
+        if not days or any(d < 0 or d > 6 for d in days):
+            raise HTTPException(status_code=400, detail="plan_days: weekdays 0 (Monday) to 6 (Sunday), at least one")
+        settings["plan_days"] = days
+    if inp.max_per_day is not None:
+        settings["max_per_day"] = inp.max_per_day
+    await db.clients.update_one({"id": cid}, {"$set": {"visit_settings": settings}})
+    return settings
+
+
+async def _due_rows(client_id: str, today: date, horizon_days: int = 7) -> List[dict]:
+    """Customers in rotation with when each is due: last done visit (else the day the customer was added) +
+    their frequency. `days_overdue` > 0 = late, < 0 = due in that many days. Customers already in a plan carry who
+    planned them."""
+    customers = await db.customers.find(
+        {"client_id": client_id, "active": {"$ne": False}, "visit_every_days": {"$gt": 0}}, {"_id": 0}
+    ).to_list(None)
+    last_done = {
+        r["_id"]: r["last"] async for r in db.visits.aggregate([
+            {"$match": {"client_id": client_id, "status": "done"}},
+            {"$group": {"_id": "$customer_id", "last": {"$max": "$done_at"}}},
+        ])
+    }
+    last_order = {
+        r["_id"]: r["last"] async for r in db.orders.aggregate([
+            {"$match": {"client_id": client_id, "status": {"$nin": ["canceled", "rejected"]}}},
+            {"$group": {"_id": "$customer_id", "last": {"$max": "$created_at"}}},
+        ])
+    }
+    planned: Dict[str, List[dict]] = {}
+    async for v in db.visits.find({"client_id": client_id, "status": "planned"}, {"_id": 0}):
+        planned.setdefault(v["customer_id"], []).append(
+            {"visit_id": v["id"], "user_id": v["user_id"], "user_name": v.get("user_name"), "date": v["date"]}
+        )
+    zones = {z["id"]: z["name"] async for z in db.zones.find({"client_id": client_id}, {"_id": 0, "id": 1, "name": 1})}
+    rows = []
+    for c in customers:
+        done = last_done.get(c["id"])
+        base = date.fromisoformat((done or c.get("created_at") or today.isoformat())[:10])
+        due = base + timedelta(days=int(c["visit_every_days"]))
+        overdue = (today - due).days
+        if overdue < -horizon_days:
+            continue
+        rows.append({
+            "customer_id": c["id"], "name": c["name"], "street": c.get("street") or "", "city": c.get("city") or "",
+            "address": c.get("address") or "", "phone": c.get("phone") or "", "zone_id": c.get("zone_id"),
+            "zone_name": zones.get(c.get("zone_id")), "channel": c.get("visit_channel") or "visit",
+            "every_days": c["visit_every_days"], "last_visit": done[:10] if done else None,
+            "last_order": (last_order.get(c["id"]) or "")[:10] or None, "due_date": due.isoformat(),
+            "days_overdue": overdue, "planned": planned.get(c["id"], []),
+        })
+    rows.sort(key=lambda r: (-r["days_overdue"], r["name"].lower()))
+    return rows
+
+
+@api_router.get("/visits/due")
+async def visits_due(
+    horizon_days: int = Query(default=7, ge=0, le=90), zone_id: Optional[str] = None, channel: Optional[str] = None,
+    client_id: Optional[str] = None, current_user: User = Depends(_visits_user),
+):
+    cid = _visit_client_id(current_user, client_id)
+    rows = await _due_rows(cid, _belgrade_today(), horizon_days)
+    if zone_id:
+        rows = [r for r in rows if r["zone_id"] == zone_id]
+    if channel:
+        rows = [r for r in rows if r["channel"] == channel]
+    return rows
+
+
+async def _visit_out_rows(client_id: str, docs: List[dict]) -> List[dict]:
+    """Visits with what the screen needs about the shop (address, phone, zone, last order)."""
+    ids = list({d["customer_id"] for d in docs})
+    customers = {c["id"]: c async for c in db.customers.find({"client_id": client_id, "id": {"$in": ids}}, {"_id": 0})}
+    zones = {z["id"]: z["name"] async for z in db.zones.find({"client_id": client_id}, {"_id": 0, "id": 1, "name": 1})}
+    last_order = {
+        r["_id"]: r["last"] async for r in db.orders.aggregate([
+            {"$match": {"client_id": client_id, "customer_id": {"$in": ids}, "status": {"$nin": ["canceled", "rejected"]}}},
+            {"$group": {"_id": "$customer_id", "last": {"$max": "$created_at"}}},
+        ])
+    }
+    out = []
+    for d in docs:
+        c = customers.get(d["customer_id"]) or {}
+        out.append({
+            **d, "street": c.get("street") or "", "city": c.get("city") or "", "address": c.get("address") or "",
+            "phone": c.get("phone") or "", "zone_id": c.get("zone_id"), "zone_name": zones.get(c.get("zone_id")),
+            "last_order": (last_order.get(d["customer_id"]) or "")[:10] or None,
+        })
+    return out
+
+
+def _visit_actor_scope(user: User, client_id: str, user_id: Optional[str]) -> Dict[str, Any]:
+    """Who's visits are read: a sales rep only their own, the admin anyone's (or everyone's)."""
+    query: Dict[str, Any] = {"client_id": client_id}
+    if user.role == Role.OPERATOR:
+        query["user_id"] = user.id
+    elif user_id:
+        query["user_id"] = user_id
+    return query
+
+
+@api_router.get("/visits/plan")
+async def visits_plan(
+    from_date: str = Query(alias="from"), to_date: str = Query(alias="to"), user_id: Optional[str] = None,
+    client_id: Optional[str] = None, current_user: User = Depends(_visits_user),
+):
+    cid = _visit_client_id(current_user, client_id)
+    start, end = _visit_day(from_date, "from"), _visit_day(to_date, "to")
+    if end < start or (end - start).days > 93:
+        raise HTTPException(status_code=400, detail="Period must be 1-93 days")
+    query = {**_visit_actor_scope(current_user, cid, user_id), "date": {"$gte": start.isoformat(), "$lte": end.isoformat()}}
+    docs = await db.visits.find(query, {"_id": 0}).sort([("date", 1), ("created_at", 1)]).to_list(None)
+    return await _visit_out_rows(cid, docs)
+
+
+class VisitPlanItem(BaseModel):
+    customer_id: str
+    date: str
+
+
+class VisitPlanInput(BaseModel):
+    items: List[VisitPlanItem] = Field(min_length=1, max_length=200)
+    user_id: Optional[str] = None  # admin: plan for this sales rep (default: yourself)
+    client_id: Optional[str] = None
+
+
+async def _visit_target_user(user: User, client_id: str, user_id: Optional[str]) -> dict:
+    """The sales rep a plan entry is for: a rep plans for themselves, the admin picks one of the client's reps."""
+    if user.role == Role.OPERATOR:
+        if user_id and user_id != user.id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return {"id": user.id, "name": user.name}
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required: whose plan is this")
+    rep = await db.users.find_one({"id": user_id, "client_id": client_id, "role": Role.OPERATOR.value}, {"_id": 0})
+    if not rep:
+        raise HTTPException(status_code=404, detail="Sales rep not found")
+    return {"id": rep["id"], "name": rep["name"]}
+
+
+@api_router.post("/visits/plan")
+async def visits_add_to_plan(inp: VisitPlanInput, current_user: User = Depends(_visits_user)):
+    cid = _visit_client_id(current_user, inp.client_id)
+    rep = await _visit_target_user(current_user, cid, inp.user_id)
+    today = _belgrade_today()
+    created, warnings = [], []
+    for item in inp.items:
+        day = _visit_day(item.date)
+        if day < today:
+            raise HTTPException(status_code=400, detail="A visit cannot be planned in the past")
+        customer = await db.customers.find_one({"id": item.customer_id, "client_id": cid}, {"_id": 0})
+        if not customer or customer.get("active") is False:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        if await db.visits.find_one(
+            {"client_id": cid, "user_id": rep["id"], "customer_id": customer["id"], "date": day.isoformat(), "status": "planned"}, {"_id": 1}
+        ):
+            continue  # already in this day's plan
+        others = [
+            {"user_id": v["user_id"], "user_name": v.get("user_name"), "date": v["date"]}
+            async for v in db.visits.find(
+                {"client_id": cid, "customer_id": customer["id"], "status": "planned", "user_id": {"$ne": rep["id"]}}, {"_id": 0}
+            )
+        ]
+        if others:
+            warnings.append({"customer_id": customer["id"], "planned_by": others})
+        visit_id = str(uuid.uuid4())
+        doc = {
+            "id": visit_id, "client_id": cid, "customer_id": customer["id"], "customer_name": customer["name"],
+            "user_id": rep["id"], "user_name": rep["name"], "date": day.isoformat(), "channel": customer.get("visit_channel") or "visit",
+            "status": "planned", "done_at": None, "note": None, "order_id": None,
+            "created_by": current_user.id, "created_at": now_iso(),
+        }
+        await db.visits.insert_one({**doc, "_id": visit_id})
+        created.append(doc)
+    return {"created": await _visit_out_rows(cid, created), "warnings": warnings}
+
+
+class VisitSuggestInput(BaseModel):
+    from_date: str = Field(alias="from")
+    to_date: str = Field(alias="to")
+    user_id: Optional[str] = None
+    zone_ids: Optional[List[str]] = None
+    max_per_day: Optional[int] = Field(default=None, ge=1, le=60)
+    client_id: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+
+@api_router.post("/visits/plan/suggest")
+async def visits_suggest(inp: VisitSuggestInput, current_user: User = Depends(_visits_user)):
+    """A proposal for the period: the shops that are due, grouped by zone and spread over the working days.
+    Nothing is saved - the user confirms it (POST /visits/plan) or changes it first."""
+    cid = _visit_client_id(current_user, inp.client_id)
+    start, end = _visit_day(inp.from_date, "from"), _visit_day(inp.to_date, "to")
+    today = _belgrade_today()
+    start = max(start, today)
+    if end < start or (end - start).days > 93:
+        raise HTTPException(status_code=400, detail="Period must be 1-93 days")
+    settings = _visit_settings_of(await db.clients.find_one({"id": cid}, {"_id": 0, "visit_settings": 1}))
+    per_day = inp.max_per_day or settings["max_per_day"]
+    days = [start + timedelta(days=i) for i in range((end - start).days + 1) if (start + timedelta(days=i)).weekday() in settings["plan_days"]]
+    if not days:
+        return {"days": [], "left_out": 0, "claimed": 0}
+    rows = await _due_rows(cid, today, horizon_days=(end - today).days)
+    claimed = [r for r in rows if r["planned"]]  # someone already plans them: not suggested again
+    rows = [r for r in rows if not r["planned"]]
+    if inp.zone_ids:
+        rows = [r for r in rows if r["zone_id"] in inp.zone_ids]
+    capacity = len(days) * per_day
+    chosen = rows[:capacity]  # rows are sorted by how late they are
+    zones: Dict[Optional[str], List[dict]] = {}
+    for r in chosen:
+        zones.setdefault(r["zone_id"], []).append(r)
+    # the zone with the latest shop first, shops of one zone stay together (they may spill into the next day)
+    ordered = sorted(zones.values(), key=lambda g: (-max(r["days_overdue"] for r in g), (g[0]["zone_name"] or "~")))
+    flat = [r for group in ordered for r in group]
+    plan = [{"date": d.isoformat(), "items": flat[i * per_day:(i + 1) * per_day]} for i, d in enumerate(days)]
+    return {"days": [p for p in plan if p["items"]], "left_out": len(rows) - len(chosen), "claimed": len(claimed)}
+
+
+async def _visit_for_action(visit_id: str, user: User) -> dict:
+    visit = await get_scoped_or_404("visits", visit_id, user)
+    if user.role == Role.OPERATOR and visit["user_id"] != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    return visit
+
+
+class VisitDoneInput(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=500)
+    order_id: Optional[str] = None
+
+
+class VisitSkipInput(BaseModel):
+    note: str = Field(min_length=1, max_length=500)
+
+
+class VisitMoveInput(BaseModel):
+    date: str
+
+
+class VisitNowInput(BaseModel):
+    customer_id: str
+    note: Optional[str] = Field(default=None, max_length=500)
+    order_id: Optional[str] = None
+    user_id: Optional[str] = None
+    client_id: Optional[str] = None
+
+
+async def _check_visit_order(client_id: str, customer_id: str, order_id: Optional[str]) -> Optional[str]:
+    if not order_id:
+        return None
+    order = await db.orders.find_one({"id": order_id, "client_id": client_id}, {"_id": 0, "customer_id": 1})
+    if not order or order.get("customer_id") != customer_id:
+        raise HTTPException(status_code=400, detail="Order does not belong to this customer")
+    return order_id
+
+
+async def _finish_visit(visit: dict, note: Optional[str], order_id: Optional[str]) -> dict:
+    update = {"status": "done", "done_at": now_iso(), "note": (note or "").strip() or visit.get("note"), "order_id": order_id}
+    result = await db.visits.update_one({"id": visit["id"], "status": "planned"}, {"$set": update})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Visit is not planned any more")
+    return {**visit, **update}
+
+
+@api_router.post("/visits/{visit_id}/done")
+async def visit_done(visit_id: str, inp: VisitDoneInput, current_user: User = Depends(_visits_user)):
+    visit = await _visit_for_action(visit_id, current_user)
+    order_id = await _check_visit_order(visit["client_id"], visit["customer_id"], inp.order_id)
+    return (await _visit_out_rows(visit["client_id"], [await _finish_visit(visit, inp.note, order_id)]))[0]
+
+
+@api_router.post("/visits/{visit_id}/skip")
+async def visit_skip(visit_id: str, inp: VisitSkipInput, current_user: User = Depends(_visits_user)):
+    visit = await _visit_for_action(visit_id, current_user)
+    update = {"status": "skipped", "done_at": now_iso(), "note": inp.note.strip()}
+    result = await db.visits.update_one({"id": visit_id, "status": "planned"}, {"$set": update})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Visit is not planned any more")
+    return (await _visit_out_rows(visit["client_id"], [{**visit, **update}]))[0]
+
+
+@api_router.put("/visits/{visit_id}")
+async def visit_move(visit_id: str, inp: VisitMoveInput, current_user: User = Depends(_visits_user)):
+    visit = await _visit_for_action(visit_id, current_user)
+    day = _visit_day(inp.date)
+    if day < _belgrade_today():
+        raise HTTPException(status_code=400, detail="A visit cannot be planned in the past")
+    result = await db.visits.update_one({"id": visit_id, "status": "planned"}, {"$set": {"date": day.isoformat()}})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Visit is not planned any more")
+    return (await _visit_out_rows(visit["client_id"], [{**visit, "date": day.isoformat()}]))[0]
+
+
+@api_router.delete("/visits/{visit_id}")
+async def visit_delete(visit_id: str, current_user: User = Depends(_visits_user)):
+    await _visit_for_action(visit_id, current_user)
+    result = await db.visits.delete_one({"id": visit_id, "status": "planned"})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=409, detail="Only a planned visit can be removed")
+    return {"ok": True}
+
+
+@api_router.post("/visits")
+async def visit_now(inp: VisitNowInput, current_user: User = Depends(_visits_user)):
+    """"Visited now" for any shop, planned or not. If the rep had it planned (today or earlier), that entry is completed."""
+    cid = _visit_client_id(current_user, inp.client_id)
+    rep = await _visit_target_user(current_user, cid, inp.user_id)
+    customer = await db.customers.find_one({"id": inp.customer_id, "client_id": cid}, {"_id": 0})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    order_id = await _check_visit_order(cid, customer["id"], inp.order_id)
+    today = _belgrade_today().isoformat()
+    planned = await db.visits.find_one(
+        {"client_id": cid, "user_id": rep["id"], "customer_id": customer["id"], "status": "planned", "date": {"$lte": today}},
+        {"_id": 0}, sort=[("date", 1)],
+    )
+    if planned:
+        return (await _visit_out_rows(cid, [await _finish_visit(planned, inp.note, order_id)]))[0]
+    visit_id = str(uuid.uuid4())
+    doc = {
+        "id": visit_id, "client_id": cid, "customer_id": customer["id"], "customer_name": customer["name"],
+        "user_id": rep["id"], "user_name": rep["name"], "date": today, "channel": customer.get("visit_channel") or "visit",
+        "status": "done", "done_at": now_iso(), "note": (inp.note or "").strip() or None, "order_id": order_id,
+        "created_by": current_user.id, "created_at": now_iso(),
+    }
+    await db.visits.insert_one({**doc, "_id": visit_id})
+    return (await _visit_out_rows(cid, [doc]))[0]
+
+
+@api_router.get("/visits/report")
+async def visits_report(
+    from_date: str = Query(alias="from"), to_date: str = Query(alias="to"), client_id: Optional[str] = None,
+    current_user: User = Depends(_visits_manager),
+):
+    """Per sales rep: planned / done / skipped in the period, planned visits that are overdue, and the customers
+    that are late with their visit (per zone)."""
+    cid = _visit_client_id(current_user, client_id)
+    start, end = _visit_day(from_date, "from"), _visit_day(to_date, "to")
+    if end < start:
+        raise HTTPException(status_code=400, detail="Period must be 1-93 days")
+    today = _belgrade_today()
+    reps = {
+        u["id"]: {"user_id": u["id"], "user_name": u["name"], "planned": 0, "done": 0, "skipped": 0, "overdue_planned": 0, "total": 0}
+        async for u in db.users.find({"client_id": cid, "role": Role.OPERATOR.value, "active": {"$ne": False}}, {"_id": 0, "id": 1, "name": 1})
+    }
+    async for v in db.visits.find({"client_id": cid, "date": {"$gte": start.isoformat(), "$lte": end.isoformat()}}, {"_id": 0}):
+        row = reps.setdefault(v["user_id"], {"user_id": v["user_id"], "user_name": v.get("user_name"), "planned": 0, "done": 0, "skipped": 0, "overdue_planned": 0, "total": 0})
+        row["total"] += 1
+        row[v["status"]] += 1
+        if v["status"] == "planned" and v["date"] < today.isoformat():
+            row["overdue_planned"] += 1
+    for row in reps.values():
+        row["done_pct"] = round(100 * row["done"] / row["total"]) if row["total"] else None
+    late: Dict[str, int] = {}
+    late_rows = [r for r in await _due_rows(cid, today, 0) if r["days_overdue"] > 0]
+    for r in late_rows:
+        late[r["zone_name"] or ""] = late.get(r["zone_name"] or "", 0) + 1
+    return {
+        "from": start.isoformat(), "to": end.isoformat(), "reps": sorted(reps.values(), key=lambda r: (r["user_name"] or "").lower()),
+        "late_customers": len(late_rows), "late_by_zone": [{"zone": z, "count": n} for z, n in sorted(late.items(), key=lambda kv: -kv[1])],
+    }
+
+
 # ---------------- SEF e-invoices (module `sef`, plan .claude/DOCS/PLAN_SEF_MODUL.md, phase S3) ----------------
 INTEGRATION_SECRET = os.environ.get("INTEGRATION_SECRET", "")
 # Tests and local development can point the client at a fake SEF; never in production.
