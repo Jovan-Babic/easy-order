@@ -21,6 +21,9 @@ type Customer = {
   city?: string;
   postal_code?: string;
   country?: string;
+  visit_every_days?: number | null;
+  visit_channel?: "visit" | "call";
+  zone_id?: string | null;
   invoice_missing?: string[];
   active?: boolean;
 };
@@ -30,6 +33,7 @@ type Client = { id: string; name: string };
 const emptyForm = {
   name: "", address: "", email: "", phone: "", pib: "",
   registration_number: "", street: "", city: "", postal_code: "", country: "RS", client_id: "",
+  visit_every_days: "", visit_channel: "visit", zone_id: "",
 };
 
 export default function CustomersPage() {
@@ -47,6 +51,13 @@ export default function CustomersPage() {
   const [form, setForm] = useState(emptyForm);
   const [pendingDelete, setPendingDelete] = useState<Customer | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Visit plan fields (module `visits`): how often the shop is visited, how, and its zone.
+  const hasVisits = session.modules.includes("visits") && !isSuperAdmin;
+  const [zones, setZones] = useState<Array<{ id: string; name: string }>>([]);
+  useEffect(() => {
+    if (!hasVisits) return;
+    fetch("/api/zones").then((r) => (r.ok ? r.json() : [])).then(setZones).catch(() => setZones([]));
+  }, [hasVisits]);
 
   const openEdit = (c: Customer) => {
     setError(null);
@@ -55,6 +66,7 @@ export default function CustomersPage() {
       name: c.name, address: c.address ?? "", email: c.email ?? "", phone: c.phone ?? "", pib: c.pib ?? "",
       registration_number: c.registration_number ?? "", street: c.street ?? "", city: c.city ?? "",
       postal_code: c.postal_code ?? "", country: c.country || "RS", client_id: c.client_id,
+      visit_every_days: c.visit_every_days ? String(c.visit_every_days) : "", visit_channel: c.visit_channel ?? "visit", zone_id: c.zone_id ?? "",
     });
     setShowForm(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -101,6 +113,11 @@ export default function CustomersPage() {
         postal_code: form.postal_code,
         country: form.country || "RS",
       };
+      if (hasVisits) {
+        payload.visit_every_days = Number(form.visit_every_days) || 0; // 0 = not in rotation
+        payload.visit_channel = form.visit_channel;
+        payload.zone_id = form.zone_id; // "" = no zone
+      }
       if (isSuperAdmin && !editingId) payload.client_id = form.client_id;
       const res = await fetch(editingId ? `/api/customers/${editingId}` : "/api/customers", {
         method: editingId ? "PUT" : "POST",
@@ -210,6 +227,35 @@ export default function CustomersPage() {
               <input maxLength={2} value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value.toUpperCase() })} className={fieldInput} />
             </Field>
           </div>
+          {hasVisits && (
+            <div className="grid grid-cols-3 gap-3">
+              <Field label={t("visitEvery")}>
+                <select value={form.visit_every_days} onChange={(e) => setForm({ ...form, visit_every_days: e.target.value })} className={fieldInput}>
+                  <option value="">{t("visitNotInRotation")}</option>
+                  {[7, 14, 30].map((d) => (
+                    <option key={d} value={String(d)}>{t("visitEveryDays").replace("{n}", String(d))}</option>
+                  ))}
+                  {form.visit_every_days && ![7, 14, 30].includes(Number(form.visit_every_days)) && (
+                    <option value={form.visit_every_days}>{t("visitEveryDays").replace("{n}", form.visit_every_days)}</option>
+                  )}
+                </select>
+              </Field>
+              <Field label={t("visitChannel")}>
+                <select value={form.visit_channel} onChange={(e) => setForm({ ...form, visit_channel: e.target.value as "visit" | "call" })} className={fieldInput}>
+                  <option value="visit">{t("visitChannelVisit")}</option>
+                  <option value="call">{t("visitChannelCall")}</option>
+                </select>
+              </Field>
+              <Field label={t("visitZone")}>
+                <select value={form.zone_id} onChange={(e) => setForm({ ...form, zone_id: e.target.value })} className={fieldInput}>
+                  <option value="">{t("visitNoZone")}</option>
+                  {zones.map((z) => (
+                    <option key={z.id} value={z.id}>{z.name}</option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+          )}
           {isSuperAdmin && !editingId && (
             <Field label={t("client")}>
               <select required value={form.client_id} onChange={(e) => setForm({ ...form, client_id: e.target.value })} className={fieldInput}>
