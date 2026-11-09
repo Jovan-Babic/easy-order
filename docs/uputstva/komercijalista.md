@@ -325,6 +325,16 @@ Ako se ne prikaže nijedan artikal (**Nema proizvoda**), taj barkod još nije up
 
 ---
 
+## Obilazak radnji (dodatni paket „Obilasci")
+
+Ako vaša firma ima paket **Obilasci**, u aplikaciji se pojavljuje tab **Obilazak**. Tu vidite koje radnje treba da obiđete (ili pozovete) i beležite šta ste obavili.
+
+- **Danas:** lista radnji planiranih za danas, grupisana po zoni, a iznad nje **Zaostalo** (planirano ranije, a nije obeleženo). Uz svaku radnju piše adresa, kad je poslednji put naručivala i način (obilazak ili poziv).
+- **Dugmad uz radnju:** **Pozovi** (otvara poziv), **Navigacija** (otvara mape sa adresom), **Nova porudžbina** (otvara katalog sa već izabranom radnjom, a kad potvrdite porudžbinu, poseta se sama obeleži kao obavljena), **Obiđeno** ili **Pozvano** (uz opcionu belešku) i **Preskoči** (razlog je obavezan).
+- **Nedelja:** sve posete ove nedelje po danima. Dugme **Predlog nedelje** složi radnje koje su na redu, grupisane po zoni i raspoređene po radnim danima. Predlog se **ne čuva** dok ga ne prihvatite.
+- **Na redu:** radnje kojima se bliži ili je prošao rok za obilazak (kasni X dana). Dugme **Dodaj u današnji plan** ubacuje radnju u današnju listu. Ako je radnja već u tuđem planu, to piše uz nju: kupci su zajednički, pa možete da je dodate i ipak.
+- Radnju koju niste planirali, a ste je obišli, nađite u listi **Na redu**, dodajte je u današnji plan i obeležite.
+
 ## 12. Česta pitanja i problemi
 
 **„Server nije dostupan. Proverite internet vezu.“**

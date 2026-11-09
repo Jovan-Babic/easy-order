@@ -35,6 +35,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
   { href: "/reports", labelKey: "reports", roles: ["admin"], module: "reports" },
   { href: "/focus", labelKey: "focus", roles: ["admin"], module: "focus" },
   { href: "/targets", labelKey: "targets", roles: ["admin"], module: "targets" },
+  { href: "/visits", labelKey: "visitsTitle", roles: ["admin"], module: "visits" },
   { href: "/integrations", labelKey: "integrations", roles: ["superadmin", "admin"], module: "sef" },
   { href: "/stock", labelKey: "stock", roles: ["admin", "warehouse"], module: "stock" },
   { href: "/orders", labelKey: "orders", roles: ["admin", "warehouse"] },
@@ -45,7 +46,7 @@ const NAV_ITEMS: Array<{ href: string; labelKey: TranslationKey; roles: readonly
 // Menu order per role (an item missing from a list goes to the end).
 const NAV_ORDER: Record<string, string[]> = {
   superadmin: ["/dashboard", "/clients", "/subscriptions", "/pricing", "/payments", "/billing-drafts", "/users", "/integrations", "/announcements", "/audit", "/units", "/settings", "/app"],
-  admin: ["/dashboard", "/seats", "/billing", "/users", "/customers", "/products", "/orders", "/warehouse", "/stock", "/focus", "/targets", "/reports", "/integrations", "/guide", "/app"],
+  admin: ["/dashboard", "/seats", "/billing", "/users", "/customers", "/products", "/orders", "/warehouse", "/stock", "/focus", "/targets", "/visits", "/reports", "/integrations", "/guide", "/app"],
   warehouse: ["/warehouse", "/stock", "/orders", "/guide", "/app"],
 };
 

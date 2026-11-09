@@ -388,6 +388,21 @@ Isti obrazac služi i za izmenu postojećeg kupca (olovka na spisku).
 
 ---
 
+## Obilasci radnji (dodatni paket „Obilasci")
+
+Ako firma ima paket **Obilasci**, u meniju postoji stranica **Obilasci**. Služi da komercijalisti znaju koje radnje da obiđu (ili pozovu), a vi vidite šta je planirano i obavljeno.
+
+**Priprema**
+1. Na stranici **Obilasci → Zone** napravite zone (npr. „Novi Sad centar", „Zrenjanin"). Zona grupiše radnje koje su blizu, pa se obilaze istog dana.
+2. U formi za **Kupca** podesite **Učestalost obilaska** (na 7, 14 ili 30 dana, ili „Nije u rotaciji"), **Način** (obilazak ili poziv) i **Zonu**.
+3. Na **Zone → Podešavanja plana** izaberite dane u nedelji u kojima se planira i najviše radnji dnevno u predlogu.
+
+**Rad**
+- **Na redu:** radnje kojima je rok za obilazak blizu ili je prošao, grupisane po zonama. Rok je poslednja obavljena poseta (a za nove kupce dan unosa) plus učestalost. Označite radnje, izaberite komercijalistu i datum, pa **Dodaj u plan**. Ako je radnja već u tuđem planu, to piše uz nju.
+- **Plan:** izaberite komercijalistu i nedelju. **Predlog nedelje** slaže radnje koje su na redu po zonama i radnim danima. Predlog se ne čuva dok ga ne prihvatite. Posete možete da premeštate na drugi dan ili uklanjate.
+- **Izveštaj:** po komercijalisti: planirano, obavljeno, preskočeno, koliko je planiranih poseta kojima je prošao datum, uspešnost, i koliko kupaca kasni (po zonama).
+- Kupci su **zajednički**: svi komercijalisti vide sve kupce, a plan je po komercijalisti. Komercijalista sam može da napravi svoj plan iz aplikacije.
+
 ## 14. Šta administrator firme ne menja
 
 Neka podešavanja firme menja samo Easy Order tim:

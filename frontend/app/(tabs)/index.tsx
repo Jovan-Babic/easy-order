@@ -43,7 +43,8 @@ function OrderCatalogScreen() {
   const units = useUnits();
   const { logout } = useAuth();
   const router = useRouter();
-  const { edit } = useLocalSearchParams<{ edit?: string }>();
+  const { edit, customer: customerParam, visit: visitParam } = useLocalSearchParams<{ edit?: string; customer?: string; visit?: string }>();
+  const appliedCustomer = useRef<string | null>(null);
   // Set while editing a still-new order (opened from History): the catalog is
   // prefilled from it and "confirm" saves with PUT instead of creating.
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
@@ -77,6 +78,11 @@ function OrderCatalogScreen() {
       const [p, c] = await Promise.all([api.listProducts(), api.listCustomers()]);
       setProducts(p);
       setCustomers(c);
+      if (customerParam && appliedCustomer.current !== customerParam) {
+        // Opened from the visit plan: the shop is already chosen.
+        appliedCustomer.current = customerParam;
+        setSelected(c.find((x) => x.id === customerParam) ?? null);
+      }
       if (edit && appliedEdit.current !== edit) {
         appliedEdit.current = edit;
         const order = await api.getOrder(edit);
@@ -92,7 +98,7 @@ function OrderCatalogScreen() {
     } finally {
       setLoading(false);
     }
-  }, [edit]);
+  }, [edit, customerParam]);
 
   useFocusEffect(
     useCallback(() => {
@@ -189,6 +195,8 @@ function OrderCatalogScreen() {
         ? await api.updateOrder(editingOrder.id, { customer_id: selected.id, items })
         : await api.createOrder({ customer_id: selected.id, items });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      // An order placed from a planned visit completes that visit (best effort: the order is already saved).
+      if (!editingOrder && visitParam) api.visitDone(visitParam, { order_id: order.id }).catch(() => {});
       if (editingOrder) stopEditing(false);
       setDrafts({});
       setConfirmingOrder(false);

@@ -78,6 +78,16 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="visits"
+        options={{
+          title: t("visits"),
+          href: user?.role === "operator" && hasModule(user, "visits") ? undefined : null,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="walk-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="warehouse"
         options={{
           title: t("warehouse"),

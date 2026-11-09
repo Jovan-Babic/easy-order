@@ -61,6 +61,9 @@ export type Customer = {
   city?: string;
   postal_code?: string;
   country?: string;
+  visit_every_days?: number | null;
+  visit_channel?: "visit" | "call";
+  zone_id?: string | null;
   invoice_missing?: string[];
 };
 
