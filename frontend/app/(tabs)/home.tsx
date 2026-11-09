@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { Redirect, useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -54,6 +54,9 @@ export default function HomeScreen() {
   // when the same mode is opened twice.
   const open = (mode: "pack" | "expiry") =>
     router.navigate({ pathname: "/warehouse", params: { mode, ts: String(Date.now()) } } as never);
+
+  // Only the warehouse role has this start screen; anybody else who lands here (e.g. by a back gesture) goes to the catalog.
+  if (user && user.role !== "warehouse") return <Redirect href="/" />;
 
   return (
     <View style={styles.container}>
