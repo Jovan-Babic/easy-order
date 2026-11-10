@@ -76,3 +76,31 @@ def test_published_copy_matches_the_docs():
         assert sorted(p.name for p in (docs / "slike" / name).glob("*.png")) == sorted(
             p.name for p in (published / "slike" / name).glob("*.png")
         )
+
+
+def _client_admin(superadmin_client, modules):
+    suffix = uuid.uuid4().hex[:8]
+    email = f"test-guide-mod-{suffix}@easyorder.dev"
+    r = superadmin_client.post(f"{API}/clients", json={"name": f"TEST_GuideMod_{suffix}", "admin_name": "TEST G", "admin_email": email, "modules": modules})
+    assert r.status_code == 200, r.text
+    return r.json()["client"]["id"], activate_invited_user(email, r.json()["temporary_password"])
+
+
+def test_guide_shows_only_the_clients_modules(superadmin_client):
+    """The guide of a client without add-ons has no SEF / visits parts; with them it has."""
+    bare_id, bare = _client_admin(superadmin_client, [])
+    full_id, full = _client_admin(superadmin_client, ["warehouse", "stock", "sef", "visits"])
+    try:
+        md = bare.get(f"{API}/guide").json()["markdown"]
+        assert "E-faktura preko SEF-a" not in md and "Obilasci radnji" not in md and "Roba u fokusu" not in md
+        assert "<!--" not in md and "## 1. Prva prijava" in md
+        rep = bare.get(f"{API}/guide", params={"role": "operator"}).json()["markdown"]  # the admin reads the reps' guide the same way
+        assert "Obilazak radnji" not in rep and "Moj učinak" not in rep
+        md = full.get(f"{API}/guide").json()["markdown"]
+        assert "E-faktura preko SEF-a" in md and "Obilasci radnji" in md and "Magacin i Stanje" in md
+        assert "Obilazak radnji" in full.get(f"{API}/guide", params={"role": "operator"}).json()["markdown"]
+        # the superadmin sees the whole guide
+        assert "E-faktura preko SEF-a" in superadmin_client.get(f"{API}/guide").json()["markdown"]
+    finally:
+        for cid in (bare_id, full_id):
+            superadmin_client.delete(f"{API}/clients/{cid}")

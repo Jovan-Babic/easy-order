@@ -7,7 +7,7 @@ verzija: 1.1
 
 # Uputstvo za komercijalistu
 
-Easy Order je aplikacija u kojoj kod kupca primate porudžbinu: izaberete kupca, unesete količine i popuste, potvrdite i dobijete narudžbenicu koju možete da pošaljete kupcu. Porudžbina odmah stiže u magacin, a u aplikaciji pratite da li je pripremljena i poslata.
+Easy Order je aplikacija u kojoj kod kupca primate porudžbinu: izaberete kupca, unesete količine i popuste, potvrdite i dobijete narudžbenicu koju možete da pošaljete kupcu. Porudžbina odmah stiže u firmu<!-- modul: warehouse --> i u magacin, a u aplikaciji pratite da li je pripremljena i poslata<!-- /modul -->.
 
 > **Ukratko – jedna porudžbina u 5 koraka**
 >
@@ -16,8 +16,18 @@ Easy Order je aplikacija u kojoj kod kupca primate porudžbinu: izaberete kupca,
 > 3. **Upiši količinu** i po potrebi izaberi **dodatni popust**.
 > 4. Dole pritisni **Potvrdi**, proveri spisak i ponovo **Potvrdi**.
 > 5. Na ekranu **Faktura** pošalji narudžbenicu kupcu (email, PDF ili kopiraj).
+<!-- modul: focus -->
 >
-> Pazite na artikle označene kao **U fokusu** – to su artikli koje vaša firma želi da se više nude (odeljak 5). Napredak prema vašem cilju pratite na kartici **Moj učinak** (odeljak 9).
+> Pazite na artikle označene kao **U fokusu** – to su artikli koje vaša firma želi da se više nude (odeljak 5).
+<!-- /modul -->
+<!-- modul: targets -->
+>
+> Napredak prema vašem cilju pratite na kartici **Moj učinak** (odeljak 9).
+<!-- /modul -->
+<!-- modul: visits -->
+>
+> Koje radnje danas obilazite ili zovete, piše na kartici **Obilazak** (odeljak 10).
+<!-- /modul -->
 
 Na slikama su važni delovi uokvireni narandžastim okvirom, a broj u krugu odgovara broju u tekstu ispod slike.
 
@@ -61,14 +71,14 @@ Pritisnite **Promena lozinke** i aplikacija se otvara. Sledeći put se prijavlju
 
 ## 2. Glavni ekran – Porudžbina
 
-Posle prijave otvara se ekran **Porudžbina**. Na dnu ekrana su kartice: **Porudžbina** (unos), **Moj učinak** (vaš cilj i napredak, vidi se samo ako ga vaša firma koristi) i **Istorija** (vaše porudžbine).
+Posle prijave otvara se ekran **Porudžbina**. Na dnu ekrana su kartice: **Porudžbina** (unos), <!-- modul: targets -->**Moj učinak** (vaš cilj i napredak), <!-- /modul --><!-- modul: visits -->**Obilazak** (plan obilaska radnji), <!-- /modul -->**Istorija** (vaše porudžbine).
 
 ![Glavni ekran](slike/komercijalista/03-glavni-ekran.png)
 
 1. **Izaberi kupca** – za koga pravite porudžbinu. Dok kupac nije izabran, porudžbina ne može da se potvrdi.
 2. **Pretraga** – kucajte deo naziva artikla ili proizvođača.
 3. **Barkod** – otvara kameru: skenirate barkod sa artikla i aplikacija odmah prikaže taj artikal.
-4. **Proizvođači** – brzi filter: dodirnite proizvođača da vidite samo njegove artikle, **Svi** vraća ceo katalog. Ako vaša firma ističe robu u fokusu, ispred proizvođača stoji i narandžasti čip **Fokus** (odeljak 5).
+4. **Proizvođači** – brzi filter: dodirnite proizvođača da vidite samo njegove artikle, **Svi** vraća ceo katalog.<!-- modul: focus --> Ispred proizvođača stoji i narandžasti čip **Fokus** (odeljak 5).<!-- /modul -->
 5. **Kartica artikla** – ovde unosite količinu i popust (objašnjeno u odeljku 4).
 6. **SR / EN** – jezik aplikacije.
 7. **Odjava**.
@@ -104,9 +114,10 @@ Kupca možete da promenite bilo kada pre potvrde, uneti artikli ostaju.
 
 ---
 
+<!-- modul: focus -->
 ## 5. Roba u fokusu
 
-Administrator može da označi artikle na koje želi da obratite posebnu pažnju: nešto ima previše na lageru, nekom artiklu se bliži rok trajanja ili je u akciji. Takvi artikli su u katalogu naglašeni, pa ih lako primetite i ponudite kupcu. Ova funkcija se vidi samo ako je vaša firma koristi.
+Administrator može da označi artikle na koje želi da obratite posebnu pažnju: nešto ima previše na lageru, nekom artiklu se bliži rok trajanja ili je u akciji. Takvi artikli su u katalogu naglašeni, pa ih lako primetite i ponudite kupcu.
 
 ![Roba u fokusu u katalogu](slike/komercijalista/18-fokus-katalog.png)
 
@@ -142,6 +153,7 @@ Ako u porudžbini nema nijednog artikla iz fokusa, pri potvrdi se pojavi narand�
 1. **U porudžbini nema artikala iz fokusa (2 u ponudi)** – broj u zagradi je koliko artikala je trenutno u fokusu.
 
 ---
+<!-- /modul -->
 
 ## 6. Primer: porudžbina za Maxi Market
 
@@ -187,6 +199,7 @@ U pretragu ukucajte **gauda**. Kod artikala koji se prodaju na kilogram (litar, 
 1. Pretraga po nazivu (krstić desno briše pretragu).
 2. **Količina (kg)**: 2,5 znači 2,5 kg.
 
+<!-- modul: stock -->
 ### Ako naručite više nego što je slobodno
 Aplikacija vas upozori, ali vas ne sprečava da pošaljete porudžbinu. Magacin će poslati koliko ima, a na porudžbini ćete videti stvarno poslatu količinu (odeljak 8).
 
@@ -196,6 +209,7 @@ Aplikacija vas upozori, ali vas ne sprečava da pošaljete porudžbinu. Magacin 
 2. Narandžasto upozorenje **Količina je veća od slobodnog stanja**.
 
 > **Savet:** pre nego što kupcu obećate količinu, pogledajte **Slobodno**, ne **Na stanju**.
+<!-- /modul -->
 
 ### Korak 5 – potvrda porudžbine
 Dole pritisnite **Potvrdi**.
@@ -248,17 +262,26 @@ Kartica **Istorija** (dole desno) prikazuje sve vaše porudžbine, najnovije na 
 
 ### Šta znače statusi
 
+<!-- modul: warehouse -->
 ![Statusi porudžbina](slike/komercijalista/16-istorija-statusi.png)
+<!-- /modul -->
 
 | Status | Značenje | Šta vi možete |
 |---|---|---|
+<!-- modul: warehouse -->
 | **Nova** | Poslata, magacin je još nije preuzeo. | Izmena i otkazivanje. |
 | **U pripremi** (1) | Magacin je preuzeo i pakuje. | Samo pregled. Za izmenu se javite magacinu ili administratoru. |
 | **Odbijeno** (2) | Magacin je odbio porudžbinu. Ispod piše **razlog** (3). | Po potrebi napravite novu porudžbinu. |
 | **Poslato** (4) | Roba je poslata kupcu. | Samo pregled. Ako je poslato manje nego naručeno, vidi se **Naručeno … / Poslato …** (5). |
+<!-- /modul -->
+<!-- modul: !warehouse -->
+| **Nova** | Porudžbina je poslata firmi. | Izmena i otkazivanje. |
+<!-- /modul -->
 | **Otkazano** | Vi ste je otkazali. | Samo pregled. |
 
+<!-- modul: warehouse -->
 > Kad magacin porudžbinu pošalje ili odbije, na email dobijate obaveštenje.
+<!-- /modul -->
 
 ### Izmena porudžbine
 **Izmeni porudžbinu** otvara katalog sa već unetim kupcem, količinama i popustima.
@@ -268,10 +291,11 @@ Kartica **Istorija** (dole desno) prikazuje sve vaše porudžbine, najnovije na 
 1. Traka **Izmena porudžbine** – menjate postojeću porudžbinu, ne pravite novu.
 2. **Odustani** – izlazak bez izmena.
 
-Promenite šta treba i pritisnite **Potvrdi**. Ako je magacin u međuvremenu preuzeo porudžbinu, izmena više nije moguća i aplikacija će to javiti.
+Promenite šta treba i pritisnite **Potvrdi**.<!-- modul: warehouse --> Ako je magacin u međuvremenu preuzeo porudžbinu, izmena više nije moguća i aplikacija će to javiti.<!-- /modul -->
 
 ---
 
+<!-- modul: targets -->
 ## 9. Moj učinak – cilj i napredak
 
 Ako vaša firma prati ciljeve prodaje, administrator vam postavlja cilj za tekući mesec, a vi na kartici **Moj učinak** (dole u sredini) vidite koliko ste do sada ostvarili. Vidite samo svoje rezultate, ne i rezultate kolega.
@@ -304,8 +328,23 @@ Na dnu ekrana su poslednja tri meseca, da vidite kako ste prošli.
 > Ekran osvežavate povlačenjem nadole. Ako piše da cilj još nije postavljen, javite se administratoru, a do tada vidite samo ono što ste ostvarili.
 
 ---
+<!-- /modul -->
 
-## 10. Skeniranje barkoda
+<!-- modul: visits -->
+## 10. Obilazak radnji
+
+Na kartici **Obilazak** vidite koje radnje treba da obiđete (ili pozovete) i beležite šta ste obavili.
+
+- **Danas:** lista radnji planiranih za danas, grupisana po zoni, a iznad nje **Zaostalo** (planirano ranije, a nije obeleženo). Uz svaku radnju piše adresa, kad je poslednji put naručivala i način (obilazak ili poziv).
+- **Dugmad uz radnju:** **Pozovi** (otvara poziv), **Navigacija** (otvara mape sa adresom), **Nova porudžbina** (otvara katalog sa već izabranom radnjom, a kad potvrdite porudžbinu, poseta se sama obeleži kao obavljena), **Obiđeno** ili **Pozvano** (uz opcionu belešku) i **Preskoči** (razlog je obavezan).
+- **Nedelja:** sve posete ove nedelje po danima. Dugme **Predlog nedelje** složi radnje koje su na redu, grupisane po zoni i raspoređene po radnim danima. Predlog se **ne čuva** dok ga ne prihvatite.
+- **Na redu:** radnje kojima se bliži ili je prošao rok za obilazak (kasni X dana). Dugme **Dodaj u današnji plan** ubacuje radnju u današnju listu. Ako je radnja već u tuđem planu, to piše uz nju: kupci su zajednički, pa možete da je dodate i ipak.
+- Radnju koju niste planirali, a ste je obišli, nađite u listi **Na redu**, dodajte je u današnji plan i obeležite.
+
+---
+<!-- /modul -->
+
+## 11. Skeniranje barkoda
 
 Dodirnite ikonicu barkoda u polju za pretragu (odeljak 2, broj 3).
 
@@ -317,7 +356,7 @@ Ako se ne prikaže nijedan artikal (**Nema proizvoda**), taj barkod još nije up
 
 ---
 
-## 11. Obaveštenja u aplikaciji
+## 12. Obaveštenja u aplikaciji
 
 - **Nova verzija aplikacije** – pri pokretanju se može pojaviti poruka **Dostupna je nova verzija**. Izaberite **Preuzmi sada** i instalirajte (podaci ostaju).
 - **Izmene su spremne** – manja izmena je preuzeta sama; izaberite restart ili sačekajte sledeće pokretanje.
@@ -325,17 +364,7 @@ Ako se ne prikaže nijedan artikal (**Nema proizvoda**), taj barkod još nije up
 
 ---
 
-## Obilazak radnji (dodatni paket „Obilasci")
-
-Ako vaša firma ima paket **Obilasci**, u aplikaciji se pojavljuje tab **Obilazak**. Tu vidite koje radnje treba da obiđete (ili pozovete) i beležite šta ste obavili.
-
-- **Danas:** lista radnji planiranih za danas, grupisana po zoni, a iznad nje **Zaostalo** (planirano ranije, a nije obeleženo). Uz svaku radnju piše adresa, kad je poslednji put naručivala i način (obilazak ili poziv).
-- **Dugmad uz radnju:** **Pozovi** (otvara poziv), **Navigacija** (otvara mape sa adresom), **Nova porudžbina** (otvara katalog sa već izabranom radnjom, a kad potvrdite porudžbinu, poseta se sama obeleži kao obavljena), **Obiđeno** ili **Pozvano** (uz opcionu belešku) i **Preskoči** (razlog je obavezan).
-- **Nedelja:** sve posete ove nedelje po danima. Dugme **Predlog nedelje** složi radnje koje su na redu, grupisane po zoni i raspoređene po radnim danima. Predlog se **ne čuva** dok ga ne prihvatite.
-- **Na redu:** radnje kojima se bliži ili je prošao rok za obilazak (kasni X dana). Dugme **Dodaj u današnji plan** ubacuje radnju u današnju listu. Ako je radnja već u tuđem planu, to piše uz nju: kupci su zajednički, pa možete da je dodate i ipak.
-- Radnju koju niste planirali, a ste je obišli, nađite u listi **Na redu**, dodajte je u današnji plan i obeležite.
-
-## 12. Česta pitanja i problemi
+## 13. Česta pitanja i problemi
 
 **„Server nije dostupan. Proverite internet vezu.“**
 Telefon nema internet. Uključite mobilne podatke ili Wi-Fi i pokušajte ponovo. Unete količine ostaju dok ne zatvorite aplikaciju.
@@ -346,17 +375,17 @@ Pet puta je uneta pogrešna lozinka. Sačekajte 15 minuta, ili odmah koristite *
 **„Nalog ili firma su deaktivirani“ / „Pretplata je istekla“**
 Obratite se administratoru vaše firme.
 
+<!-- modul: focus -->
 **Šta znači narandžasti okvir i oznaka „U fokusu“ na artiklu?**
 Administrator želi da taj artikal ponudite kupcu (višak, bliži rok ili akcija). Vidi odeljak 5.
 
-**Ne vidim karticu „Moj učinak“.**
-Vaša firma ne koristi praćenje ciljeva. Pitajte administratora.
+<!-- /modul -->
 
 **Ne vidim neki artikal.**
 Artikal je neaktivan ili ne postoji u katalogu. Javite administratoru.
 
 **Pogrešio sam u porudžbini.**
-Dok je **Nova** – **Istorija** → **Izmeni porudžbinu** ili **Otkaži porudžbinu**. Kad je **U pripremi**, javite magacinu.
+Dok je **Nova** – **Istorija** → **Izmeni porudžbinu** ili **Otkaži porudžbinu**.<!-- modul: warehouse --> Kad je **U pripremi**, javite magacinu.<!-- /modul -->
 
 **Kupac traži narudžbenicu kasnije.**
 **Istorija** → dodirnite porudžbinu → **Pošalji na email** ili **Sačuvaj PDF**.
