@@ -6521,6 +6521,57 @@ class GuideOut(BaseModel):
     available_roles: List[str]  # the guides this user may open (an admin also reads the other two)
 
 
+# Parts of a guide that belong to a module are marked in the Markdown and dropped for a client without it,
+# so the guide shows only what the client really has (package + add-ons):
+#   <!-- modul: sef -->            a block on its own lines (sections, table rows, paragraphs)
+#   ...
+#   <!-- /modul -->
+#   text <!-- modul: focus -->inline text<!-- /modul --> text      (inside a line)
+# "modul: a, b" needs every module listed; "modul: !warehouse" is shown only WITHOUT that module.
+# After filtering the "## N." chapters are renumbered and "odeljak N" references follow them.
+_GUIDE_BLOCK = re.compile(
+    r"^[ \t]*<!-- modul: ([a-z!, ]+) -->[ \t]*\n((?:(?!<!-- modul:)(?!<!-- /modul -->).)*?)^[ \t]*<!-- /modul -->[ \t]*\n",
+    re.S | re.M,
+)
+_GUIDE_INLINE = re.compile(r"<!-- modul: ([a-z!, ]+) -->((?:(?!<!-- modul:)(?!<!-- /modul -->).)*?)<!-- /modul -->", re.S)
+_GUIDE_CHAPTER = re.compile(r"^## (\d+)\. ", re.M)
+_GUIDE_REFERENCE = re.compile(r"\b(odelj(?:ak|ka|ku|kom|ci|cima)|odeljci)\s+(\d+)")
+
+
+def _guide_rule_holds(spec: str, modules: set) -> bool:
+    for token in (t.strip() for t in spec.split(",")):
+        if not token:
+            continue
+        wanted = not token.startswith("!")
+        if (token.lstrip("!") in modules) != wanted:
+            return False
+    return True
+
+
+def guide_for_modules(text: str, modules) -> str:
+    """The guide text a client with these modules should see (see the marker rules above)."""
+    return _guide_render(text, modules)[0]
+
+
+def _guide_render(text: str, modules) -> Tuple[str, List[str]]:
+    """Filtered text + the chapter references that point at a removed chapter (a mistake in the guide)."""
+    modules = set(modules)
+    for pattern in (_GUIDE_BLOCK, _GUIDE_INLINE):
+        while True:  # innermost first, so markers may be nested
+            updated = pattern.sub(lambda m: m.group(2) if _guide_rule_holds(m.group(1), modules) else "", text)
+            if updated == text:
+                break
+            text = updated
+    text = re.sub(r"\n---\n(?:\s*\n---\n)+", "\n---\n", text)  # a removed chapter leaves its separator behind
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    numbers: Dict[str, str] = {}
+    for new, match in enumerate(_GUIDE_CHAPTER.finditer(text), start=1):
+        numbers[match.group(1)] = str(new)
+    text = _GUIDE_CHAPTER.sub(lambda m: f"## {numbers[m.group(1)]}. ", text)
+    dangling = [m.group(0) for m in _GUIDE_REFERENCE.finditer(text) if m.group(2) not in numbers]
+    return _GUIDE_REFERENCE.sub(lambda m: f"{m.group(1)} {numbers.get(m.group(2), m.group(2))}", text), dangling
+
+
 def _guide_roles_for(user: User) -> List[Role]:
     if user.role in (Role.ADMIN, Role.SUPERADMIN):
         return [Role.ADMIN, Role.OPERATOR, Role.WAREHOUSE]
@@ -6548,6 +6599,9 @@ async def get_guide(role: Optional[Role] = None, current_user: User = Depends(ge
             key, _, value = line.partition(":")
             meta[key.strip()] = value.strip()
         text = text[front.end():]
+    # only the parts of the client's package and add-ons (the superadmin sees everything)
+    modules = ALL_MODULES if current_user.role == Role.SUPERADMIN else [m for m in ALL_MODULES if has_module(current_user, Module(m))]
+    text = guide_for_modules(text, modules)
     text = re.sub(r"\]\(slike/([a-z0-9-]+)/([a-z0-9-]+\.png)\)", r"](/api/guide/image/\1/\2)", text)
     return GuideOut(
         role=wanted.value, title=meta.get("naslov", ""), version=meta.get("verzija", ""), markdown=text,

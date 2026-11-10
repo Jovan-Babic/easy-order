@@ -7,9 +7,9 @@ verzija: 1.0
 
 # Uputstvo za administratora firme
 
-Administrator firme vodi sve oko poslovanja u Easy Order: otvara naloge komercijalistima i magacionerima, unosi **proizvode** i **kupce**, prati **porudžbine** i **izveštaje**, ističe **robu u fokusu**, postavlja **ciljeve** komercijalistima i brine o **zaduženjima** za korišćenje sistema.
+Administrator firme vodi sve oko poslovanja u Easy Order: otvara naloge komercijalistima<!-- modul: warehouse --> i magacionerima<!-- /modul -->, unosi **proizvode** i **kupce**, prati **porudžbine**<!-- modul: reports --> i **izveštaje**<!-- /modul --><!-- modul: focus -->, ističe **robu u fokusu**<!-- /modul --><!-- modul: targets -->, postavlja **ciljeve** komercijalistima<!-- /modul --><!-- modul: visits -->, planira **obilaske radnji**<!-- /modul --><!-- modul: sef -->, izdaje **e-fakture** preko SEF-a<!-- /modul --> i brine o **zaduženjima** za korišćenje sistema.
 
-Većina posla se radi u **portalu na računaru** (prijavite se u pregledaču, link ste dobili emailom). Isti nalog radi i u **Android aplikaciji**, gde možete da pravite porudžbine, radite u magacinu i menjate proizvode i kupce (odeljak 13).
+Većina posla se radi u **portalu na računaru** (prijavite se u pregledaču, link ste dobili emailom). Isti nalog radi i u **Android aplikaciji**, gde možete da pravite porudžbine<!-- modul: warehouse -->, radite u magacinu<!-- /modul --> i menjate proizvode i kupce (odeljak 14).
 
 > **Ukratko – šta radite prvo, a šta svaki dan**
 >
@@ -17,13 +17,13 @@ Većina posla se radi u **portalu na računaru** (prijavite se u pregledaču, li
 >
 > **Svaki dan:** **Narudžbine** (šta je stiglo i u kom je statusu) i **Kontrolna tabla** (promet).
 >
-> **Povremeno:** **Roba u fokusu**, **Ciljevi**, **Izveštaji**, **Zaduženja** (račun za korišćenje sistema).
+> **Povremeno:** <!-- modul: focus -->**Roba u fokusu**, <!-- /modul --><!-- modul: targets -->**Ciljevi**, <!-- /modul --><!-- modul: reports -->**Izveštaji**, <!-- /modul --><!-- modul: visits -->**Obilasci**, <!-- /modul -->**Zaduženja** (račun za korišćenje sistema).
 
 Na slikama su važni delovi uokvireni narandžastim okvirom, a broj u krugu odgovara broju u tekstu ispod slike.
 
 > **Ovo uputstvo je i u portalu i u aplikaciji.** U portalu je stavka **Uputstvo** u levom meniju, a u aplikaciji ikonica **?** u gornjem delu ekrana. Administrator može da otvori i uputstvo za komercijalistu i za magacin (kartice na vrhu).
 
-> **Šta vidite zavisi od paketa vaše firme.** Osnova (proizvodi, kupci, porudžbine) je uvek tu. **Magacin**, **Stanje**, **Izveštaji**, **Roba u fokusu** i **Ciljevi** su moduli paketa. Ako neku stavku menija ne vidite, firma je nema u paketu. Obratite se Easy Order podršci.
+> **Uputstvo prati paket vaše firme.** Opisano je samo ono što vaša firma ima: osnova (proizvodi, kupci, porudžbine, zaduženja) i moduli iz paketa ili ugovoreni dodatno. Za novi modul (npr. magacin, izveštaje, SEF e-fakture ili obilaske radnji) obratite se Easy Order podršci.
 
 ---
 
@@ -66,7 +66,7 @@ Posle prijave otvara se **Kontrolna tabla** sa pregledom prometa firme. Levo je 
 5. **Najbolji kupci** – kupci po ukupnom prometu.
 6. **Poslednje porudžbine**.
 
-Na vrhu stranice se pojavljuje traka sa obaveštenjem, npr. o novom zaduženju (odeljak 12).
+Na vrhu stranice se pojavljuje traka sa obaveštenjem, npr. o novom zaduženju (odeljak 13).
 
 > U promet se ne računaju **otkazane i odbijene** porudžbine, a poslate se računaju po količini koju je magacin stvarno poslao.
 
@@ -74,7 +74,7 @@ Na vrhu stranice se pojavljuje traka sa obaveštenjem, npr. o novom zaduženju (
 
 ## 3. Korisnici
 
-Na stranici **Korisnici** otvarate naloge zaposlenima. Administrator firme može da napravi nalog za **komercijalistu** i **magacionera**.
+Na stranici **Korisnici** otvarate naloge zaposlenima. Administrator firme može da napravi nalog za **komercijalistu**<!-- modul: warehouse --> i **magacionera**<!-- /modul -->.
 
 ![Korisnici](slike/admin/04-korisnici.png)
 
@@ -90,7 +90,7 @@ Na stranici **Korisnici** otvarate naloge zaposlenima. Administrator firme može
 1. **Ime**.
 2. **Email** – na njega stiže pozivnica i služi za prijavu.
 3. **Telefon** – obavezan (izaberite pozivni broj i upišite broj).
-4. **Uloga**: **Komercijalista** pravi porudžbine, **Magacin** ih obrađuje (ova uloga postoji ako firma ima modul magacin).
+4. **Uloga**: **Komercijalista** pravi porudžbine<!-- modul: warehouse -->, **Magacin** ih obrađuje<!-- /modul -->.
 5. Lozinku ne upisujete. Sistem je pravi sam i šalje emailom zajedno sa linkom za aplikaciju. Korisnik pri prvoj prijavi postavlja svoju lozinku.
 6. **Kreiraj korisnika**.
 
@@ -104,7 +104,7 @@ Posle kreiranja piše na koji je email poslata pozivnica. Ako slanje emaila ne u
 
 1. **Ime** i telefon.
 2. **Pošalji novu privremenu lozinku** – ako korisnik zaboravi lozinku. Sistem pravi novu lozinku i šalje je korisniku emailom (vi je ne birate i ne znate); korisnik mora da je zameni pri sledećoj prijavi i odjavljuje se sa svih uređaja. Ako slanje emaila ne uspe, lozinka se prikaže na ekranu. Svoju lozinku menjate dugmetom **Promeni lozinku** u meniju.
-3. **Uloga** – komercijalista ili magacin. Promena odjavljuje korisnika sa svih uređaja.
+3. **Uloga** – komercijalista<!-- modul: warehouse --> ili magacin<!-- /modul -->. Promena odjavljuje korisnika sa svih uređaja.
 4. **Status** – **Neaktivan** nalog ne može da se prijavi, a ostaje sačuvan sa istorijom porudžbina. Koristite ovo kad zaposleni ode.
 5. **Sačuvaj izmene**.
 
@@ -148,7 +148,9 @@ Na stranici **Proizvodi** vodite katalog koji komercijalisti vide u aplikaciji.
 6. **Jedinica mere** – komad, kilogram, litar, metar… Cena je po izabranoj jedinici (npr. 1190 din po kg), a količine u porudžbini se upisuju u njoj. Posle prve zalihe ili porudžbine jedinica može da se promeni samo u jedinicu iste vrste (npr. metar u centimetar).
 7. **Komada u pakovanju**, **Barkod** (jednog komada), **Barkod kutije** i **Kutija po transportu**. Pakovanja i barkod kutije postoje samo za artikle koji se broje u komadima. Barkod kutije traži da je upisano **Komada u pakovanju**. Barkod mora da bude jedinstven u firmi (slova, cifre i crtica).
 8. **Aktivan (vidljiv komercijalistima)** – neaktivan artikal komercijalisti ne vide i ne mogu da ga poruče.
-9. **Prati rok trajanja** – stanje se vodi po serijama sa datumom isteka (vidi uputstvo za magacin). Polje postoji ako firma ima modul rokova.
+<!-- modul: expiry -->
+9. **Prati rok trajanja** – stanje se vodi po serijama sa datumom isteka (vidi uputstvo za magacin).
+<!-- /modul -->
 10. **Kreiraj proizvod**.
 
 > **Cene.** Promena cene ili popusta važi za nove porudžbine. Već poslate porudžbine ostaju sa cenom po kojoj su napravljene.
@@ -166,14 +168,14 @@ Za veći broj artikala brže je da ih uvezete iz Excela.
 2. **Izaberi fajl** – vaš .xlsx fajl (prvi red su nazivi kolona).
 3. **Pregled** – prikazuje šta će se desiti, ništa se još ne upisuje.
 
-Kolone su: **Naziv**, **Barkod**, **Proizvođač**, **Cena bez PDV**, **PDV %**, **Komada u pakovanju**, **Transportno pakovanje (komada)**, **Stanje (u jedinici mere)**, **Prati rok (da/ne)**, **Barkod kutije** i **Jedinica mere**. Samo **Naziv** je obavezan za novi artikal.
+Kolone su: **Naziv**, **Barkod**, **Proizvođač**, **Cena bez PDV**, **PDV %**, **Komada u pakovanju**, **Transportno pakovanje (komada)**, <!-- modul: stock -->**Stanje (u jedinici mere)**, <!-- /modul --><!-- modul: expiry -->**Prati rok (da/ne)**, <!-- /modul -->**Barkod kutije** i **Jedinica mere**. Samo **Naziv** je obavezan za novi artikal.
 
 ![Pregled uvoza](slike/admin/12-uvoz-pregled.png)
 
 1. **Pregled: Novi 9 · Izmena 0 · Greška 0** – koliko artikala će biti dodato, izmenjeno i koliko redova ima grešku. Red sa greškom se ne uvozi, ostali ne zavise od njega.
 2. **Potvrdi uvoz** – upisuje artikle.
 
-Kako se artikal prepoznaje: prvo po **barkodu**, a ako ga nema, po **tačnom nazivu**. Postojeći artikal se izmeni, a novi se doda. **Prazna ćelija ne menja postojeću vrednost.** Kolona **Stanje** postavlja količinu u magacinu (u izabranoj jedinici mere), a kolona **Prati rok** uključuje ili isključuje praćenje roka.
+Kako se artikal prepoznaje: prvo po **barkodu**, a ako ga nema, po **tačnom nazivu**. Postojeći artikal se izmeni, a novi se doda. **Prazna ćelija ne menja postojeću vrednost.**<!-- modul: stock --> Kolona **Stanje** postavlja količinu u magacinu (u izabranoj jedinici mere).<!-- /modul --><!-- modul: expiry --> Kolona **Prati rok** uključuje ili isključuje praćenje roka.<!-- /modul -->
 
 ---
 
@@ -185,7 +187,7 @@ Na stranici **Kupci** vodite spisak kupaca koje komercijalisti biraju pri porud�
 
 1. **Uvoz** – unos kupaca iz Excela, isto kao kod proizvoda. Kolone su **Naziv**, **Adresa**, **Email**, **Telefon**, **PIB**, **Matični broj**, **Ulica i broj**, **Grad**, **Poštanski broj** i **Država** (primer fajla se preuzima u prozoru za uvoz). Kupac se prepoznaje po PIB-u, a ako ga nema, po tačnom nazivu. Prazna ćelija ne briše ono što već piše.
 2. **Ime** (obavezno), **Adresa**, **Email** i **Telefon**.
-3. **PIB** i **Matični broj** – navode se na fakturi i potrebni su za slanje e-faktura (SEF).
+3. **PIB** i **Matični broj** – navode se na fakturi<!-- modul: sef --> i potrebni su za slanje e-faktura (SEF)<!-- /modul -->.
    **Ulica i broj**, **Grad**, **Poštanski broj** i **Država** (RS) – adresa za fakturu; slobodno polje **Adresa** ostaje za prikaz.
 4. **Kreiraj kupca**, a za postojećeg kupca **Izmeni** otvara istu formu (**Sačuvaj izmene**). Kolona **Podaci za fakturu** pokazuje da li kupcu išta nedostaje (npr. matični broj ili poštanski broj).
 5. **Deaktiviraj** / **Aktiviraj** – neaktivan kupac nestaje komercijalistima i ne može da dobije novu porudžbinu, a stare porudžbine ostaju netaknute.
@@ -195,7 +197,7 @@ Unos se proverava: ime je obavezno, email mora biti ispravan, PIB ima samo cifre
 
 Novi kupac se odmah pojavljuje komercijalistima.
 
-> Podatke kupca možete da menjate i u aplikaciji (**Admin** → **Kupci** → ikonica olovke, odeljak 13), ali matični broj i adresu za fakturu unosite u portalu.
+> Podatke kupca možete da menjate i u aplikaciji (**Admin** → **Kupci** → ikonica olovke, odeljak 14), ali matični broj i adresu za fakturu unosite u portalu.
 
 ---
 
@@ -205,7 +207,7 @@ Stranica **Narudžbine** prikazuje sve porudžbine firme, najnovije prve.
 
 ![Narudžbine](slike/admin/14-narudzbine.png)
 
-1. **Filteri**: status (Nova, U pripremi, Poslato, Odbijeno, Otkazano) i period (**Od** / **Do**).
+1. **Filteri**: status (<!-- modul: warehouse -->Nova, U pripremi, Poslato, Odbijeno, Otkazano<!-- /modul --><!-- modul: !warehouse -->Nova, Otkazano<!-- /modul -->) i period (**Od** / **Do**).
 2. **Tabela**: kupac, status, **Broj fakture** (dodeljuje se kad se porudžbina pošalje), broj stavki, ukupan iznos, ko je kreirao i datum.
 3. **Detalji** – otvara fakturu i otpremnicu.
 4. **Obriši** – brisanje porudžbine. Moguće je samo dok je porudžbina **Nova**.
@@ -218,9 +220,10 @@ Stranica **Narudžbine** prikazuje sve porudžbine firme, najnovije prve.
 2. **Broj fakture** i podaci o kupcu, stavke sa količinom, cenom, popustom i ukupnim iznosom, pa osnovica, PDV i ukupno. Ako je poslato manje nego što je naručeno, ispod ukupnog iznosa piše **Naručeno** sa prvobitnim iznosom.
 3. **Štampaj / Sačuvaj PDF** – štampa ili čuva dokument.
 
-### E-faktura preko SEF-a (paket „SEF“)
+<!-- modul: sef -->
+### E-faktura preko SEF-a
 
-Ako vaša firma ima paket **SEF**, u meniju postoji stranica **Integracije**, a uz otpremljene porudžbine dugme **SEF**.
+U meniju je stranica **Integracije**, a uz porudžbine dugme **SEF**.
 
 **Podešavanje (jednom):**
 1. Na SEF portalu (Podešavanja → API menadžment) administrator firme napravi **API ključ**. Za probu koristite **demo** SEF, a ključ za demo i za produkciju su različiti.
@@ -228,41 +231,56 @@ Ako vaša firma ima paket **SEF**, u meniju postoji stranica **Integracije**, a 
 3. Kliknite **Proveri vezu** uz taj ključ. Treba da piše „Veza radi“.
 4. U polju **Okruženje u kome se šalju fakture** izaberite Demo ili Produkciju (označeno je „u upotrebi“), uključite **Slanje faktura na SEF** i po potrebi podesite **rok plaćanja** (dana). Produkciju izaberite tek kad ceo tok proverite na demo okruženju.
 
-**Izdavanje fakture:** na stranici **Porudžbine** kliknite **SEF** uz otpremljenu porudžbinu.
+**Izdavanje fakture:** na stranici **Porudžbine** kliknite **SEF** uz <!-- modul: warehouse -->otpremljenu<!-- /modul --><!-- modul: !warehouse -->novu<!-- /modul --> porudžbinu.
 - Program pokazuje šta još nedostaje (na primer kupcu matični broj ili adresa, firmi PIB ili tekući račun, jedinici mere UBL šifra). Podatke kupca dopunjujete na stranici **Kupci**, a podatke firme (PIB, matični broj, adresa, PDV status, tekući račun) i šifre jedinica mere menja vlasnik sistema, pa mu se obratite. Posle dopune otvorite prozor ponovo.
-- Prikazani su datum izdavanja (uvek današnji), datum prometa (datum otpreme), rok plaćanja i iznosi po stopi PDV-a.
+- Prikazani su datum izdavanja (uvek današnji), datum prometa<!-- modul: warehouse --> (datum otpreme)<!-- /modul -->, rok plaćanja i iznosi po stopi PDV-a.
 - **Proveri na SEF-u (demo)** proverava fakturu bez izdavanja, a samo je dostupno na demo okruženju.
 - **Pošalji na SEF** izdaje fakturu i troši njen broj. Dvostruki klik ne pravi dve fakture.
 - **Osveži status** pokazuje šta SEF kaže (poslata, odobrena, odbijena). **Otkaži** radi dok kupac nije odobrio fakturu, a posle odobrenja ostaje **Storniraj** (razlog je obavezan).
-- **Firma bez modula Magacin** nema otpremu, pa se faktura izdaje direktno iz **nove** porudžbine: sami birate **datum prometa** (ne posle današnjeg), a broj fakture se dodeljuje pri slanju (ako firma numeriše ručno, upisujete ga u prozoru).
+<!-- modul: !warehouse -->
+- Vaša firma nema otpremu iz magacina, pa se faktura izdaje direktno iz **nove** porudžbine: sami birate **datum prometa** (ne posle današnjeg), a broj fakture se dodeljuje pri slanju (ako firma numeriše ručno, upisujete ga u prozoru).
+<!-- /modul -->
 - Porudžbina sa izdatom fakturom se **ne menja**: ne može da se izmeni, obriše ni da joj se promeni status. Prvo otkažite ili stornirajte fakturu.
 - Ako SEF ne odgovori, status ostaje „Slanje u toku“. Dugme **Pokušaj ponovo** šalje isti zahtev i ne pravi drugu fakturu.
 - Ako SEF odbije fakturu, razlog se prikazuje u prozoru (greška i šifra).
+<!-- /modul -->
 
 ### Šta znače statusi
 | Status | Značenje |
 |---|---|
+<!-- modul: warehouse -->
 | **Nova** | Komercijalista je poslao porudžbinu, magacin je još nije preuzeo. |
 | **U pripremi** | Magacin je preuzeo i pakuje. |
 | **Poslato** | Magacin je poslao robu. Dodeljen je broj fakture. |
 | **Odbijeno** | Magacin je odbio porudžbinu, razlog je upisan. |
+<!-- /modul -->
+<!-- modul: !warehouse -->
+| **Nova** | Komercijalista je poslao porudžbinu. |
+<!-- /modul -->
 | **Otkazano** | Komercijalista je otkazao (moguće dok je Nova). |
 
+<!-- modul: warehouse -->
 > Faktura se ne menja posle slanja. Broj fakture se dodeljuje samo jednom, prvim slanjem. Brojevi idu redom sa prefiksom koji je podešen za firmu (npr. VM/0001).
+<!-- /modul -->
 
 ---
 
+<!-- modul: warehouse -->
 ## 8. Magacin i Stanje
 
-Ako firma ima ove module, u meniju su i **Magacin** i **Stanje**. Administrator ima ista prava kao magacioner: može da preuzme i pakuje porudžbine, da radi prijem robe, popis i otpis. Detalji sa slikama su u **uputstvu za magacin** (`magacin.md`), odeljci 4 do 9. U kratkim crtama:
+U meniju je **Magacin**<!-- modul: stock --> i **Stanje**<!-- /modul -->. Administrator ima ista prava kao magacioner: može da preuzme i pakuje porudžbine<!-- modul: stock -->, da radi prijem robe, popis i otpis<!-- /modul -->. Detalji sa slikama su u **uputstvu za magacin** (`magacin.md`). U kratkim crtama:
 
 - **Magacin** – spisak porudžbina za pakovanje (**Nova** i **U pripremi**), sa dugmićima **Preuzmi**, **Pošalji**, **Vrati u red**, **Odbij** i **Otpremnica**.
-- **Stanje** – stanje svih artikala (**Na stanju**, **Rezervisano**, **Slobodno**, **Najraniji rok**), prijem, popis, istorija promena po artiklu i spisak artikala kojima ističe rok.
+<!-- modul: stock -->
+- **Stanje** – stanje svih artikala (**Na stanju**, **Rezervisano**, **Slobodno**<!-- modul: expiry -->, **Najraniji rok**<!-- /modul -->), prijem, popis, istorija promena po artiklu<!-- modul: expiry --> i spisak artikala kojima ističe rok<!-- /modul -->.
 
 > Stanje se menja prijemom, popisom i slanjem porudžbina. Ako ne odgovara stvarnom, uradite **Popis**.
+<!-- /modul -->
 
 ---
+<!-- /modul -->
 
+<!-- modul: reports -->
 ## 9. Izveštaji
 
 **Izveštaji** pokazuju kako teče posao u izabranom periodu.
@@ -275,7 +293,9 @@ Ako firma ima ove module, u meniju su i **Magacin** i **Stanje**. Administrator 
 4. **Po magacioneru** – koliko je ko poslao i odbio porudžbina.
 
 ---
+<!-- /modul -->
 
+<!-- modul: focus -->
 ## 10. Roba u fokusu
 
 Ovde birate artikle na koje komercijalisti treba da obrate posebnu pažnju: nešto ima previše na lageru, nekom artiklu ističe rok ili je u akciji. Komercijalisti ih u aplikaciji vide naglašene, uz vašu napomenu.
@@ -306,7 +326,9 @@ Ovde birate artikle na koje komercijalisti treba da obrate posebnu pažnju: neš
 Ispod liste je izveštaj: izaberite period (**Od / Do**, podrazumevano tekući mesec) i vidite ukupnu vrednost i broj porudžbina sa artiklima iz fokusa, prodaju po artiklu i po komercijalisti. Računaju se stavke koje su **bile u fokusu u trenutku naručivanja**, bez otkazanih i odbijenih porudžbina.
 
 ---
+<!-- /modul -->
 
+<!-- modul: targets -->
 ## 11. Ciljevi
 
 Na stranici **Ciljevi** postavljate ciljeve prodaje komercijalistima i pratite koliko su ostvarili.
@@ -321,8 +343,28 @@ Na stranici **Ciljevi** postavljate ciljeve prodaje komercijalistima i pratite k
 Kako se računa ostvarenje: porudžbine komercijaliste u izabranom periodu, čim su potvrđene, bez otkazanih i odbijenih. Poslate se računaju po stvarno poslatoj količini. Iznosi su bez PDV-a. Komercijalista ne vidi poredak kolega, samo svoj napredak.
 
 ---
+<!-- /modul -->
 
-## 12. Zaduženja
+<!-- modul: visits -->
+## 12. Obilasci radnji
+
+Stranica **Obilasci** služi da komercijalisti znaju koje radnje da obiđu (ili pozovu), a vi vidite šta je planirano i obavljeno.
+
+**Priprema**
+1. Na stranici **Obilasci → Zone** napravite zone (npr. „Novi Sad centar", „Zrenjanin"). Zona grupiše radnje koje su blizu, pa se obilaze istog dana.
+2. U formi za **Kupca** podesite **Učestalost obilaska** (na 7, 14 ili 30 dana, ili „Nije u rotaciji"), **Način** (obilazak ili poziv) i **Zonu**.
+3. Na **Zone → Podešavanja plana** izaberite dane u nedelji u kojima se planira i najviše radnji dnevno u predlogu.
+
+**Rad**
+- **Na redu:** radnje kojima je rok za obilazak blizu ili je prošao, grupisane po zonama. Rok je poslednja obavljena poseta (a za nove kupce dan unosa) plus učestalost. Označite radnje, izaberite komercijalistu i datum, pa **Dodaj u plan**. Ako je radnja već u tuđem planu, to piše uz nju.
+- **Plan:** izaberite komercijalistu i nedelju. **Predlog nedelje** slaže radnje koje su na redu po zonama i radnim danima. Predlog se ne čuva dok ga ne prihvatite. Posete možete da premeštate na drugi dan ili uklanjate.
+- **Izveštaj:** po komercijalisti: planirano, obavljeno, preskočeno, koliko je planiranih poseta kojima je prošao datum, uspešnost, i koliko kupaca kasni (po zonama).
+- Kupci su **zajednički**: svi komercijalisti vide sve kupce, a plan je po komercijalisti. Komercijalista sam može da napravi svoj plan iz aplikacije.
+
+---
+<!-- /modul -->
+
+## 13. Zaduženja
 
 Stranica **Zaduženja** pokazuje račun za korišćenje Easy Order i kako da ga platite.
 
@@ -331,7 +373,7 @@ Stranica **Zaduženja** pokazuje račun za korišćenje Easy Order i kako da ga 
 1. **Za uplatu** – ukupan iznos otvorenih zaduženja i **rok plaćanja**. Na vrhu portala (i u aplikaciji pri prijavi) stoji obaveštenje kad se pojavi novo zaduženje.
 2. **IPS QR kod** – skenirajte ga u aplikaciji vaše banke i uplata se popuni sama (iznos, račun, poziv na broj).
 3. **Podaci za uplatu** – primalac, račun, svrha i **poziv na broj** za ručnu uplatu.
-4. **Otvorena zaduženja** – svaka profaktura (npr. PR-2026-0002) sa razlogom: cena paketa i dodatni nalozi.
+4. **Otvorena zaduženja** – svaka profaktura (npr. PR-2026-0002) sa razlogom: cena paketa, dodatni nalozi i dodatni moduli.
 5. **Istorija** – sve izdate profakture.
 
 Zaduženje se izdaje za naredni mesec i obično dospeva prvog u mesecu. Obaveštenje o novom zaduženju, podsetnik posle roka i upozorenje pre blokade stižu emailom administratorima (i na email računovodstva ako je upisan). Kad uplata stigne, Easy Order je evidentira i zaduženje nestaje sa liste otvorenih.
@@ -340,12 +382,14 @@ Zaduženje se izdaje za naredni mesec i obično dospeva prvog u mesecu. Obavešt
 
 ---
 
-## 13. Aplikacija na telefonu
+## 14. Aplikacija na telefonu
 
-Administrator se u Android aplikaciju prijavljuje istim emailom i lozinkom. Dole su kartice **Porudžbina**, **Magacin**, **Istorija** i **Admin**.
+Administrator se u Android aplikaciju prijavljuje istim emailom i lozinkom. Dole su kartice **Porudžbina**, <!-- modul: warehouse -->**Magacin**, <!-- /modul -->**Istorija** i **Admin**.
 
 - **Porudžbina** i **Istorija** rade kao kod komercijaliste (vidi uputstvo za komercijalistu, `komercijalista.md`). Administrator vidi istoriju svih porudžbina firme.
-- **Magacin** – pakovanje, prijem, popis i rokovi, kao u uputstvu za magacin.
+<!-- modul: warehouse -->
+- **Magacin** – pakovanje<!-- modul: stock -->, prijem, popis<!-- /modul --><!-- modul: expiry --> i rokovi<!-- /modul -->, kao u uputstvu za magacin.
+<!-- /modul -->
 - **Admin** – proizvodi i kupci, opisano niže.
 
 ### Admin – proizvodi i kupci
@@ -373,7 +417,7 @@ Ista polja kao u portalu (odeljak 5), na kliznom panelu.
 2. **Opcije dodatnog popusta (%)** – dodirom birate koje vrednosti komercijalista sme da koristi (izabrane su zelene).
 3. **Jedinica mere** – komad, kg, litar…
 
-Klizanjem naniže su još **Komada u pakovanju**, **Barkod** i **Barkod kutije** (uz ikonicu kamere da ih skenirate), **Transportno pakovanje**, prekidač **Aktivan (vidljiv komercijalistima)** i **Prati rok trajanja**, pa **Sačuvaj**.
+Klizanjem naniže su još **Komada u pakovanju**, **Barkod** i **Barkod kutije** (uz ikonicu kamere da ih skenirate), **Transportno pakovanje**, prekidač **Aktivan (vidljiv komercijalistima)**<!-- modul: expiry --> i **Prati rok trajanja**<!-- /modul -->, pa **Sačuvaj**.
 
 ### Forma za kupca
 
@@ -388,36 +432,23 @@ Isti obrazac služi i za izmenu postojećeg kupca (olovka na spisku).
 
 ---
 
-## Obilasci radnji (dodatni paket „Obilasci")
-
-Ako firma ima paket **Obilasci**, u meniju postoji stranica **Obilasci**. Služi da komercijalisti znaju koje radnje da obiđu (ili pozovu), a vi vidite šta je planirano i obavljeno.
-
-**Priprema**
-1. Na stranici **Obilasci → Zone** napravite zone (npr. „Novi Sad centar", „Zrenjanin"). Zona grupiše radnje koje su blizu, pa se obilaze istog dana.
-2. U formi za **Kupca** podesite **Učestalost obilaska** (na 7, 14 ili 30 dana, ili „Nije u rotaciji"), **Način** (obilazak ili poziv) i **Zonu**.
-3. Na **Zone → Podešavanja plana** izaberite dane u nedelji u kojima se planira i najviše radnji dnevno u predlogu.
-
-**Rad**
-- **Na redu:** radnje kojima je rok za obilazak blizu ili je prošao, grupisane po zonama. Rok je poslednja obavljena poseta (a za nove kupce dan unosa) plus učestalost. Označite radnje, izaberite komercijalistu i datum, pa **Dodaj u plan**. Ako je radnja već u tuđem planu, to piše uz nju.
-- **Plan:** izaberite komercijalistu i nedelju. **Predlog nedelje** slaže radnje koje su na redu po zonama i radnim danima. Predlog se ne čuva dok ga ne prihvatite. Posete možete da premeštate na drugi dan ili uklanjate.
-- **Izveštaj:** po komercijalisti: planirano, obavljeno, preskočeno, koliko je planiranih poseta kojima je prošao datum, uspešnost, i koliko kupaca kasni (po zonama).
-- Kupci su **zajednički**: svi komercijalisti vide sve kupce, a plan je po komercijalisti. Komercijalista sam može da napravi svoj plan iz aplikacije.
-
-## 14. Šta administrator firme ne menja
+## 15. Šta administrator firme ne menja
 
 Neka podešavanja firme menja samo Easy Order tim:
 
 - naziv, adresa, PIB, matični broj, račun i **logo** koji se štampaju na fakturi,
 - **prefiks i način numeracije faktura** (automatska ili ručna),
-- **paket i moduli** firme (šta je uključeno u meniju) i broj naloga,
+- **paket i moduli** firme (šta je uključeno u meniju, uključujući dodatke) i broj naloga,
+<!-- modul: expiry -->
 - pragovi upozorenja o **roku trajanja** (podrazumevano 30, 15 i 5 dana),
+<!-- /modul -->
 - izdavanje i evidentiranje uplata.
 
 Za izmenu bilo čega od ovoga obratite se Easy Order podršci.
 
 ---
 
-## 15. Česta pitanja i problemi
+## 16. Česta pitanja i problemi
 
 **Zaposleni ne dobija email sa pozivnicom.**
 Proverite da li je email ispravno upisan i da li je u spamu. Ako slanje nije uspelo, portal prikaže privremenu lozinku koju mu predajete lično. Možete mu u **Izmeni** poslati i novu privremenu lozinku.
@@ -434,14 +465,17 @@ Paket nema više naloga te uloge. Pogledajte **Nalozi i paket** i obratite se Ea
 **Komercijalista ne vidi neki artikal.**
 Artikal je **neaktivan** ili ne postoji. Proverite u **Proizvodi** da li je označen kao **Aktivan** i da li ima cenu.
 
-**Komercijalista ne vidi karticu „Moj učinak“ ili oznaku fokusa.**
-Firma nema modul **Ciljevi** odnosno **Roba u fokusu**. Obratite se Easy Order podršci.
+<!-- modul: !targets -->
+**Komercijalista ne vidi karticu „Moj učinak“.**
+Firma nema modul **Ciljevi**. Obratite se Easy Order podršci.
+
+<!-- /modul -->
 
 **Artikal se ne uvozi iz Excela.**
 Pogledajte pregled pre potvrde: red sa greškom piše razlog (npr. barkod već postoji kod drugog artikla, ili je naveden barkod kutije bez „Komada u pakovanju“).
 
 **Ne mogu da obrišem porudžbinu.**
-Brisanje je moguće samo dok je porudžbina **Nova**. Posle preuzimanja u magacin porudžbina se ne briše.
+Brisanje je moguće samo dok je porudžbina **Nova**.<!-- modul: warehouse --> Posle preuzimanja u magacin porudžbina se ne briše.<!-- /modul -->
 
 **Portal pita za lozinku iako sam se prijavio.**
 Sesija je istekla, prijavite se ponovo.

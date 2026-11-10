@@ -7,23 +7,27 @@ verzija: 1.0
 
 # Uputstvo za magacin
 
-Komercijalisti u Easy Order aplikaciji prave porudžbine, a one stižu u magacin. Magacioner ih preuzima, pakuje, šalje (ili odbija), a uz to evidentira **prijem robe**, radi **popis** i prati **rokove trajanja**. Sve se radi na telefonu u Android aplikaciji, a isto može i na računaru u portalu (odeljak 9).
+Komercijalisti u Easy Order aplikaciji prave porudžbine, a one stižu u magacin. Magacioner ih preuzima, pakuje i šalje (ili odbija)<!-- modul: stock -->, evidentira **prijem robe** i radi **popis**<!-- /modul --><!-- modul: expiry -->, prati **rokove trajanja**<!-- /modul -->. Sve se radi na telefonu u Android aplikaciji, a isto može i na računaru u portalu (odeljak 9).
 
 > **Ukratko – šta radite svaki dan**
 >
 > **Porudžbina:** **Početna** → **Porudžbine** → otvorite porudžbinu → **Preuzmi** → čekirajte stavke (i po potrebi smanjite količinu) → **Pošalji**.
+<!-- modul: stock -->
 >
-> **Prijem robe:** **Magacin** → **Prijem** → skenirajte artikal (ili ga potražite po nazivu) → količina (i rok, ako artikal ima rok) → **Potvrdi prijem**.
+> **Prijem robe:** **Magacin** → **Prijem** → skenirajte artikal (ili ga potražite po nazivu) → količina<!-- modul: expiry --> (i rok, ako artikal ima rok)<!-- /modul --> → **Potvrdi prijem**.
 >
 > **Popis:** **Magacin** → **Popis** → skenirajte artikal → upišite izbrojano → napomena → **Potvrdi popis**.
+<!-- /modul -->
+<!-- modul: expiry -->
 >
 > **Rokovi:** **Magacin** → **Rokovi** → proverite šta ističe i otpišite ono što je isteklo.
+<!-- /modul -->
 
 Na slikama su važni delovi uokvireni narandžastim okvirom, a broj u krugu odgovara broju u tekstu ispod slike.
 
 > **Ovo uputstvo je i u aplikaciji.** Na **Početnoj** dodirnite ikonicu **?** u gornjem delu ekrana. U portalu je stavka **Uputstvo** u meniju.
 
-> **Šta vidite zavisi od paketa vaše firme.** Pakovanje porudžbina je uvek tu. Kartice **Prijem** i **Popis** postoje samo ako firma koristi zalihe, a **Rokovi** samo ako koristi praćenje roka trajanja. Ako neku karticu ne vidite, obratite se administratoru.
+> **Uputstvo prati paket vaše firme.** Opisano je samo ono što vaša firma koristi. Za pitanja o tome šta je uključeno obratite se administratoru.
 
 ---
 
@@ -57,7 +61,7 @@ Posle prijave otvara se **Početna** sa najvažnijim brojevima.
 ![Početna](slike/magacin/01-pocetna.png)
 
 1. **Porudžbine** – koliko je porudžbina **Nova** (niko ih još nije preuzeo) i koliko je **U pripremi**. Dodir otvara spisak za pakovanje.
-2. **Artikli pred istek roka** – koliko je serija kojima rok ističe ili je istekao. Dodir otvara karticu **Rokovi**. (Vidi se samo ako firma prati rokove.)
+2. **Artikli pred istek roka** – koliko je serija kojima rok ističe ili je istekao. Dodir otvara karticu **Rokovi**.
 3. **Donja traka** – tri kartice: **Početna**, **Magacin** (sav rad) i **Istorija** (sve porudžbine firme).
 
 U gornjem desnom uglu su izbor jezika (**SR / EN**) i odjava. Povlačenjem nadole osvežavate brojeve.
@@ -70,7 +74,7 @@ Kartica **Magacin** ima prekidač sa karticama za različite poslove.
 
 ![Magacin – spisak porudžbina](slike/magacin/02-pakovanje-lista.png)
 
-1. **Prekidač**: **Pakovanje** (porudžbine), **Prijem** (nova roba), **Popis** (brojanje) i **Rokovi**. Broj u zagradi kod **Rokovi** je koliko serija zahteva pažnju.
+1. **Prekidač**: **Pakovanje** (porudžbine)<!-- modul: stock -->, **Prijem** (nova roba), **Popis** (brojanje)<!-- /modul --><!-- modul: expiry --> i **Rokovi**. Broj u zagradi kod **Rokovi** je koliko serija zahteva pažnju<!-- /modul -->.
 2. **Porudžbina na čekanju** – ime kupca, datum, **Čekirano 0/3** (koliko ste stavki već čekirali) i status. Najnovije su na vrhu, a one koje ste već preuzeli (**U pripremi**) su uz ostale na istom spisku.
 
 Dodirom na porudžbinu otvarate njene stavke. Povlačenjem nadole osvežavate spisak. Poslate i odbijene porudžbine nestaju sa spiska, nalaze se u **Istoriji**.
@@ -88,9 +92,13 @@ Primer: kupac Delikates Sunce naručio je 36 sokova od jabuke, 24 jogurta i 3 kg
 2. **Preuzmi** – kažete da vi pakujete ovu porudžbinu. Status prelazi u **U pripremi**, a komercijalista više ne može da je menja.
 3. **Odbij** – ako porudžbinu ne možete da ispunite (odeljak niže).
 
+<!-- modul: stock -->
 Ispod naručene količine piše i trenutno **Na stanju** (za artikle kojima se vodi stanje; istekla roba se ne računa). Ako na stanju ima manje nego što je naručeno, red je crven i piše **nema dovoljno** – tada znate tačno koliko možete da pošaljete i upisujete tu količinu. Stanje se osvežava kad povučete listu nadole (u aplikaciji) ili nakon svake otpreme.
+<!-- /modul -->
 
+<!-- modul: expiry -->
 Narandžasti red **Uzmi prvo rok: 31.10.2026** vidi se kod artikala sa rokom trajanja: uzmite sa police robu sa tim (najranijim) rokom. Program sam skida sa stanja seriju sa najranijim rokom.
+<!-- /modul -->
 
 ### Korak 2 – spakujte i čekirajte
 Za svaku stavku uzmite robu sa police i čekirajte je. Dodir na kvadratić postavlja da je spakovano **koliko je naručeno**. Ponovni dodir skida čekiranje.
@@ -121,7 +129,9 @@ Pritisnite **Pošalji**. Šta se dešava:
 - porudžbina dobija status **Poslato** i nestaje sa spiska,
 - broj fakture se dodeljuje automatski (osim ako firma ručno vodi brojeve, vidi dole),
 - komercijalista dobija email da je porudžbina poslata,
-- ako firma vodi zalihe, poslata količina se skida sa stanja.
+<!-- modul: stock -->
+- poslata količina se skida sa stanja.
+<!-- /modul -->
 
 > **Ručni broj fakture:** ako firma ručno vodi brojeve faktura, ispred dugmeta **Pošalji** pojavljuje se polje **Broj fakture**. Upišite broj sa vaše fakture. Bez njega slanje nije moguće, a isti broj ne može da se upotrebi dvaput.
 
@@ -144,6 +154,7 @@ Dodirnite **Odbij**, upišite **razlog** i pritisnite **Odbij**.
 
 ---
 
+<!-- modul: stock -->
 ## 5. Prijem robe
 
 Kad stigne roba od dobavljača, upišite je na stanje: **Magacin** → **Prijem**.
@@ -173,6 +184,7 @@ Ako je barkod nepoznat, pojavi se poruka **Nema proizvoda sa ovim barkodom**. Pr
 - **Dodaj novi artikal** – upišite naziv (obavezno), a po želji proizvođača i pakovanje. Artikal se pravi odmah i ulazi u prijem. Cenu i PDV zatim podešava administrator, do tada se artikal ne vidi komercijalistima.
 - **Poveži sa postojećim artiklom** – barkod se upisuje uz artikal koji već postoji. Dobra opcija kad artikal postoji ali mu barkod nije bio upisan.
 
+<!-- modul: expiry -->
 ### Artikli koji imaju rok trajanja
 Za artikle sa rokom morate da upišete rok za svaku isporuku.
 
@@ -184,12 +196,15 @@ Za artikle sa rokom morate da upišete rok za svaku isporuku.
 4. **Dodaj još jedan rok** – ako je u istoj isporuci roba sa različitim rokovima, dodajte red za svaki rok.
 
 Ako je datum nepravilan, ispod piše upozorenje i prijem nije moguće potvrditi.
+<!-- /modul -->
 
 ### Artikli na kilograme i litre
 Količinu upisujete u jedinici artikla, npr. **25** za 25 kg ili **2,5** za dva i po kilograma.
 
 ---
+<!-- /modul -->
 
+<!-- modul: stock -->
 ## 6. Popis
 
 Popis služi da stanje u sistemu uskladite sa stvarnim stanjem na polici: **Magacin** → **Popis**.
@@ -204,10 +219,14 @@ Popis služi da stanje u sistemu uskladite sa stvarnim stanjem na polici: **Maga
 
 Artikle dodajete skeniranjem ili pretragom, kao kod prijema.
 
+<!-- modul: expiry -->
 > **Artikli sa rokom:** za njih upisujete izbrojano po rokovima. Pored već postojećih rokova ispod kartice su dugmići sa datumima, jedan dodir dodaje red za taj rok. **Pažnja:** rok koji ne navedete na kartici postavlja se na **nulu**.
+<!-- /modul -->
 
 ---
+<!-- /modul -->
 
+<!-- modul: expiry -->
 ## 7. Rokovi trajanja
 
 Kartica **Rokovi** prikazuje serije kojima rok ističe ili je istekao.
@@ -224,6 +243,7 @@ Spisak je poređan po roku, najhitnije je na vrhu. Pragovi upozorenja (podrazume
 Pri pakovanju vam se pored artikla sa rokom prikazuje **Uzmi prvo rok** (najraniji rok na stanju) i, ako ima isteklih komada, **Isteklo na stanju**. Istekla roba se nikad ne ubraja u slobodno stanje.
 
 ---
+<!-- /modul -->
 
 ## 8. Istorija
 
@@ -241,7 +261,7 @@ Dodirom na porudžbinu otvarate fakturu. Možete da je sačuvate kao PDF ili po�
 
 Sve što radite u aplikaciji može i na računaru, u portalu (link je u emailu koji ste dobili pri otvaranju naloga). Prijavljujete se istim emailom i lozinkom. Portal je za računar, na telefonu koristite aplikaciju.
 
-Meni ima tri stavke: **Magacin** (pakovanje), **Stanje** (zalihe i rokovi) i **Narudžbine** (pregled svih porudžbina, sa fakturom i otpremnicom za štampu).
+U meniju su **Magacin** (pakovanje), <!-- modul: stock -->**Stanje** (zalihe<!-- modul: expiry --> i rokovi<!-- /modul -->), <!-- /modul -->**Narudžbine** (pregled svih porudžbina, sa fakturom i otpremnicom za štampu) i **Uputstvo**.
 
 ### Magacin – pakovanje
 
@@ -271,6 +291,7 @@ Pod porudžbinom je **Istorija promena**: ko je i kada menjao status.
 1. **Faktura / Otpremnica** – prebacivanje između dva dokumenta.
 2. **Štampaj / Sačuvaj PDF** – štampa ili čuva PDF.
 
+<!-- modul: stock -->
 ### Stanje
 
 ![Portal – Stanje](slike/magacin/15-portal-stanje.png)
@@ -279,7 +300,8 @@ Pod porudžbinom je **Istorija promena**: ko je i kada menjao status.
 2. **Pretraga proizvoda**.
 3. **Prijem**, **Popis** i **Istorija** za svaki artikal: upis prijema, popis ili pregled svih promena stanja (ko je i kada menjao).
 
-U tabeli su **Na stanju** (u sistemu), **Rezervisano** (porudžbine koje čekaju slanje), **Slobodno** (na stanju minus rezervisano) i **Najraniji rok**.
+U tabeli su **Na stanju** (u sistemu), **Rezervisano** (porudžbine koje čekaju slanje), **Slobodno** (na stanju minus rezervisano)<!-- modul: expiry --> i **Najraniji rok**<!-- /modul -->.
+<!-- /modul -->
 
 ---
 
@@ -305,6 +327,7 @@ Pritisnite **Vrati u red**.
 **Poslao sam pogrešnu količinu.**
 Poslata porudžbina se ne menja. Javite se administratoru firme koji će zatražiti ispravku od Easy Order podrške.
 
+<!-- modul: stock -->
 **Barkod se ne skenira.**
 Dodajte svetla, držite telefon mirno i približite ga. Ako ne ide, artikal potražite po nazivu u pretrazi.
 
@@ -314,9 +337,7 @@ Izaberite **Dodaj novi artikal** ili **Poveži sa postojećim artiklom** (odelja
 **Stanje artikla je negativno.**
 Poslata je veća količina nego što je bilo upisano na stanju. Uradite prijem (ako je roba stigla, a nije upisana) ili popis.
 
-**Ne vidim karticu Prijem, Popis ili Rokovi.**
-Vaša firma ih ne koristi (nisu u paketu). Pitajte administratora.
-
+<!-- /modul -->
 **„Server nije dostupan. Proverite internet vezu.“**
 Telefon nema internet. Uključite mobilne podatke ili Wi-Fi i pokušajte ponovo.
 
