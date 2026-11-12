@@ -208,7 +208,10 @@ export default function SubscriptionsPage() {
                       ? Object.entries(p.prices ?? {}).map(([months, amount]) => `${months} ${t("payPeriodShort")}: ${amount}`).join(" · ")
                       : "-"}
                   </td>
-                  <td data-label={t("status")} className="px-4 py-3 text-onSurfaceSecondary">{p.active ? t("active") : t("inactive")}</td>
+                  <td data-label={t("status")} className="px-4 py-3 text-onSurfaceSecondary">
+                    {p.active ? t("active") : t("inactive")}
+                    {p.public && <span className="ml-2 rounded bg-brandSecondary px-1.5 py-0.5 text-xs font-semibold text-brand">{t("planOnSite")}</span>}
+                  </td>
                   <td className="px-4 py-3 text-right">
                     <button className={`${link} mr-3`} onClick={() => setDialog({ kind: "plan", plan: p })}>
                       {t("edit")}
@@ -249,6 +252,7 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
   const [description, setDescription] = useState(plan?.description ?? "");
   const [modules, setModules] = useState<string[]>(plan?.modules ?? []);
   const [active, setActive] = useState(plan?.active ?? true);
+  const [isPublic, setIsPublic] = useState(plan?.public ?? false);
   const [apply, setApply] = useState(false);
   const [prices, setPrices] = useState<Record<string, string>>(
     Object.fromEntries(PRICE_PERIODS.map((m) => [String(m), plan?.prices?.[String(m)] ? String(plan.prices[String(m)]) : ""]))
@@ -268,6 +272,7 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
             description,
             modules,
             active,
+            public: isPublic,
             apply_to_clients: apply,
             included_seats: Object.fromEntries(Object.entries(included).filter(([, v]) => v !== "").map(([r, v]) => [r, Math.max(0, Math.floor(Number(v)))])),
             // Prices of other periods (set elsewhere) are kept by sending them back.
@@ -339,6 +344,13 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan | null; onClose: () 
         <label className="flex items-center gap-2 text-sm font-semibold text-onSurface">
           <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
           {t("planActive")}
+        </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)} className="mt-1" />
+          <span>
+            <span className="font-semibold text-onSurface">{t("planPublic")}</span>
+            <span className="block text-xs text-muted">{t("planPublicHint")}</span>
+          </span>
         </label>
         {plan && (
           <label className="flex items-center gap-2 text-sm text-onSurfaceSecondary">

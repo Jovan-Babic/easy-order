@@ -151,6 +151,7 @@ async def lifespan(app: FastAPI):
     await db.visits.create_index([("client_id", 1), ("user_id", 1), ("date", 1)])
     await db.visits.create_index([("client_id", 1), ("customer_id", 1), ("status", 1)])
     await db.einvoices.create_index("request_id", unique=True)
+    await db.inquiries.create_index([("status", 1), ("created_at", -1)])
     await db.einvoices.create_index([("client_id", 1), ("order_id", 1), ("created_at", -1)])
     await db.products.create_index("client_id")
     await db.focus_items.create_index([("client_id", 1), ("product_id", 1)], unique=True)
@@ -328,6 +329,12 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     # optional module per module key (missing = the module has no separate price)
     "seat_prices": {"operator": 1000, "warehouse": 1500, "admin": 2000},
     "module_prices": {},
+    # public website (landing): contact details shown there, and where its contact form is sent
+    # (empty = to every active superadmin)
+    "site_phone": "",
+    "site_email": "",
+    "site_address": "",
+    "site_inquiry_to": "",
 }
 SETTINGS_TTL_SECONDS = 60
 _settings_cache: Dict[str, Any] = {}
@@ -1163,11 +1170,13 @@ def _smtp_is_configured() -> bool:
     return bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD and SMTP_FROM)
 
 
-def _send_smtp_email_sync(to_email: str, subject: str, plain_text_body: str) -> None:
+def _send_smtp_email_sync(to_email: str, subject: str, plain_text_body: str, reply_to: Optional[str] = None) -> None:
     msg = EmailMessage()
     msg["From"] = SMTP_FROM
     msg["To"] = to_email
     msg["Subject"] = subject
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg.set_content(plain_text_body)
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
@@ -2033,6 +2042,9 @@ class Plan(BaseModel):
     # Accounts the package includes per role (admin/warehouse/operator); an empty map
     # or a missing role = no limit. Price per extra account per month.
     included_seats: Dict[str, int] = Field(default_factory=dict)
+    # Shown on the public website price list (GET /public/pricing); off by default, so internal or
+    # one-client plans never go public by accident.
+    public: bool = False
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -2046,6 +2058,7 @@ class PlanInput(BaseModel):
     # role -> count; None = keep (update) / none (create). The price of an extra account is
     # one for everybody: settings `seat_prices`.
     included_seats: Optional[Dict[str, int]] = None
+    public: Optional[bool] = None  # on the website price list; None = keep (update) / off (create)
     # On update: also rewrite the modules of every client currently on this plan.
     apply_to_clients: bool = False
 
@@ -2279,6 +2292,7 @@ async def create_plan(inp: PlanInput, current_user: User = Depends(require_roles
         name=inp.name.strip(), description=inp.description or "", modules=validated_modules(inp.modules), active=inp.active,
         prices=_validated_prices(inp.prices),
         included_seats=_validated_seat_map(inp.included_seats, "included_seats", integer=True),
+        public=bool(inp.public),
     )
     await db.plans.insert_one({**plan.dict(), "_id": plan.id})
     await _audit(current_user, "plan.create", "plan", plan.id, plan.name)
@@ -2301,6 +2315,8 @@ async def update_plan(plan_id: str, inp: PlanInput, current_user: User = Depends
         updated["prices"] = _validated_prices(inp.prices)
     if inp.included_seats is not None:
         updated["included_seats"] = _validated_seat_map(inp.included_seats, "included_seats", integer=True)
+    if inp.public is not None:
+        updated["public"] = inp.public
     await db.plans.replace_one({"id": plan_id}, {**updated, "_id": plan_id})
     await _audit(current_user, "plan.update", "plan", plan_id, updated["name"], data={"apply_to_clients": inp.apply_to_clients})
     # Clients keep their own copy of the plan name; refresh it, and optionally the modules.
@@ -4416,6 +4432,10 @@ class SettingsInput(BaseModel):
     bilingual_emails: Optional[bool] = None
     seat_prices: Optional[Dict[str, float]] = None  # role -> monthly price of an extra account (a role not sent keeps its price)
     module_prices: Optional[Dict[str, float]] = None  # module -> monthly price (0 / missing = no separate price)
+    site_phone: Optional[str] = Field(default=None, max_length=40)
+    site_email: Optional[str] = Field(default=None, max_length=254)
+    site_address: Optional[str] = Field(default=None, max_length=200)
+    site_inquiry_to: Optional[str] = Field(default=None, max_length=254)
 
 
 class SettingsOut(BaseModel):
@@ -4472,7 +4492,7 @@ def _validated_settings(inp: SettingsInput) -> Dict[str, Any]:
                 raise ValueError("Payment code must have 3 digits")
             elif field == "issuer_pib" and not (value.isdigit() and len(value) == 9):
                 raise ValueError("PIB must have 9 digits")
-            elif field in ("billing_from_email", "billing_reply_to"):
+            elif field in ("billing_from_email", "billing_reply_to", "site_email", "site_inquiry_to"):
                 value = value.lower()
                 if not _EMAIL_RE.match(value):
                     raise ValueError("Not a valid email address")
@@ -4511,6 +4531,221 @@ async def update_settings(inp: SettingsInput, current_user: User = Depends(requi
         await _audit(current_user, "settings.update", "settings", "global", None, None, {"fields": sorted(changes)})
         await refresh_settings(force=True)
     return SettingsOut(values=effective_settings(), defaults=SETTINGS_DEFAULTS)
+
+
+# ---------------- Public website (landing) ----------------
+# Read without a login by the landing site (`landing/`, server-side, cached a few minutes there), so
+# the price list on the site is always the one in the portal. Only what is meant to be public:
+# plans marked `public` and active, the price list of extra accounts and modules, contact details.
+PUBLIC_CACHE_HEADERS = {"Cache-Control": "public, max-age=60"}
+
+
+class PublicPlan(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    modules: List[str]  # modules in the package (the base is always on, not listed)
+    included_seats: Dict[str, int]  # role -> accounts in the package; a missing role = no limit
+    prices: Dict[str, float]  # months ("1", "12", ...) -> amount
+
+
+class PublicPricing(BaseModel):
+    currency: str = "RSD"
+    plans: List[PublicPlan]
+    seat_prices: Dict[str, float]  # role -> monthly price of one extra account
+    module_prices: Dict[str, float]  # module -> monthly price of an add-on (only priced ones)
+    first_month_free: bool
+
+
+class PublicContact(BaseModel):
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+
+
+def _plan_sort_key(plan: dict) -> Tuple[float, str]:
+    prices = plan.get("prices") or {}
+    monthly = prices.get("1")
+    if monthly is None and prices.get("12") is not None:
+        monthly = prices["12"] / 12
+    return (monthly if monthly is not None else float("inf"), plan.get("name") or "")
+
+
+@api_router.get("/public/pricing", response_model=PublicPricing)
+async def public_pricing(response: Response):
+    await refresh_settings()
+    plans = await db.plans.find({"public": True, "active": {"$ne": False}}, {"_id": 0}).to_list(None)
+    plans.sort(key=_plan_sort_key)
+    response.headers.update(PUBLIC_CACHE_HEADERS)
+    return PublicPricing(
+        plans=[PublicPlan(
+            id=p["id"], name=p["name"], description=p.get("description") or "", modules=p.get("modules") or [],
+            included_seats=p.get("included_seats") or {}, prices=p.get("prices") or {},
+        ) for p in plans],
+        seat_prices={r: v for r, v in (setting("seat_prices") or {}).items() if r in SEAT_ROLES},
+        module_prices={m: v for m, v in (setting("module_prices") or {}).items() if v},
+        first_month_free=bool(setting("first_month_free")),
+    )
+
+
+@api_router.get("/public/contact", response_model=PublicContact)
+async def public_contact(response: Response):
+    await refresh_settings()
+    response.headers.update(PUBLIC_CACHE_HEADERS)
+    return PublicContact(
+        phone=setting("site_phone") or None, email=setting("site_email") or None, address=setting("site_address") or None,
+    )
+
+
+INQUIRY_LIMIT_PER_SENDER = 3  # per email / phone per hour
+INQUIRY_LIMIT_TOTAL = 30  # all senders together per hour (the form is public: a cap on spam)
+
+
+class InquiryInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    company: Optional[str] = Field(default=None, max_length=200)
+    email: Optional[str] = Field(default=None, max_length=254)
+    phone: Optional[str] = Field(default=None, max_length=40)
+    message: str = Field(min_length=1, max_length=3000)
+    plan: Optional[str] = Field(default=None, max_length=80)  # the package the visitor asked about
+    lang: Literal["sr", "en"] = "sr"
+    website: Optional[str] = Field(default=None, max_length=200)  # honeypot: people never see it, bots fill it
+
+    @field_validator("email")
+    @classmethod
+    def _email_shape(cls, v: Optional[str]) -> Optional[str]:
+        v = (v or "").strip().lower()
+        if v and not _EMAIL_RE.match(v):
+            raise ValueError("Not a valid email address")
+        return v or None
+
+    @field_validator("phone")
+    @classmethod
+    def _phone_shape(cls, v: Optional[str]) -> Optional[str]:
+        v = (v or "").strip()
+        if v and not re.fullmatch(r"[0-9+()/ .-]{6,40}", v):
+            raise ValueError("Not a valid phone number")
+        return v or None
+
+
+class Inquiry(BaseModel):
+    id: str
+    created_at: str
+    name: str
+    company: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    message: str
+    plan: Optional[str] = None
+    lang: str = "sr"
+    status: Literal["new", "handled"] = "new"
+    handled_at: Optional[str] = None
+    handled_by: Optional[str] = None
+    email_sent: bool = False
+
+
+class InquiryUpdate(BaseModel):
+    status: Literal["new", "handled"]
+
+
+def _one_line(text: Optional[str]) -> str:
+    return " ".join((text or "").split())
+
+
+async def _inquiry_recipients() -> List[str]:
+    to = setting("site_inquiry_to")
+    if to:
+        return [to]
+    rows = await db.users.find({"role": Role.SUPERADMIN.value, "active": {"$ne": False}}, {"_id": 0, "email": 1}).to_list(None)
+    return sorted({r["email"] for r in rows if r.get("email")})
+
+
+async def _send_inquiry_email(doc: dict) -> bool:
+    if not _smtp_is_configured():
+        return False
+    recipients = await _inquiry_recipients()
+    if not recipients:
+        return False
+    who = _one_line(doc.get("company")) or _one_line(doc["name"])
+    body = "\n".join([
+        "Novi upit sa sajta Easy Order.",
+        "",
+        f"Ime: {doc['name']}",
+        f"Firma: {doc.get('company') or '-'}",
+        f"Email: {doc.get('email') or '-'}",
+        f"Telefon: {doc.get('phone') or '-'}",
+        f"Paket: {doc.get('plan') or '-'}",
+        f"Jezik: {doc.get('lang')}",
+        "",
+        doc["message"],
+        "",
+        f"Svi upiti: {ADMIN_WEB_URL}/inquiries",
+    ])
+    sent = False
+    for to in recipients:
+        try:
+            await run_in_threadpool(_send_smtp_email_sync, to, f"Upit sa sajta: {who}"[:150], body, doc.get("email"))
+            sent = True
+        except Exception as exc:  # best effort: the inquiry is stored either way
+            logger.warning("Inquiry email to %s failed: %s", to, exc)
+    return sent
+
+
+@api_router.post("/public/contact")
+async def public_contact_form(inp: InquiryInput):
+    """The website's contact form. Stored in `inquiries` and emailed (best effort); no login."""
+    if inp.website:  # a bot filled the hidden field: answer as if it worked, keep nothing
+        return {"ok": True}
+    if not inp.name.strip() or not inp.message.strip():
+        raise HTTPException(status_code=400, detail="Name and message are required")
+    if not inp.email and not inp.phone:
+        raise HTTPException(status_code=400, detail="Email or phone is required")
+    sender_key = f"inquiry:{inp.email or re.sub(r'[^0-9+]', '', inp.phone or '')}"
+    hour = timedelta(hours=1)
+    if (await _recent_attempts(sender_key, hour) >= INQUIRY_LIMIT_PER_SENDER
+            or await _recent_attempts("inquiry:all", hour) >= INQUIRY_LIMIT_TOTAL):
+        raise HTTPException(status_code=429, detail="Too many messages, please try again later")
+    await _record_attempt(sender_key)
+    await _record_attempt("inquiry:all")
+    doc = Inquiry(
+        id=str(uuid.uuid4()), created_at=now_iso(), name=inp.name.strip(), company=(inp.company or "").strip() or None,
+        email=inp.email, phone=inp.phone, message=inp.message.strip(), plan=(inp.plan or "").strip() or None, lang=inp.lang,
+    ).dict()
+    await db.inquiries.insert_one({**doc, "_id": doc["id"]})
+    if await _send_inquiry_email(doc):
+        await db.inquiries.update_one({"id": doc["id"]}, {"$set": {"email_sent": True}})
+    return {"ok": True}
+
+
+@api_router.get("/inquiries", response_model=List[Inquiry])
+async def list_inquiries(
+    status: Optional[Literal["new", "handled"]] = None, limit: int = Query(default=200, ge=1, le=500),
+    current_user: User = Depends(require_roles(Role.SUPERADMIN)),
+):
+    query = {"status": status} if status else {}
+    return [Inquiry(**d) for d in await db.inquiries.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)]
+
+
+@api_router.put("/inquiries/{inquiry_id}", response_model=Inquiry)
+async def update_inquiry(inquiry_id: str, inp: InquiryUpdate, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    changes = {"status": inp.status, "handled_at": now_iso() if inp.status == "handled" else None,
+               "handled_by": current_user.name if inp.status == "handled" else None}
+    doc = await db.inquiries.find_one_and_update(
+        {"id": inquiry_id}, {"$set": changes}, projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    await _audit(current_user, "inquiry.update", "inquiry", inquiry_id, doc["name"], data={"status": inp.status})
+    return Inquiry(**doc)
+
+
+@api_router.delete("/inquiries/{inquiry_id}")
+async def delete_inquiry(inquiry_id: str, current_user: User = Depends(require_roles(Role.SUPERADMIN))):
+    doc = await db.inquiries.find_one_and_delete({"id": inquiry_id}, projection={"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    await _audit(current_user, "inquiry.delete", "inquiry", inquiry_id, doc["name"])
+    return {"ok": True}
 
 
 @api_router.get("/superadmin/system", response_model=SystemStatus)
@@ -4721,6 +4956,7 @@ class SuperadminOverview(BaseModel):
     subscriptions: OverviewSubscriptions
     payments: OverviewPayments
     attention: List[AttentionItem]
+    inquiries_new: int = 0  # website contact-form messages not handled yet (GET /inquiries)
 
 
 _ATTENTION_ORDER = {
@@ -4803,6 +5039,7 @@ async def superadmin_overview(current_user: User = Depends(require_roles(Role.SU
         subscriptions=subs,
         payments=OverviewPayments(**{k: v for k, v in money.items() if k != "overdue_by_client"}),
         attention=attention[:50],
+        inquiries_new=await db.inquiries.count_documents({"status": "new"}),
     )
 
 

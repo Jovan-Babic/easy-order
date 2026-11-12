@@ -50,6 +50,7 @@ export type Plan = {
   prices?: Record<string, number>; // months -> amount
   included_seats?: Record<string, number>; // role -> accounts in the package
   currency?: string;
+  public?: boolean; // shown on the website price list
 };
 
 export const STATUS_KEYS: Record<SubState["status"], TranslationKey> = {
