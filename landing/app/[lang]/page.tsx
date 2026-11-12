@@ -113,7 +113,7 @@ export default async function Home({ params }: { params: Promise<{ lang: string 
                     {r.wide ? (
                       <Browser src={r.image} alt={r.alt} />
                     ) : (
-                      <Phone src={r.image} alt={r.alt} height={r.key === "warehouse" ? 1286 : 1720} className="mx-auto w-56 md:w-64" />
+                      <Phone src={r.image} alt={r.alt} height={r.key === "warehouse" ? 1344 : 1720} className="mx-auto w-56 md:w-64" />
                     )}
                   </div>
                 </div>

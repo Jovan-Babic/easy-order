@@ -1,5 +1,6 @@
 """Public website (landing): price list and contact details without a login, the contact form
 (stored as an inquiry, honeypot, limits) and the superadmin's inquiry list."""
+import hashlib
 import uuid
 
 import pytest
@@ -38,9 +39,21 @@ def _anon():
     return requests.Session()
 
 
+def _solve(ch=None):
+    """What the browser does: find n with sha256(salt + n) == challenge."""
+    ch = ch or _anon().get(f"{API}/public/challenge").json()
+    for n in range(ch["maxnumber"] + 1):
+        if hashlib.sha256(f"{ch['salt']}{n}".encode()).hexdigest() == ch["challenge"]:
+            return {"salt": ch["salt"], "number": n, "challenge": ch["challenge"], "signature": ch["signature"]}
+    raise AssertionError("unsolvable challenge")
+
+
 def _form(**extra):
-    return {"name": "TEST Kupac", "company": "TEST d.o.o.", "email": f"test-inq-{uuid.uuid4().hex[:8]}@easyorder.dev",
+    body = {"name": "TEST Kupac", "company": "TEST d.o.o.", "email": f"test-inq-{uuid.uuid4().hex[:8]}@easyorder.dev",
             "message": "Zanima nas probni period.", **extra}
+    if "captcha" not in extra:
+        body["captcha"] = _solve()
+    return body
 
 
 def _find_inquiry(sa, email):
@@ -120,6 +133,34 @@ def test_contact_form_validation(superadmin_client):
     assert anon.post(f"{API}/public/contact", json=_form(message="x" * 3001)).status_code == 422
 
 
+def test_challenge_shape():
+    r = _anon().get(f"{API}/public/challenge")
+    assert r.status_code == 200 and r.headers.get("cache-control") == "no-store"
+    ch = r.json()
+    assert ch["algorithm"] == "SHA-256" and ch["maxnumber"] == 100_000 and "expires=" in ch["salt"]
+    assert _anon().get(f"{API}/public/challenge").json()["challenge"] != ch["challenge"]
+
+
+def test_contact_form_needs_the_captcha(superadmin_client):
+    anon = _anon()
+    form = _form(captcha=None)
+    assert anon.post(f"{API}/public/contact", json=form).json()["detail"] == "Captcha failed"
+    good = _solve()
+    for bad in (
+        {**good, "number": (good["number"] + 1) % 100_001},  # wrong answer
+        {**good, "salt": good["salt"].replace("expires=", "expires=9")},  # salt changed (later expiry)
+        {**good, "signature": "0" * 64},  # not signed by the server
+    ):
+        r = anon.post(f"{API}/public/contact", json=_form(captcha=bad))
+        assert r.status_code == 400 and r.json()["detail"] == "Captcha failed", bad
+    form = _form(captcha=good)
+    assert anon.post(f"{API}/public/contact", json=form).status_code == 200
+    # a solved challenge works once
+    r = anon.post(f"{API}/public/contact", json={**_form(), "captcha": good})
+    assert r.status_code == 400 and r.json()["detail"] == "Captcha failed"
+    assert len(_find_inquiry(superadmin_client, form["email"])) == 1
+
+
 def test_honeypot_keeps_nothing(superadmin_client):
     form = _form(website="http://spam.example")
     assert _anon().post(f"{API}/public/contact", json=form).status_code == 200
@@ -129,8 +170,8 @@ def test_honeypot_keeps_nothing(superadmin_client):
 def test_contact_form_limit_per_sender(superadmin_client):
     form = _form()
     for _ in range(3):
-        assert _anon().post(f"{API}/public/contact", json=form).status_code == 200
-    assert _anon().post(f"{API}/public/contact", json=form).status_code == 429
+        assert _anon().post(f"{API}/public/contact", json={**form, "captcha": _solve()}).status_code == 200
+    assert _anon().post(f"{API}/public/contact", json={**form, "captcha": _solve()}).status_code == 429
     assert len(_find_inquiry(superadmin_client, form["email"])) == 3
 
 

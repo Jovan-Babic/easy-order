@@ -14,11 +14,17 @@ Cenovnik i kontakt se čitaju sa backenda (server-side, bez prijave), pa se sajt
 | „Prvi mesec besplatan“ | `GET /api/public/pricing` → `first_month_free` | Portal → Podešavanja → Naplata |
 | Telefon, email, adresa | `GET /api/public/contact` | Portal → Podešavanja → Sajt |
 | Kontakt forma | `POST /api/contact` (ovaj sajt) → `POST /api/public/contact` | Upiti: Portal → Upiti sa sajta |
+| Zaštita forme | `GET /api/challenge` (ovaj sajt) → `GET /api/public/challenge` | Nevidljiva provera (proof of work), bez naloga i ključeva |
 
 Stranica je statička i osvežava se u pozadini najviše jednom u minuti (`revalidate = 60`), pa se izmena na
 portalu vidi na sajtu u roku od oko minut. Ako backend ne odgovara, sajt umesto cena prikazuje „Pišite nam za ponudu“.
 
-Tekstovi sajta su u `lib/i18n.ts` (sr i en), slike ekrana u `public/screens/` (iz `docs/uputstva/slike`).
+Kontakt forma ima nevidljivu zaštitu od spama: kad posetilac počne da popunjava formu, pregledač u pozadini reši
+mali računski zadatak sa backenda (ALTCHA princip, `lib/captcha.ts`, oko sekund), bez spoljnog servisa i kolačića.
+Uz to: skriveno polje za botove i limit od 3 poruke na sat po pošiljaocu i 30 ukupno.
+
+Tekstovi sajta su u `lib/i18n.ts` (sr i en). Slike ekrana u `public/screens/` su čisti snimci (bez oznaka iz
+uputstava), prave se skriptom `docs/uputstva/alati/capture_landing.js` (uputstvo u `docs/uputstva/alati/README.md`).
 
 ## Pokretanje
 

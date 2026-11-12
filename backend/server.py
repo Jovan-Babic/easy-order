@@ -4597,6 +4597,65 @@ async def public_contact(response: Response):
     )
 
 
+# Invisible captcha of the contact form: a proof of work (the ALTCHA scheme, no third party, no keys to
+# set up). GET /public/challenge hands out sha256(salt + n) for a secret random n <= CAPTCHA_MAX_NUMBER,
+# signed with an HMAC; the browser finds n by trying (about a second on a phone) and sends it with the
+# form. A bot has to spend the same work on every message, and a solved challenge works only once.
+CAPTCHA_MAX_NUMBER = 100_000
+CAPTCHA_TTL_SECONDS = 600
+
+
+def _captcha_key() -> bytes:
+    return hashlib.sha256(f"captcha:{JWT_SECRET}".encode()).digest()
+
+
+def _captcha_sign(challenge: str) -> str:
+    return hmac.new(_captcha_key(), challenge.encode(), hashlib.sha256).hexdigest()
+
+
+class CaptchaChallenge(BaseModel):
+    algorithm: str = "SHA-256"
+    challenge: str
+    salt: str
+    maxnumber: int
+    signature: str
+
+
+class CaptchaSolution(BaseModel):
+    salt: str = Field(max_length=200)
+    number: int = Field(ge=0, le=CAPTCHA_MAX_NUMBER)
+    challenge: str = Field(max_length=64)
+    signature: str = Field(max_length=64)
+
+
+@api_router.get("/public/challenge", response_model=CaptchaChallenge)
+async def public_challenge(response: Response):
+    expires = int(time.time()) + CAPTCHA_TTL_SECONDS
+    salt = f"{secrets.token_hex(12)}?expires={expires}"
+    challenge = hashlib.sha256(f"{salt}{secrets.randbelow(CAPTCHA_MAX_NUMBER + 1)}".encode()).hexdigest()
+    response.headers["Cache-Control"] = "no-store"
+    return CaptchaChallenge(challenge=challenge, salt=salt, maxnumber=CAPTCHA_MAX_NUMBER, signature=_captcha_sign(challenge))
+
+
+async def _check_captcha(solution: Optional[CaptchaSolution]) -> None:
+    """400 "Captcha failed" unless the solution is right, signed by us, not expired and not used before."""
+    def fail() -> HTTPException:
+        return HTTPException(status_code=400, detail="Captcha failed")
+    if solution is None:
+        raise fail()
+    match = re.search(r"[?&]expires=(\d+)", solution.salt)
+    if not match or int(match.group(1)) < time.time():
+        raise fail()
+    if not hmac.compare_digest(_captcha_sign(solution.challenge), solution.signature):
+        raise fail()
+    if hashlib.sha256(f"{solution.salt}{solution.number}".encode()).hexdigest() != solution.challenge:
+        raise fail()
+    key = f"captcha:{solution.challenge}"
+    if await _recent_attempts(key, timedelta(seconds=CAPTCHA_TTL_SECONDS * 2)):
+        raise fail()  # replayed
+    await _record_attempt(key)
+
+
 INQUIRY_LIMIT_PER_SENDER = 3  # per email / phone per hour
 INQUIRY_LIMIT_TOTAL = 30  # all senders together per hour (the form is public: a cap on spam)
 
@@ -4610,6 +4669,7 @@ class InquiryInput(BaseModel):
     plan: Optional[str] = Field(default=None, max_length=80)  # the package the visitor asked about
     lang: Literal["sr", "en"] = "sr"
     website: Optional[str] = Field(default=None, max_length=200)  # honeypot: people never see it, bots fill it
+    captcha: Optional[CaptchaSolution] = None  # the solved GET /public/challenge
 
     @field_validator("email")
     @classmethod
@@ -4700,6 +4760,7 @@ async def public_contact_form(inp: InquiryInput):
         raise HTTPException(status_code=400, detail="Name and message are required")
     if not inp.email and not inp.phone:
         raise HTTPException(status_code=400, detail="Email or phone is required")
+    await _check_captcha(inp.captcha)
     sender_key = f"inquiry:{inp.email or re.sub(r'[^0-9+]', '', inp.phone or '')}"
     hour = timedelta(hours=1)
     if (await _recent_attempts(sender_key, hour) >= INQUIRY_LIMIT_PER_SENDER

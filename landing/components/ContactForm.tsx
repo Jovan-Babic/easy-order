@@ -1,18 +1,35 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { Solution, freshSolution } from "@/lib/captcha";
 import { Dict, Lang } from "@/lib/i18n";
 
 type State = "idle" | "sending" | "sent";
 const field = "mt-1 block w-full rounded-md border border-border bg-white px-3 py-2 text-onSurface focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 
-// The inquiry form; sent to this site's /api/contact, which passes it to the backend.
+// A solved challenge is used only if it is younger than this (the backend accepts it for 10 minutes).
+const SOLUTION_MAX_AGE_MS = 8 * 60 * 1000;
+
+// The inquiry form; sent to this site's /api/contact, which passes it to the backend. The captcha is
+// solved in the background as soon as the visitor starts filling the form in, so there is nothing to click.
 export function ContactForm({ t, lang, plans }: { t: Dict; lang: Lang; plans: string[] }) {
   const params = useSearchParams();
   const [plan, setPlan] = useState("");
   const [state, setState] = useState<State>("idle");
   const [error, setError] = useState<string | null>(null);
+  const captcha = useRef<{ at: number; solution: Promise<Solution> } | null>(null);
+
+  const solution = useCallback((fresh = false) => {
+    if (fresh || !captcha.current || Date.now() - captcha.current.at > SOLUTION_MAX_AGE_MS) {
+      const pending = freshSolution();
+      pending.catch(() => {
+        if (captcha.current?.solution === pending) captcha.current = null; // try again on the next use
+      });
+      captcha.current = { at: Date.now(), solution: pending };
+    }
+    return captcha.current.solution;
+  }, []);
 
   // "Request an offer" on a plan card links here with ?paket=<name>.
   useEffect(() => {
@@ -30,16 +47,27 @@ export function ContactForm({ t, lang, plans }: { t: Dict; lang: Lang; plans: st
     setState("sending");
     setError(null);
     try {
-      const res = await fetch("/api/contact", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...data, plan: plan || null, lang }),
-      });
+      const send = async (fresh: boolean) =>
+        fetch("/api/contact", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...data, plan: plan || null, lang, captcha: await solution(fresh) }),
+        });
+      let res = await send(false);
+      let detail = res.ok ? null : ((await res.json().catch(() => ({}))) as { detail?: unknown }).detail;
+      if (detail === "Captcha failed") {
+        // expired or already used (a second message from the same page): once more with a new one
+        res = await send(true);
+        detail = res.ok ? null : ((await res.json().catch(() => ({}))) as { detail?: unknown }).detail;
+      }
+      captcha.current = null; // a solution is good for one message only
       if (res.ok) {
         setState("sent");
         return;
       }
-      setError(res.status === 429 ? t.contact.tooMany : res.status === 422 || res.status === 400 ? t.contact.invalid : t.contact.failed);
+      setError(
+        res.status === 429 ? t.contact.tooMany : detail === "Captcha failed" ? t.contact.captchaFailed : res.status === 422 || res.status === 400 ? t.contact.invalid : t.contact.failed,
+      );
     } catch {
       setError(t.contact.failed);
     }
@@ -51,7 +79,7 @@ export function ContactForm({ t, lang, plans }: { t: Dict; lang: Lang; plans: st
   }
 
   return (
-    <form onSubmit={submit} className="grid gap-4" noValidate={false}>
+    <form onSubmit={submit} onFocus={() => void solution()} className="grid gap-4">
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="text-sm font-semibold text-onSurface">
           {t.contact.name} *
@@ -99,7 +127,7 @@ export function ContactForm({ t, lang, plans }: { t: Dict; lang: Lang; plans: st
         <button type="submit" disabled={state === "sending"} className="rounded-md bg-brand px-5 py-2.5 text-sm font-bold text-white hover:bg-brandDark disabled:opacity-60">
           {state === "sending" ? t.contact.sending : t.contact.send}
         </button>
-        <p className="text-xs text-muted">{t.contact.privacy}</p>
+        <p className="text-xs text-muted">{t.contact.privacy} {t.contact.captchaNote}</p>
       </div>
     </form>
   );

@@ -29,7 +29,7 @@ export type Dict = {
     title: string; text: string; phone: string; email: string; address: string; formTitle: string; name: string;
     company: string; emailField: string; phoneField: string; plan: string; planNone: string; message: string;
     messagePlaceholder: string; send: string; sending: string; sent: string; needContact: string; failed: string;
-    tooMany: string; invalid: string; privacy: string;
+    tooMany: string; invalid: string; privacy: string; captchaFailed: string; captchaNote: string;
   };
   footer: { rights: string; portal: string };
 };
@@ -151,6 +151,8 @@ const sr: Dict = {
     tooMany: "Poslali ste više poruka. Pokušajte ponovo za sat vremena.",
     invalid: "Proverite unete podatke (email ili telefon).",
     privacy: "Podatke iz upita koristimo samo da bismo vam odgovorili.",
+    captchaFailed: "Provera protiv neželjenih poruka nije uspela. Osvežite stranicu i pokušajte ponovo.",
+    captchaNote: "Zaštitu od neželjenih poruka obavlja vaš pregledač, bez kolačića i spoljnih servisa.",
   },
   footer: { rights: "Sva prava zadržana.", portal: "Portal za korisnike" },
 };
@@ -272,6 +274,8 @@ const en: Dict = {
     tooMany: "You have sent several messages. Please try again in an hour.",
     invalid: "Please check the email or phone number.",
     privacy: "We use the data from the inquiry only to reply to you.",
+    captchaFailed: "The spam check failed. Please reload the page and try again.",
+    captchaNote: "Spam protection runs in your browser, without cookies or outside services.",
   },
   footer: { rights: "All rights reserved.", portal: "Customer portal" },
 };

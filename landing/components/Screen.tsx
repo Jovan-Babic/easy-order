@@ -9,7 +9,7 @@ export function Phone({ src, alt, width = 780, height = 1720, className = "" }: 
   );
 }
 
-export function Browser({ src, alt, width = 1440, height = 788 }: { src: string; alt: string; width?: number; height?: number }) {
+export function Browser({ src, alt, width = 1440, height = 765 }: { src: string; alt: string; width?: number; height?: number }) {
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-white shadow-2xl">
       <div className="flex gap-1.5 border-b border-border bg-surface px-3 py-2" aria-hidden="true">
