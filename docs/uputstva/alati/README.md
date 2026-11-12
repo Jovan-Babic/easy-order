@@ -12,6 +12,7 @@ Slike se prave iz web verzije mobilne aplikacije (Expo web) nad probnom bazom u 
    - admin: `python3 seed.py`, pa `python3 seed_admin.py` (paket, pretplata, jedno zaduženje), portal na :3100, `node capture_admin.js raw/` (portal; `ONLY=korak,korak` snima samo neke), pa `node capture_admin_app.js raw2/` (admin kartica u aplikaciji),
    - magacin (telefon): `node capture_magacin.js raw/`,
    - magacin (portal na računaru, odmah posle prethodnog, na istom stanju): pokrenuti portal (`BACKEND_URL=http://localhost:8000 JWT_SECRET=<isti kao backend> npx next dev -p 3100`), pa `node capture_magacin_portal.js raw/` (`ONLY=p4` snima samo stranicu Stanje).
+   - javni sajt (`landing/`, čiste slike bez okvira): `python3 seed.py`, `python3 seed_admin.py`, portal na :3100, `node capture_landing.js raw/`, pa `python3 finalize_landing.py raw ../../../landing/public/screens`.
 6. Obrada: `python3 finalize.py raw ../slike/<uloga>`. Slike portala (1920 px) pre toga smanjiti na ~1440 px širine.
 7. PDF za pregled (nije u repou): `python3 to_html.py ../komercijalista.md out.pdf` napravi `out.html`, `node print.js out.html out.pdf`.
 

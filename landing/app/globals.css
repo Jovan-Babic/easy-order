@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #ffffff;
+  color: #111827;
+}
+
+/* Anchored sections land below the sticky header. */
+section[id] {
+  scroll-margin-top: 72px;
+}
+
+/* Phones: 16px form fields so the browser doesn't zoom in on focus. */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}

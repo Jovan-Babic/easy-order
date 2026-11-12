@@ -12,6 +12,7 @@ type Overview = {
   subscriptions: { active: number; ending_30d: number; grace: number; locked: number; none: number };
   payments: { currency: string; received_month: number; received_year: number; expected_total: number; overdue_total: number; overdue_count: number };
   attention: Array<{ client_id: string; client_name: string; reason: string; date: string | null; plan_name: string | null }>;
+  inquiries_new?: number;
 };
 
 const REASON_KEYS: Record<string, TranslationKey> = {
@@ -123,6 +124,11 @@ export function SuperadminDashboard() {
   return (
     <div>
       <h1 className="mb-6 text-2xl font-extrabold text-onSurface">{t("dashboard")}</h1>
+      {(data.inquiries_new ?? 0) > 0 && (
+        <Link href="/inquiries" className="mb-6 block rounded-lg bg-brandSecondary px-4 py-3 text-sm font-semibold text-brand hover:underline">
+          {t("inquiriesNewBanner").replace("{n}", String(data.inquiries_new))}
+        </Link>
+      )}
 
       <Section title={t("clients")}>
         <StatCard label={t("overviewTotal")} value={clients.total} />

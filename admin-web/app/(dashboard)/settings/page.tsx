@@ -7,7 +7,7 @@ import { TranslationKey, useLanguage } from "@/lib/i18n";
 
 type Kind = "day" | "number" | "bool" | "text" | "textarea" | "days";
 type Field = { key: string; label: TranslationKey; kind: Kind; hint?: TranslationKey };
-type Tab = "billing" | "payment" | "issuer" | "email";
+type Tab = "billing" | "payment" | "issuer" | "email" | "site";
 
 const TABS: Array<{ key: Tab; label: TranslationKey; fields: Field[] }> = [
   {
@@ -55,6 +55,16 @@ const TABS: Array<{ key: Tab; label: TranslationKey; fields: Field[] }> = [
       { key: "billing_from_name", label: "setFromName", kind: "text" },
       { key: "billing_reply_to", label: "setReplyTo", kind: "text" },
       { key: "bilingual_emails", label: "setBilingual", kind: "bool" },
+    ],
+  },
+  {
+    key: "site",
+    label: "settingsTabSite",
+    fields: [
+      { key: "site_phone", label: "setSitePhone", kind: "text" },
+      { key: "site_email", label: "setSiteEmail", kind: "text" },
+      { key: "site_address", label: "setSiteAddress", kind: "text" },
+      { key: "site_inquiry_to", label: "setSiteInquiryTo", kind: "text", hint: "setSiteInquiryToHint" },
     ],
   },
 ];
