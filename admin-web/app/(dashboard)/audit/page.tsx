@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { detailOf } from "@/lib/subscriptions";
+import { formatDateTime } from "@/lib/format";
 
 type Entry = {
   id: string;
@@ -82,7 +83,7 @@ export default function AuditPage() {
             <tbody>
               {entries.map((e) => (
                 <tr key={e.id} className="border-b border-border align-top last:border-0">
-                  <td className="whitespace-nowrap px-4 py-3 text-onSurfaceSecondary">{new Date(e.created_at).toLocaleString()}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-onSurfaceSecondary">{formatDateTime(e.created_at)}</td>
                   <td data-label={t("auditActor")} className="px-4 py-3 text-onSurface">{e.actor_name ?? "-"}</td>
                   <td data-label={t("auditAction")} className="px-4 py-3 font-mono text-xs text-onSurface">{e.action}</td>
                   <td data-label={t("auditTarget")} className="px-4 py-3 text-onSurfaceSecondary">

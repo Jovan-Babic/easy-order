@@ -1,4 +1,5 @@
 import { validationText } from "@/lib/errors";
+import { formatMoney } from "@/lib/format";
 // Shapes of the FastAPI order/client responses used by the portal.
 // Money amounts come from the backend (`totals`, `line_net`) - no math here.
 export type OrderStatus = "new" | "in_progress" | "shipped" | "rejected" | "canceled";
@@ -44,6 +45,7 @@ export type Order = {
   status_history: StatusChange[];
   assigned_to_name?: string | null;
   shipped_at?: string | null;
+  invoiced_at?: string | null; // invoice date: set with the number, never changes
   invoice_number?: string | null;
   created_by_name?: string | null;
   created_at: string;
@@ -91,7 +93,7 @@ export type ClientInfo = {
 };
 
 export function money(value: number) {
-  return value.toLocaleString("sr-RS", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return formatMoney(value);
 }
 
 export function discountPct(item: Pick<OrderItem, "discount" | "additional_discount">) {

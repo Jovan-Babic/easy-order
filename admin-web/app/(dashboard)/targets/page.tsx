@@ -206,24 +206,27 @@ export default function TargetsPage() {
         <table className="w-full text-left text-sm">
           <thead className="border-b border-border text-xs uppercase text-muted">
             <tr>
-              <th className="px-4 py-3">{t("targetsRep")}</th>
+              <th className="px-3 py-3">{t("targetsRep")}</th>
               {metrics.map((m) => (
-                <th key={m} className="px-4 py-3">{t(METRIC_KEY[m])}</th>
+                <th key={m} className="px-3 py-3">{t(METRIC_KEY[m])}</th>
               ))}
-              <th className="px-4 py-3" />
             </tr>
           </thead>
           <tbody>
             {data?.rows.map((r) => (
               <tr key={r.user_id} className="border-b border-border align-top last:border-0">
-                <td className="px-4 py-3 font-semibold text-onSurface">{r.user_name}</td>
+                <td className="px-3 py-3 font-semibold text-onSurface">
+                  {r.user_name}
+                  {/* Save sits under the name, so the row needs no extra column (small laptops). */}
+                  <button className={`${primary} mt-3 block`} disabled={busy} onClick={() => saveRow(r)}>{t("targetsSave")}</button>
+                </td>
                 {metrics.map((m) => {
                   const pct = r.pct[m];
                   const before = r.previous_year[m] ?? 0;
                   const achieved = r.achieved[m] ?? 0;
                   const delta = before > 0 ? ((achieved - before) / before) * 100 : null;
                   return (
-                    <td key={m} className="min-w-40 px-4 py-3">
+                    <td key={m} className="min-w-32 px-3 py-3">
                       <label className="block text-xs font-semibold text-muted">
                         {t("targetsTarget")}
                         <input
@@ -239,24 +242,21 @@ export default function TargetsPage() {
                           <div className={`h-full ${pct >= 100 ? "bg-success" : "bg-brand"}`} style={{ width: `${Math.min(100, pct)}%` }} />
                         </div>
                       )}
-                      {pct != null && <p className="text-xs font-bold text-onSurface">{pct}%</p>}
+                      {pct != null && <p className="text-xs font-bold text-onSurface">{pct.toLocaleString("sr-RS", { maximumFractionDigits: 1 })}%</p>}
                       <p className="mt-1 text-xs text-muted">
                         {t("targetsPrevYear")}: {show(m, before)}
                         {delta != null && (
-                          <span className={delta >= 0 ? " text-success" : " text-error"}> ({delta >= 0 ? "+" : ""}{delta.toFixed(1)}%)</span>
+                          <span className={delta >= 0 ? " text-success" : " text-error"}> ({delta >= 0 ? "+" : ""}{delta.toLocaleString("sr-RS", { maximumFractionDigits: 1 })}%)</span>
                         )}
                       </p>
                     </td>
                   );
                 })}
-                <td className="px-4 py-3 text-right">
-                  <button className={primary} disabled={busy} onClick={() => saveRow(r)}>{t("targetsSave")}</button>
-                </td>
               </tr>
             ))}
             {data && data.rows.length === 0 && (
               <tr>
-                <td colSpan={metrics.length + 2} className="px-4 py-6 text-center text-muted">{t("targetsNoReps")}</td>
+                <td colSpan={metrics.length + 1} className="px-4 py-6 text-center text-muted">{t("targetsNoReps")}</td>
               </tr>
             )}
           </tbody>

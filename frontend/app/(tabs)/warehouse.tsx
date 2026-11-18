@@ -25,7 +25,7 @@ import { ExpiringList } from "@/src/components/ExpiringList";
 import { StockScanPanel } from "@/src/components/StockScanPanel";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { isoToDisplay } from "@/src/utils/expiry";
-import { formatQty, lineQtyLabel, lineUnit, parseQty } from "@/src/utils/units";
+import { displaySymbol, formatQty, lineQtyLabel, lineUnit, parseQty } from "@/src/utils/units";
 
 const QUEUE: OrderStatus[] = ["new", "in_progress"];
 
@@ -272,7 +272,7 @@ export default function WarehouseScreen() {
                                 }}
                               />
                               <Text style={styles.stepValue}>
-                                {lineUnit(it).symbol} / {formatQty(it.ordered_qty, lineUnit(it))}
+                                {displaySymbol(lineUnit(it).symbol)} / {formatQty(it.ordered_qty, lineUnit(it))}
                               </Text>
                             </View>
                           )}

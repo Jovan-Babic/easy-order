@@ -5,7 +5,8 @@ import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { localizedDetail } from "@/lib/errors";
 import { Field, fieldInput } from "@/components/FormField";
 import { money } from "@/lib/orders";
-import { formatQty } from "@/lib/units";
+import { displaySymbol, formatQty, formatQtyWithUnit, unitOf, useUnits } from "@/lib/units";
+import { formatDate } from "@/lib/format";
 
 type Reason = "stock" | "expiry" | "promo" | "other";
 const REASONS: Reason[] = ["stock", "expiry", "promo", "other"];
@@ -27,7 +28,8 @@ type FocusItem = {
   active_to: string | null;
   ended: boolean;
   product_active: boolean;
-  stock_qty: number | null;
+  stock_qty: number | null; // base units of `unit`
+  unit?: string;
   next_expiry: string | null;
 };
 type Suggestion = {
@@ -35,6 +37,7 @@ type Suggestion = {
   product_name: string;
   image?: string;
   reason: "stock" | "expiry";
+  unit?: string; // the product's unit; the quantities are in its base unit
   stock_qty: number | null;
   sold_30d: number;
   cover_days: number | null;
@@ -64,6 +67,7 @@ const badge: Record<Reason, string> = {
 
 export default function FocusPage() {
   const { t } = useLanguage();
+  const units = useUnits();
   const [items, setItems] = useState<FocusItem[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -172,17 +176,19 @@ export default function FocusPage() {
   const primary = "rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50";
   const secondary = "rounded-md border border-border px-4 py-2 text-sm font-semibold text-onSurface hover:bg-surfaceTertiary";
 
+  // Quantities come in the product's base unit (ml, g): shown in its own unit (978 l, not 978000).
+  const qty = (base: number | null | undefined, unit?: string) => formatQtyWithUnit(base ?? 0, unitOf(units, unit));
   const suggestionText = (s: Suggestion) => {
     if (s.reason === "expiry") {
       return t("focusSuggestExpiry")
-        .replace("{date}", s.expiry_date ?? "")
-        .replace("{qty}", String(s.expiry_qty ?? 0))
+        .replace("{date}", formatDate(s.expiry_date))
+        .replace("{qty}", qty(s.expiry_qty, s.unit))
         .replace("{days}", String(s.days_left ?? 0));
     }
-    if (s.cover_days == null) return t("focusSuggestStockNoSales").replace("{stock}", String(s.stock_qty ?? 0));
+    if (s.cover_days == null) return t("focusSuggestStockNoSales").replace("{stock}", qty(s.stock_qty, s.unit));
     return t("focusSuggestStock")
-      .replace("{stock}", String(s.stock_qty ?? 0))
-      .replace("{sold}", String(s.sold_30d))
+      .replace("{stock}", qty(s.stock_qty, s.unit))
+      .replace("{sold}", qty(s.sold_30d, s.unit))
       .replace("{days}", String(s.cover_days));
   };
 
@@ -245,10 +251,10 @@ export default function FocusPage() {
                 <td className="max-w-xs px-4 py-3 text-onSurfaceSecondary">{i.note || "-"}</td>
                 <td className="px-4 py-3 text-right">{i.recommended_discount == null ? "-" : `${i.recommended_discount}%`}</td>
                 <td className="px-4 py-3">
-                  {i.active_to ?? "-"}
-                  {i.ended && <span className="ml-2 text-xs font-bold text-error">{t("focusEnded")}</span>}
+                  {formatDate(i.active_to, "-")}
+                  {i.ended && <> <span className="ml-1 whitespace-nowrap text-xs font-bold text-error">{t("focusEnded")}</span></>}
                 </td>
-                <td className="px-4 py-3 text-right">{i.stock_qty ?? "-"}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-right">{i.stock_qty == null ? "-" : qty(i.stock_qty, i.unit)}</td>
                 <td className="whitespace-nowrap px-4 py-3 text-right">
                   <button className="mr-3 font-semibold text-brand hover:underline" onClick={() => openEdit(i)}>{t("edit")}</button>
                   <button className="font-semibold text-error hover:underline" onClick={() => remove(i)}>{t("focusRemove")}</button>
@@ -300,7 +306,7 @@ export default function FocusPage() {
                     {report.products.map((p) => (
                       <tr key={p.product_id} className="border-b border-border last:border-0">
                         <td className="px-4 py-3 font-semibold text-onSurface">{p.product_name}</td>
-                        <td className="px-4 py-3 text-right">{formatQty(p.qty, { factor: p.unit_factor })} {p.unit_symbol}</td>
+                        <td className="px-4 py-3 text-right">{formatQty(p.qty, { factor: p.unit_factor })} {displaySymbol(p.unit_symbol)}</td>
                         <td className="px-4 py-3 text-right">{money(p.revenue)}</td>
                       </tr>
                     ))}

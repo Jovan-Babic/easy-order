@@ -20,6 +20,7 @@ import {
   todayIso,
 } from "@/lib/payments";
 import { detailOf } from "@/lib/subscriptions";
+import { formatDate } from "@/lib/format";
 
 type ClientOption = { id: string; name: string };
 type Dialog =
@@ -168,7 +169,7 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
                     </Link>
                   )}
                   <p className="text-onSurfaceSecondary">
-                    {p.paid_at ?? p.due_date}
+                    {formatDate(p.paid_at ?? p.due_date)}
                     {p.status === "expected" && <span className="ml-1 text-xs text-muted">({t("payDueDate")})</span>}
                   </p>
                 </div>
@@ -222,7 +223,7 @@ export function PaymentsPanel({ clientId }: { clientId?: string }) {
               {items.map((p) => (
                 <tr key={p.id} className="border-b border-border align-top last:border-0">
                   <td className="whitespace-nowrap px-4 py-3 text-onSurfaceSecondary">
-                    {p.paid_at ?? p.due_date}
+                    {formatDate(p.paid_at ?? p.due_date)}
                     {p.status === "expected" && <span className="block text-xs text-muted">{t("payDueDate")}</span>}
                   </td>
                   {!clientId && (

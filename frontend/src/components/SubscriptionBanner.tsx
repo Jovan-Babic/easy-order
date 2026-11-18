@@ -1,4 +1,5 @@
 import React from "react";
+import { formatDate } from "@/src/utils/format";
 import { StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
@@ -20,7 +21,7 @@ export function useTopNotices(): Notice[] {
   }
   const sub = user?.subscription;
   const billing = user?.billing;
-  const dmy = (iso: string | null) => (iso ? iso.split("-").reverse().join(".") + "." : "");
+  const dmy = (iso: string | null) => formatDate(iso);
   if (billing) {
     // Calendar billing: the charge instead of the end date.
     const amount = typeof billing.to_pay === "number" && billing.to_pay > 0 ? ` ${t("billingToPay")}: ${money(billing.to_pay)} RSD.` : "";
@@ -35,13 +36,13 @@ export function useTopNotices(): Notice[] {
     notices.push({
       key: "sub",
       level: "warning",
-      text: `${t("subscriptionGrace")} ${sub.grace_ends_at}. ${t("subscriptionContact")}`,
+      text: `${t("subscriptionGrace")} ${formatDate(sub.grace_ends_at)}. ${t("subscriptionContact")}`,
     });
   } else if (sub?.status === "active" && sub.days_left <= 14) {
     notices.push({
       key: "sub",
       level: "warning",
-      text: `${t("subscriptionEndsIn")} ${sub.days_left} ${t("subscriptionDays")} (${sub.ends_at}). ${t("subscriptionContact")}`,
+      text: `${t("subscriptionEndsIn")} ${sub.days_left} ${t("subscriptionDays")} (${formatDate(sub.ends_at)}). ${t("subscriptionContact")}`,
     });
   }
   return notices;

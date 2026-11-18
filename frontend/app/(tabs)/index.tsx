@@ -22,6 +22,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
 import { api, ApiError, Customer, Order, Product, OrderLineInput } from "@/src/api";
+import { money } from "@/src/calc";
 import { isoToDisplay } from "@/src/utils/expiry";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { LangToggle } from "@/src/components/LangToggle";
@@ -29,7 +30,7 @@ import { GuideButton } from "@/src/components/GuideButton";
 import { Button } from "@/src/components/Button";
 import { BarcodeScanner } from "@/src/components/BarcodeScanner";
 import { LOGOUT } from "@/constants/testIds";
-import { cleanQtyInput, formatQty, formatQtyWithUnit, isCountUnit, lineUnit, parseQty, unitOf, useUnits } from "@/src/utils/units";
+import { cleanQtyInput, displaySymbol, formatQty, formatQtyWithUnit, isCountUnit, lineUnit, parseQty, unitOf, useUnits } from "@/src/utils/units";
 
 const FOCUS_REASON_KEY = {
   stock: "focusReasonStock",
@@ -229,7 +230,7 @@ function OrderCatalogScreen() {
       .filter((p) => Number(String(drafts[p.id] ?? "").replace(",", ".")) > 0)
       .map((p) => {
         const unit = unitOf(units, p.unit);
-        const qty = `${drafts[p.id]}${isCountUnit(unit) ? "" : ` ${unit.symbol}`}`;
+        const qty = `${drafts[p.id]}${isCountUnit(unit) ? "" : ` ${displaySymbol(unit.symbol)}`}`;
         const supplierDiscount = p.discount ?? 0;
         const selectedAdditionalDiscount = additionalDiscountSel[p.id] ?? 0;
         const totalDiscount = effectiveDiscount(supplierDiscount, selectedAdditionalDiscount);
@@ -476,7 +477,7 @@ function OrderCatalogScreen() {
                         <Text style={styles.pManufacturer}>{p.manufacturer}</Text>
                       )}
                       <View style={styles.metaRow}>
-                        <Meta label={t("priceNoVat")} value={`${p.price_no_vat ?? 0}${countUnit ? "" : ` / ${unit.symbol}`}`} />
+                        <Meta label={t("priceNoVat")} value={`${money(p.price_no_vat ?? 0)}${countUnit ? "" : ` / ${displaySymbol(unit.symbol)}`}`} />
                         {countUnit && <Meta label={t("piecesPerPackage")} value={String(p.pieces_per_package ?? 0)} />}
                         {countUnit && <Meta label={t("transportPackage")} value={String(p.boxes_per_transport ?? 0)} />}
                       </View>
@@ -512,7 +513,7 @@ function OrderCatalogScreen() {
                       </Pressable>
                     </View>
                     <Field
-                      label={countUnit ? t("orderedPieces") : `${t("quantity")} (${unit.symbol})`}
+                      label={countUnit ? t("orderedPieces") : `${t("quantity")} (${displaySymbol(unit.symbol)})`}
                       value={drafts[p.id] || ""}
                       onChangeText={(v) => setQty(p.id, v)}
                       testID={`qty-input-${p.id}`}

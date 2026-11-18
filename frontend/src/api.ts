@@ -59,6 +59,7 @@ export type Unit = {
   name_sr: string;
   name_en: string;
   symbol: string;
+  symbol_en?: string | null; // English screens (kom -> pcs)
   group: string;
   base_code: string;
   factor: number;
@@ -257,6 +258,8 @@ export type Order = {
   assigned_to_name?: string | null;
   shipped_at?: string | null;
   invoice_number?: string | null;
+  invoiced_at?: string | null; // invoice date: set with the number, never changes
+
   created_by_user_id?: string | null;
   created_by_name?: string | null;
   // Server-computed (backend/calc.py), only on responses.

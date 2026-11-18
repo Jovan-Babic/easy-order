@@ -209,6 +209,7 @@ async def lifespan(app: FastAPI):
     await _migrate_calendar_billing()
     await _migrate_seat_prices()
     await _migrate_sef_keys()
+    await _migrate_invoiced_at()
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at")
     await db.password_reset_tokens.create_index("user_id")
@@ -971,6 +972,10 @@ class Order(BaseModel):
     # Assigned once, when the order is first shipped; never changes or is freed.
     invoice_seq: Optional[int] = None
     invoice_number: Optional[str] = None
+    # Date of the invoice: set together with the number (first shipment, or the e-invoice of a client without
+    # the warehouse module) and never changed, so numbers and invoice dates always run in the same order.
+    # `shipped_at` is the latest shipment and moves when an admin ships an order again.
+    invoiced_at: Optional[str] = None
     # Who placed it. None on orders created before this field existed.
     created_by_user_id: Optional[str] = None
     created_by_name: Optional[str] = None
@@ -5669,6 +5674,7 @@ class Unit(BaseModel):
     name_sr: str
     name_en: str
     symbol: str
+    symbol_en: Optional[str] = None  # shown on English screens when it differs (kom -> pcs); None = same as `symbol`
     group: str  # count / mass / volume / length / ...
     base_code: str  # the unit quantities are stored in (itself for a base unit)
     factor: int  # base units in one of this unit (kg = 1000 g)
@@ -5682,6 +5688,7 @@ class UnitInput(BaseModel):
     name_sr: str = Field(min_length=1, max_length=40)
     name_en: str = Field(min_length=1, max_length=40)
     symbol: str = Field(min_length=1, max_length=10)
+    symbol_en: Optional[str] = Field(default=None, max_length=10)
     group: str = Field(pattern=r"^[a-z]{1,20}$")
     base_code: str = Field(pattern=r"^[a-z0-9]{1,10}$")
     factor: int = Field(ge=1, le=1_000_000_000)
@@ -5693,12 +5700,16 @@ class UnitUpdate(BaseModel):
     name_sr: Optional[str] = Field(default=None, min_length=1, max_length=40)
     name_en: Optional[str] = Field(default=None, min_length=1, max_length=40)
     symbol: Optional[str] = Field(default=None, min_length=1, max_length=10)
+    symbol_en: Optional[str] = Field(default=None, max_length=10)  # None = keep, "" = same as `symbol`
     active: Optional[bool] = None
     # Only while no product uses the unit.
     group: Optional[str] = Field(default=None, pattern=r"^[a-z]{1,20}$")
     base_code: Optional[str] = Field(default=None, pattern=r"^[a-z0-9]{1,10}$")
     factor: Optional[int] = Field(default=None, ge=1, le=1_000_000_000)
     ubl_code: Optional[str] = Field(default=None, pattern=r"^[A-Z0-9]{2,3}$")  # None = keep
+
+
+UNIT_SYMBOLS_EN = {"kom": "pcs"}
 
 
 async def _seed_units() -> None:
@@ -5712,6 +5723,9 @@ async def _seed_units() -> None:
             }},
             upsert=True,
         )
+        # The English symbol of a built-in that differs (kom -> pcs), unless the superadmin set one.
+        if code in UNIT_SYMBOLS_EN:
+            await db.units.update_one({"code": code, "symbol_en": {"$exists": False}}, {"$set": {"symbol_en": UNIT_SYMBOLS_EN[code]}})
         # Built-ins stored before e-invoices existed get their code (a code set by the superadmin is never touched).
         if code in UBL_UNIT_CODES:
             await db.units.update_one({"code": code, "ubl_code": {"$in": [None, ""]}}, {"$set": {"ubl_code": UBL_UNIT_CODES[code]}})
@@ -5782,7 +5796,7 @@ async def update_unit(code: str, inp: UnitUpdate, current_user: User = Depends(r
     if not existing:
         raise HTTPException(status_code=404, detail="Unit not found")
     updated = {**existing}
-    for field in ("name_sr", "name_en", "symbol", "active", "ubl_code"):
+    for field in ("name_sr", "name_en", "symbol", "symbol_en", "active", "ubl_code"):
         value = getattr(inp, field)
         if value is not None:
             updated[field] = value
@@ -6605,7 +6619,7 @@ async def _assign_invoice_number(order: dict, manual_number: Optional[str]) -> D
             raise HTTPException(status_code=400, detail="Invoice number is required")
         if await db.orders.find_one({"client_id": order["client_id"], "invoice_number": number}, {"_id": 1}):
             raise HTTPException(status_code=409, detail="Invoice number is already used")
-        return {"invoice_number": number}
+        return {"invoice_number": number, "invoiced_at": now_iso()}
     prefix = client.get("invoice_prefix") or ""
     if not prefix:
         raise HTTPException(status_code=400, detail="Set the invoice prefix for this client first")
@@ -6615,7 +6629,7 @@ async def _assign_invoice_number(order: dict, manual_number: Optional[str]) -> D
         upsert=True,
         return_document=ReturnDocument.AFTER,
     )
-    return {"invoice_seq": counter["seq"], "invoice_number": f"{prefix}/{counter['seq']:04d}"}
+    return {"invoice_seq": counter["seq"], "invoice_number": f"{prefix}/{counter['seq']:04d}", "invoiced_at": now_iso()}
 
 
 async def _release_invoice_seq(client_id: str, seq: Optional[int]) -> None:
@@ -6678,6 +6692,8 @@ async def change_order_status(
         update["assigned_to_name"] = None
     if target == OrderStatus.SHIPPED.value:
         update["shipped_at"] = now_iso()
+        if "invoiced_at" in update:
+            update["invoiced_at"] = update["shipped_at"]  # the first shipment is the invoice date
 
     # Conditional update: if someone else changed the status meanwhile, 409.
     try:
@@ -7453,7 +7469,8 @@ class FocusItemOut(BaseModel):
     active_to: Optional[str] = None
     ended: bool = False
     product_active: bool = True
-    stock_qty: Optional[int] = None
+    stock_qty: Optional[int] = None  # whole base units (ml, g, ...); shown in `unit`
+    unit: str = "kom"  # the product's unit of measure (code)
     next_expiry: Optional[str] = None
     created_at: str = ""
     created_by_name: Optional[str] = None
@@ -7464,6 +7481,7 @@ class FocusSuggestion(BaseModel):
     product_name: str
     image: Optional[str] = ""
     reason: str  # "stock" | "expiry"
+    unit: str = "kom"  # the product's unit (code); every quantity below is in its base unit
     stock_qty: Optional[int] = None
     sold_30d: int = 0
     cover_days: Optional[int] = None  # None = no sales in 30 days
@@ -7580,7 +7598,7 @@ async def _focus_suggestions(client_id: str, taken: set) -> List[FocusSuggestion
             days_left = (date.fromisoformat(entry["expiry_date"]) - today).days
             p = products[pid]
             out.append(FocusSuggestion(
-                product_id=pid, product_name=p["name"], image=p.get("image", ""), reason="expiry",
+                product_id=pid, product_name=p["name"], image=p.get("image", ""), reason="expiry", unit=p.get("unit") or "kom",
                 stock_qty=p.get("stock_qty"), expiry_date=entry["expiry_date"], expiry_qty=entry["qty"], days_left=days_left,
             ))
             in_expiry.add(pid)
@@ -7607,7 +7625,7 @@ async def _focus_suggestions(client_id: str, taken: set) -> List[FocusSuggestion
         for _, stock, pid, cover in candidates[:FOCUS_SUGGESTION_LIMIT]:
             p = products[pid]
             out.append(FocusSuggestion(
-                product_id=pid, product_name=p["name"], image=p.get("image", ""), reason="stock",
+                product_id=pid, product_name=p["name"], image=p.get("image", ""), reason="stock", unit=p.get("unit") or "kom",
                 stock_qty=stock, sold_30d=sold.get(pid, 0), cover_days=cover,
             ))
     return out
@@ -7639,7 +7657,7 @@ async def list_focus(
             id=d["id"], client_id=d["client_id"], product_id=p["id"], product_name=p["name"], image=p.get("image", ""),
             reason=d.get("reason", "other"), note=d.get("note") or "", recommended_discount=d.get("recommended_discount"),
             active_to=d.get("active_to"), ended=not _focus_is_active(d), product_active=p.get("active", True) is not False,
-            stock_qty=p.get("stock_qty"), next_expiry=(expiry.get(p["id"]) or {}).get("next_expiry"),
+            stock_qty=p.get("stock_qty"), unit=p.get("unit") or "kom", next_expiry=(expiry.get(p["id"]) or {}).get("next_expiry"),
             created_at=d.get("created_at", ""), created_by_name=d.get("created_by_name"),
         ))
     taken = {d["product_id"] for d in docs}
@@ -7668,7 +7686,7 @@ async def add_focus(
     return FocusItemOut(
         id=entry_id, client_id=client_id, product_id=product["id"], product_name=product["name"],
         image=product.get("image", ""), product_active=product.get("active", True) is not False,
-        stock_qty=product.get("stock_qty"), created_at=doc["created_at"], created_by_name=current_user.name, **values,
+        stock_qty=product.get("stock_qty"), unit=product.get("unit") or "kom", created_at=doc["created_at"], created_by_name=current_user.name, **values,
     )
 
 
@@ -7767,7 +7785,7 @@ async def update_focus(
     return FocusItemOut(
         id=focus_id, client_id=doc["client_id"], product_id=product["id"], product_name=product["name"],
         image=product.get("image", ""), product_active=product.get("active", True) is not False,
-        stock_qty=product.get("stock_qty"), created_at=doc.get("created_at", ""),
+        stock_qty=product.get("stock_qty"), unit=product.get("unit") or "kom", created_at=doc.get("created_at", ""),
         created_by_name=doc.get("created_by_name"), **values,
     )
 
@@ -8932,6 +8950,17 @@ def _sef_client_from(client: dict, env: Optional[str] = None) -> sef.SefClient:
 
 async def _sef_call(fn, *args):
     return await run_in_threadpool(fn, *args)
+
+
+async def _migrate_invoiced_at() -> None:
+    """One-off: orders numbered before `invoiced_at` existed get the time of their first shipment (from the
+    status history; else the stored `shipped_at`, else the order date)."""
+    async for order in db.orders.find(
+        {"invoice_number": {"$nin": [None, ""]}, "invoiced_at": {"$exists": False}},
+        {"_id": 0, "id": 1, "status_history": 1, "shipped_at": 1, "created_at": 1},
+    ):
+        first = next((h.get("changed_at") for h in order.get("status_history") or [] if h.get("to_status") == OrderStatus.SHIPPED.value), None)
+        await db.orders.update_one({"id": order["id"]}, {"$set": {"invoiced_at": first or order.get("shipped_at") or order.get("created_at")}})
 
 
 async def _migrate_sef_keys() -> None:

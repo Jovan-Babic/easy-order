@@ -107,6 +107,7 @@ function UnitDialog({ unit, units, onClose, onDone }: { unit: Unit | null; units
   const [nameSr, setNameSr] = useState(unit?.name_sr ?? "");
   const [nameEn, setNameEn] = useState(unit?.name_en ?? "");
   const [symbol, setSymbol] = useState(unit?.symbol ?? "");
+  const [symbolEn, setSymbolEn] = useState(unit?.symbol_en ?? "");
   const [group, setGroup] = useState(unit?.group ?? "mass");
   const [baseCode, setBaseCode] = useState(unit?.base_code ?? "g");
   const [factor, setFactor] = useState(String(unit?.factor ?? 1));
@@ -125,6 +126,7 @@ function UnitDialog({ unit, units, onClose, onDone }: { unit: Unit | null; units
             name_sr: nameSr,
             name_en: nameEn,
             symbol,
+            symbol_en: symbolEn.trim(),
             active,
             group,
             base_code: baseCode,
@@ -153,6 +155,11 @@ function UnitDialog({ unit, units, onClose, onDone }: { unit: Unit | null; units
         <label className="text-sm font-semibold text-onSurface">
           {t("unitSymbol")}
           <input required maxLength={10} value={symbol} onChange={(e) => setSymbol(e.target.value)} className={`${input} mt-1`} />
+        </label>
+        <label className="text-sm font-semibold text-onSurface">
+          {t("unitSymbolEn")}
+          <input maxLength={10} value={symbolEn} placeholder={symbol} onChange={(e) => setSymbolEn(e.target.value)} className={`${input} mt-1`} />
+          <span className="mt-1 block text-xs font-normal text-muted">{t("unitSymbolEnHint")}</span>
         </label>
         <div className="grid grid-cols-3 gap-3">
           <label className="text-sm font-semibold text-onSurface">

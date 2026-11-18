@@ -24,8 +24,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/src/context/AppContext";
 import { useAuth } from "@/src/context/AuthContext";
 import { hasModule } from "@/src/utils/modules";
-import { isCountUnit, unitOf, useUnits } from "@/src/utils/units";
+import { displaySymbol, isCountUnit, unitOf, useUnits } from "@/src/utils/units";
 import { api, ApiError, Customer, Product } from "@/src/api";
+import { money } from "@/src/calc";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { Button } from "@/src/components/Button";
 import { BarcodeScanner } from "@/src/components/BarcodeScanner";
@@ -426,7 +427,7 @@ export default function AdminScreen() {
                 {tab === "products" ? (
                   <Text style={styles.itemSub} numberOfLines={1}>
                     {(item as Product).manufacturer ? `${(item as Product).manufacturer} · ` : ""}
-                    {t("priceNoVat")}: {(item as Product).price_no_vat ?? 0}
+                    {t("priceNoVat")}: {money((item as Product).price_no_vat ?? 0)}
                   </Text>
                 ) : (
                   <Text style={styles.itemSub} numberOfLines={1}>
@@ -556,7 +557,7 @@ export default function AdminScreen() {
                               onPress={() => setForm((f: any) => ({ ...f, unit: u.code }))}
                             >
                               <Text style={[styles.discChipText, selected && styles.discChipTextDefault]}>
-                                {lang === "en" ? u.name_en : u.name_sr} ({u.symbol})
+                                {lang === "en" ? u.name_en : u.name_sr} ({displaySymbol(u.symbol)})
                               </Text>
                             </Pressable>
                           );

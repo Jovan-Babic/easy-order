@@ -147,7 +147,14 @@ export default function InvoiceScreen() {
                 {!!customerAddress && <Row label={t("address")} value={customerAddress} />}
                 {!!customerPhone && <Row label={t("phone")} value={customerPhone} />}
                 {!!order.invoice_number && <Row label={t("invoiceNumber")} value={order.invoice_number} bold />}
-                <Row label={t("date")} value={dayjs(order.created_at).format("DD.MM.YYYY HH:mm")} />
+                {order.invoiced_at ? (
+                  <>
+                    <Row label={t("invoiceDate")} value={dayjs(order.invoiced_at).format("DD.MM.YYYY")} bold />
+                    <Row label={t("orderDate")} value={dayjs(order.created_at).format("DD.MM.YYYY HH:mm")} />
+                  </>
+                ) : (
+                  <Row label={t("date")} value={dayjs(order.created_at).format("DD.MM.YYYY HH:mm")} />
+                )}
                 {!!customerEmail && <Row label={t("email")} value={customerEmail} />}
               </View>
 

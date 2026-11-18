@@ -55,8 +55,4 @@ export type BillingNotice = {
 
 export const formatAccount = (acc: string | null) => (acc && acc.length === 18 ? `${acc.slice(0, 3)}-${acc.slice(3, 16)}-${acc.slice(16)}` : acc ?? "");
 
-export const formatDate = (iso: string | null | undefined) => {
-  if (!iso) return "";
-  const [y, m, d] = iso.slice(0, 10).split("-");
-  return `${d}.${m}.${y}.`;
-};
+export { formatDate } from "@/lib/format";

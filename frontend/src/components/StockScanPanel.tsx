@@ -21,7 +21,7 @@ import { BarcodeScanner, ScanFeedback } from "@/src/components/BarcodeScanner";
 import { Button } from "@/src/components/Button";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 import { displayToIso, formatDateInput, isoToDisplay } from "@/src/utils/expiry";
-import { cleanQtyInput, formatQty, formatQtyWithUnit, isCountUnit, parseQty, unitOf, useUnits } from "@/src/utils/units";
+import { cleanQtyInput, displaySymbol, formatQty, formatQtyWithUnit, isCountUnit, parseQty, unitOf, useUnits } from "@/src/utils/units";
 
 type Props = { mode: "receipt" | "count" };
 
@@ -345,7 +345,7 @@ export function StockScanPanel({ mode }: Props) {
                 value={qtys[id] ?? ""}
                 onChangeText={(v) => setQtys((prev) => ({ ...prev, [id]: cleanQtyInput(v, unit) }))}
               />
-              {!isCountUnit(unit) && <Text style={styles.sub}>{unit.symbol}</Text>}
+              {!isCountUnit(unit) && <Text style={styles.sub}>{displaySymbol(unit.symbol)}</Text>}
               <Pressable
                 hitSlop={8}
                 accessibilityLabel={t("remove")}

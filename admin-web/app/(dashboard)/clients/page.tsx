@@ -8,6 +8,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ClientFields } from "@/components/ClientFields";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubState } from "@/lib/subscriptions";
 import { ClientFormFields, clientPayload, deleteUploadedLogo, emptyClientFields, uploadLogo } from "@/lib/clientForm";
+import { formatDate } from "@/lib/format";
 
 type Client = {
   id: string;
@@ -287,14 +288,14 @@ export default function ClientsPage() {
                           <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${STATUS_STYLES[state.status]}`}>
                             {t(STATUS_KEYS[state.status])}
                           </span>
-                          {state.ends_at && <p className="mt-1 text-xs text-muted">{state.ends_at}</p>}
+                          {state.ends_at && <p className="mt-1 text-xs text-muted">{formatDate(state.ends_at)}</p>}
                         </>
                       );
                     })()}
                   </td>
                   <td data-label={t("users")} className="px-4 py-3 text-onSurfaceSecondary">{c.user_count ?? 0}</td>
                   <td data-label={t("lastActivity")} className="whitespace-nowrap px-4 py-3 text-xs text-onSurfaceSecondary">
-                    {c.last_activity_at ? new Date(c.last_activity_at).toLocaleDateString() : t("never")}
+                    {c.last_activity_at ? formatDate(c.last_activity_at) : t("never")}
                   </td>
                   <td data-label={t("status")} className="px-4 py-3">
                     <span className={c.active ? "text-success" : "text-error"}>

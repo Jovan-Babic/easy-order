@@ -74,14 +74,14 @@ export function SubscriptionBanner() {
   if (sub.status === "grace") {
     return (
       <div className="mb-6 rounded-lg border border-warning bg-amber-50 p-4 text-sm text-warning">
-        {t("bannerGrace")} <strong>{sub.grace_ends_at}</strong>. {t("bannerContact")}
+        {t("bannerGrace")} <strong>{formatDate(sub.grace_ends_at)}</strong>. {t("bannerContact")}
       </div>
     );
   }
   if (sub.status === "active" && typeof sub.days_left === "number" && sub.days_left <= 14) {
     return (
       <div className="mb-6 rounded-lg border border-warning bg-amber-50 p-4 text-sm text-warning">
-        {t("bannerEndsSoon")} <strong>{sub.days_left}</strong> {t("bannerDays")} ({sub.ends_at}). {t("bannerContact")}
+        {t("bannerEndsSoon")} <strong>{sub.days_left}</strong> {t("bannerDays")} ({formatDate(sub.ends_at)}). {t("bannerContact")}
       </div>
     );
   }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { EVENT_KEYS, Plan, SubscriptionEvent, SubscriptionRow, detailOf } from "@/lib/subscriptions";
+import { formatDate, formatDateTime } from "@/lib/format";
 
 export const input = "w-full rounded-md border border-border px-3 py-2 text-sm";
 export const primary = "rounded-md bg-brand px-4 py-2 text-sm font-bold text-onBrand disabled:opacity-50";
@@ -120,7 +121,7 @@ export function ExtendDialog({ row, onClose, onDone }: { row: SubscriptionRow; o
         }}
       >
         <p className="text-sm text-muted">
-          {t("validUntil")}: {row.state.ends_at}
+          {t("validUntil")}: {formatDate(row.state.ends_at)}
         </p>
         <label className="text-sm font-semibold text-onSurface">
           {t("extendMonths")}
@@ -224,7 +225,7 @@ export function HistoryDialog({ row, onClose, onChanged }: { row: SubscriptionRo
         {locked && current.state.purge_at && (
           <div className="rounded-md border border-border p-3 text-sm">
             <p className="text-onSurface">
-              {t("purgeAt")}: <strong>{current.purged_at ? t("purgedAt") : current.purge_paused ? t("purgePaused") : current.state.purge_at}</strong>
+              {t("purgeAt")}: <strong>{current.purged_at ? t("purgedAt") : current.purge_paused ? t("purgePaused") : formatDate(current.state.purge_at)}</strong>
             </p>
             <div className="mt-2 flex gap-4">
               <a className={link} href={`/api/subscriptions/${row.client_id}/export`}>
@@ -250,12 +251,12 @@ export function HistoryDialog({ row, onClose, onChanged }: { row: SubscriptionRo
                 <p className="font-semibold text-onSurface">
                   {t(EVENT_KEYS[e.type] ?? "history")}
                   {e.plan_name ? ` · ${e.plan_name}` : ""}
-                  {e.ends_at ? ` · ${t("validUntil")} ${e.ends_at}` : ""}
+                  {e.ends_at ? ` · ${t("validUntil")} ${formatDate(e.ends_at)}` : ""}
                 </p>
                 {e.data && <p className="text-xs text-muted">{Object.entries(e.data).map(([k, v]) => `${k}: ${v}`).join(", ")}</p>}
                 {e.note && <p className="text-xs text-onSurfaceSecondary">{e.note}</p>}
                 <p className="text-xs text-muted">
-                  {new Date(e.created_at).toLocaleString()} · {e.actor_name}
+                  {formatDateTime(e.created_at)} · {e.actor_name}
                   {e.source !== "manual" ? ` · ${e.source}` : ""}
                 </p>
               </li>

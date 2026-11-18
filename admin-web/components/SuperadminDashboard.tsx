@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { StatCard } from "@/components/StatCard";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { money } from "@/lib/payments";
+import { formatDate, formatDateTime } from "@/lib/format";
 
 type Overview = {
   clients: { total: number; active: number; inactive: number; locked: number };
@@ -83,7 +84,7 @@ function SystemCard() {
       <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-muted">{t("systemStatus")}</h2>
       <div className="max-w-xl overflow-hidden rounded-lg bg-surfaceSecondary shadow-sm">
         <Row label={t("sysCron")} value={t(CRON_KEYS[sys.cron.status])} bad={sys.cron.status !== "ok"} />
-        <Row label={t("lastRun")} value={sys.cron.last_run_at ? new Date(sys.cron.last_run_at).toLocaleString() : t("never")} />
+        <Row label={t("lastRun")} value={formatDateTime(sys.cron.last_run_at, t("never"))} />
         <Row label={t("sysAutoPurge")} value={sys.auto_purge_enabled ? t("sysOn") : t("sysOff")} />
         <Row label={t("sysSmtp")} value={set(sys.smtp_configured)} bad={!sys.smtp_configured} />
         <Row label={t("sysCloudinary")} value={set(sys.cloudinary_configured)} bad={!sys.cloudinary_configured} />
@@ -182,7 +183,7 @@ export function SuperadminDashboard() {
                         {t(REASON_KEYS[a.reason])}
                       </span>
                     </td>
-                    <td className={`px-4 py-3 text-onSurfaceSecondary ${a.date ? "" : "max-md:hidden"}`}>{a.date ?? "-"}</td>
+                    <td className={`px-4 py-3 text-onSurfaceSecondary ${a.date ? "" : "max-md:hidden"}`}>{formatDate(a.date, "-")}</td>
                   </tr>
                 ))}
               </tbody>

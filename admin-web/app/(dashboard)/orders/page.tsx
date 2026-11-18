@@ -8,6 +8,7 @@ import { EinvoiceModal } from "@/components/EinvoiceModal";
 import { OrderPrintModal } from "@/components/OrderPrintModal";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Order, OrderStatus, STATUS_LABEL_KEYS, money } from "@/lib/orders";
+import { formatDate } from "@/lib/format";
 
 const STATUSES = Object.keys(STATUS_LABEL_KEYS) as OrderStatus[];
 
@@ -97,7 +98,7 @@ export default function OrdersPage() {
               <th className="px-4 py-3 text-right">{t("grandTotal")}</th>
               <th className="px-4 py-3">{t("createdBy")}</th>
               <th className="px-4 py-3">{t("date")}</th>
-              <th className="no-print px-4 py-3 text-right">{t("actions")}</th>
+              <th className="no-print sticky-actions px-4 py-3 text-right">{t("actions")}</th>
             </tr>
           </thead>
           <tbody>
@@ -110,8 +111,8 @@ export default function OrdersPage() {
                 <td className="px-4 py-3 text-onSurfaceSecondary">{o.items.length}</td>
                 <td className="px-4 py-3 text-right font-semibold text-onSurface">{money(o.totals.grand)}</td>
                 <td className="px-4 py-3 text-onSurfaceSecondary">{o.created_by_name || "—"}</td>
-                <td className="px-4 py-3 text-onSurfaceSecondary">{new Date(o.created_at).toLocaleDateString()}</td>
-                <td className="no-print px-4 py-3 text-right">
+                <td className="px-4 py-3 text-onSurfaceSecondary">{formatDate(o.created_at)}</td>
+                <td className="no-print sticky-actions px-3 py-3 text-right">
                   <button
                     type="button"
                     onClick={() => setSelectedOrder(o)}

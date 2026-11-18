@@ -9,6 +9,7 @@ import { MODULES, toggleModule } from "@/lib/modules";
 import { ROLE_KEYS } from "@/components/SeatsPanel";
 import { SEAT_ROLES } from "@/lib/seats";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
+import { formatDate, formatMoney } from "@/lib/format";
 import {
   AssignDialog,
   CancelDialog,
@@ -141,7 +142,7 @@ export default function SubscriptionsPage() {
                         </span>
                         {r.state.status === "locked" && r.state.purge_at && (
                           <p className="mt-1 text-xs text-muted">
-                            {r.purged_at ? t("purgedAt") : r.purge_paused ? t("purgePaused") : `${t("purgeAt")}: ${r.state.purge_at}`}
+                            {r.purged_at ? t("purgedAt") : r.purge_paused ? t("purgePaused") : `${t("purgeAt")}: ${formatDate(r.state.purge_at)}`}
                           </p>
                         )}
                       </td>
@@ -205,7 +206,7 @@ export default function SubscriptionsPage() {
                   </td>
                   <td data-label={t("planPrices")} className="px-4 py-3 text-xs text-onSurfaceSecondary">
                     {Object.entries(p.prices ?? {}).length
-                      ? Object.entries(p.prices ?? {}).map(([months, amount]) => `${months} ${t("payPeriodShort")}: ${amount}`).join(" · ")
+                      ? Object.entries(p.prices ?? {}).map(([months, amount]) => `${months} ${t("payPeriodShort")}: ${formatMoney(amount)}`).join(" · ")
                       : "-"}
                   </td>
                   <td data-label={t("status")} className="px-4 py-3 text-onSurfaceSecondary">

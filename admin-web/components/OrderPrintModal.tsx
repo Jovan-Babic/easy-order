@@ -5,7 +5,8 @@ import { useLanguage } from "@/lib/i18n";
 import { useSession } from "@/lib/session-provider";
 import { ClientInfo, Customer, Order, discountPct, money } from "@/lib/orders";
 import { StatusBadge } from "@/components/StatusBadge";
-import { lineQtyLabel } from "@/lib/units";
+import { displaySymbol, lineQtyLabel } from "@/lib/units";
+import { formatDate, formatDateTime } from "@/lib/format";
 
 // Print-friendly invoice / delivery note (pick list without prices). The
 // surrounding page needs the `orders-page` class so globals.css can hide
@@ -103,7 +104,14 @@ export function OrderPrintModal({
                 {isInvoice ? t("invoiceDoc") : t("deliveryNote")}
               </p>
               {order.invoice_number && <p>{t("invoiceNumber")}: <strong>{order.invoice_number}</strong></p>}
-              <p>{new Date(order.shipped_at || order.created_at).toLocaleString()}</p>
+              {order.invoiced_at ? (
+                <>
+                  <p>{t("invoiceDate")}: {formatDate(order.invoiced_at)}</p>
+                  <p>{t("orderDate")}: {formatDateTime(order.created_at)}</p>
+                </>
+              ) : (
+                <p>{formatDateTime(order.shipped_at || order.created_at)}</p>
+              )}
               <p>{t("orderNumber")}: {order.id.slice(0, 8)}</p>
               <div className="no-print mt-1"><StatusBadge status={order.status} /></div>
             </div>
@@ -154,7 +162,7 @@ export function OrderPrintModal({
                       <>
                         <td className="px-2 py-3 text-right">
                           {money(item.price_no_vat ?? 0)}
-                          {item.unit_symbol && item.unit_symbol !== "kom" && <span className="block text-xs text-muted">/ {item.unit_symbol}</span>}
+                          {item.unit_symbol && item.unit_symbol !== "kom" && <span className="block text-xs text-muted">/ {displaySymbol(item.unit_symbol)}</span>}
                         </td>
                         <td className="px-2 py-3 text-right">{discountPct(item)}%</td>
                         <td className="px-2 py-3 text-right font-semibold">{money(item.line_net)}</td>
