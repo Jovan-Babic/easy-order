@@ -5,6 +5,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { link } from "@/components/SubscriptionDialogs";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { detailOf } from "@/lib/subscriptions";
+import { formatDateTime } from "@/lib/format";
 
 type Inquiry = {
   id: string;
@@ -29,7 +30,7 @@ const FILTERS: Array<{ key: Filter; label: TranslationKey }> = [
   { key: "all", label: "inquiryFilterAll" },
 ];
 
-const when = (iso: string) => new Date(iso).toLocaleString("sr-RS", { dateStyle: "short", timeStyle: "short" });
+const when = (iso: string) => formatDateTime(iso);
 
 // Superadmin: messages from the website contact form (landing/).
 export default function InquiriesPage() {

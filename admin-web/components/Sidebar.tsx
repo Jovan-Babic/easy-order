@@ -98,10 +98,13 @@ export function Sidebar({ user }: { user: NavUser }) {
       </header>
       {open && <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={() => setOpen(false)} aria-hidden="true" />}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-surfaceSecondary transition-transform duration-200 md:sticky md:top-0 md:z-auto md:h-screen md:w-60 md:flex-shrink-0 md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 w-64 border-r border-border bg-surfaceSecondary transition-transform duration-200 md:static md:z-auto md:min-h-screen md:w-60 md:flex-shrink-0 md:translate-x-0 ${
           open ? "translate-x-0 shadow-xl" : "-translate-x-full"
         }`}
       >
+        {/* The column (and its background) runs the full height of the page; its content stays in view while
+            the page scrolls. */}
+        <div className="flex h-full flex-col md:sticky md:top-0 md:h-screen">
         <div className="flex items-start justify-between px-5 py-6">
           <div>
             <p className="text-lg font-extrabold text-brand">Easy Order</p>
@@ -163,6 +166,7 @@ export function Sidebar({ user }: { user: NavUser }) {
           >
             {t("logout")}
           </button>
+        </div>
         </div>
       </aside>
     </>

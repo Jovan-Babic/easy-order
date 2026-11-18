@@ -126,6 +126,21 @@ def test_stock_suggestion_when_nothing_sells(api_client):
     S.wh.post(f"{API}/stock/receipts", json={"items": [{"product_id": p["id"], "qty": 500}]})
     hit = next(s for s in api_client.get(f"{API}/focus").json()["suggestions"] if s["product_id"] == p["id"])
     assert hit["reason"] == "stock" and hit["cover_days"] is None and hit["stock_qty"] == 500
+    assert hit["unit"] == "kom"
+
+
+def test_suggestion_and_item_carry_the_unit(api_client):
+    """Stock is kept in base units (ml for a product sold by the litre): the unit comes along so the portal
+    shows 978 l, not 978000."""
+    p = _product(api_client, unit="l")
+    S.wh.post(f"{API}/stock/receipts", json={"items": [{"product_id": p["id"], "qty": 978000}]})
+    hit = next(s for s in api_client.get(f"{API}/focus").json()["suggestions"] if s["product_id"] == p["id"])
+    assert hit["unit"] == "l" and hit["stock_qty"] == 978000
+    f = api_client.post(f"{API}/focus", json={"product_id": p["id"]}).json()
+    assert f["unit"] == "l" and f["stock_qty"] == 978000
+    row = next(i for i in api_client.get(f"{API}/focus").json()["items"] if i["id"] == f["id"])
+    assert row["unit"] == "l"
+    api_client.delete(f"{API}/focus/{f['id']}")
 
 
 def test_order_line_remembers_focus(api_client):

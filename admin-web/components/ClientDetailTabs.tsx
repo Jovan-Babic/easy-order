@@ -21,6 +21,7 @@ import { money } from "@/lib/payments";
 import { ClientInfo } from "@/lib/orders";
 import { SeatsOut } from "@/lib/seats";
 import { Plan, STATUS_KEYS, STATUS_STYLES, SubscriptionRow, detailOf } from "@/lib/subscriptions";
+import { formatDate, formatDateTime } from "@/lib/format";
 
 type Stats = { order_count: number; customer_count: number; product_count: number; total_grand: number } | null;
 type Tab = "overview" | "users" | "subscription" | "billing" | "payments" | "activity" | "notes";
@@ -200,7 +201,7 @@ function ClientSubscription({ clientId }: { clientId: string }) {
           <>
             <dt className="text-muted">{t("purgeAt")}</dt>
             <dd className="text-onSurface">
-              {row.purged_at ? t("purgedAt") : row.purge_paused ? t("purgePaused") : row.state.purge_at}
+              {row.purged_at ? t("purgedAt") : row.purge_paused ? t("purgePaused") : formatDate(row.state.purge_at)}
             </dd>
           </>
         )}
@@ -265,7 +266,7 @@ type Activity = {
   users: Array<{ id: string; name: string; role: string; active: boolean; last_login_at: string | null; last_seen_at: string | null }>;
 };
 
-const when = (iso: string | null | undefined, never: string) => (iso ? new Date(iso).toLocaleString() : never);
+const when = (iso: string | null | undefined, never: string) => formatDateTime(iso, never);
 
 function ClientActivity({ clientId }: { clientId: string }) {
   const { t } = useLanguage();
@@ -383,7 +384,7 @@ function ClientNotes({ clientId }: { clientId: string }) {
             <li key={n.id} className="rounded-lg bg-surfaceSecondary p-4 shadow-sm">
               <p className="whitespace-pre-wrap text-sm text-onSurface">{n.text}</p>
               <p className="mt-2 text-xs text-muted">
-                {new Date(n.created_at).toLocaleString()} · {n.author_name}
+                {formatDateTime(n.created_at)} · {n.author_name}
               </p>
             </li>
           ))}

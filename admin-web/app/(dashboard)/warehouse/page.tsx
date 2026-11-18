@@ -8,6 +8,7 @@ import { useSession } from "@/lib/session-provider";
 import { OrderPrintModal } from "@/components/OrderPrintModal";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ClientInfo, Customer, Order, OrderStatus, errorDetail } from "@/lib/orders";
+import { formatDateTime } from "@/lib/format";
 
 const QUEUE: OrderStatus[] = ["new", "in_progress"];
 
@@ -184,7 +185,7 @@ export default function WarehousePage() {
                     >
                       <p className="font-semibold text-onSurface">{o.customer_name}</p>
                       <p className="text-xs text-muted">
-                        {new Date(o.created_at).toLocaleString()} · {o.items.length} {t("items")}
+                        {formatDateTime(o.created_at)} · {o.items.length} {t("items")}
                         {o.assigned_to_name ? ` · ${t("assignedTo")}: ${o.assigned_to_name}` : ""}
                       </p>
                     </button>
@@ -351,7 +352,7 @@ export default function WarehousePage() {
               <ul className="space-y-1 text-xs text-onSurfaceSecondary">
                 {[...selected.status_history].reverse().map((h, i) => (
                   <li key={i}>
-                    {new Date(h.changed_at).toLocaleString()} · {h.changed_by_name ?? "—"} · {h.from_status ?? "∅"} → {h.to_status}
+                    {formatDateTime(h.changed_at)} · {h.changed_by_name ?? "—"} · {h.from_status ?? "∅"} → {h.to_status}
                     {h.note ? ` · ${h.note}` : ""}
                   </li>
                 ))}

@@ -5,6 +5,7 @@ import { ModuleGate } from "@/components/ModuleGate";
 import { Field, fieldInput } from "@/components/FormField";
 import { localizedDetail } from "@/lib/errors";
 import { useLanguage } from "@/lib/i18n";
+import { formatDate } from "@/lib/format";
 import {
   DueRow, Suggestion, Visit, VisitReport, VisitSettings, Zone,
   addDays, isoDate, mondayOf, weekdayName, WEEKDAYS,
@@ -22,7 +23,7 @@ export default function VisitsPage() {
   );
 }
 
-const fmt = (iso: string | null) => (iso ? iso.split("-").reverse().join(".") + "." : "-");
+const fmt = (iso: string | null) => formatDate(iso, "-");
 
 function useApi() {
   const { t } = useLanguage();

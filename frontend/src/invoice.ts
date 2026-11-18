@@ -22,7 +22,12 @@ export function buildInvoiceText(order: Order, lang: Lang, contact?: InvoiceCont
   if (contact?.phone) lines.push(`${t.phone}: ${contact.phone}`);
   if (contact?.email) lines.push(`${t.email}: ${contact.email}`);
   if (order.invoice_number) lines.push(`${t.invoiceNumber}: ${order.invoice_number}`);
-  lines.push(`${t.date}: ${dayjs(order.created_at).format("DD.MM.YYYY HH:mm")}`);
+  if (order.invoiced_at) {
+    lines.push(`${t.invoiceDate}: ${dayjs(order.invoiced_at).format("DD.MM.YYYY")}`);
+    lines.push(`${t.orderDate}: ${dayjs(order.created_at).format("DD.MM.YYYY HH:mm")}`);
+  } else {
+    lines.push(`${t.date}: ${dayjs(order.created_at).format("DD.MM.YYYY HH:mm")}`);
+  }
   lines.push("");
 
   const shipped = isShipped(order);
@@ -98,7 +103,9 @@ export function buildInvoiceHtml(order: Order, lang: Lang, contact?: InvoiceCont
           <div class="doc">${t.invoiceTitle}</div>
         </div>
         <div class="meta" style="text-align:right; margin:0;">
-          ${dayjs(order.created_at).format("DD.MM.YYYY HH:mm")}
+          ${order.invoiced_at
+            ? `${t.invoiceDate}: ${dayjs(order.invoiced_at).format("DD.MM.YYYY")}<br/>${t.orderDate}: ${dayjs(order.created_at).format("DD.MM.YYYY HH:mm")}`
+            : dayjs(order.created_at).format("DD.MM.YYYY HH:mm")}
         </div>
       </div>
       <div class="meta">

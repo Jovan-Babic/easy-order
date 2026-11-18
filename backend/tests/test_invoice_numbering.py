@@ -118,6 +118,27 @@ class TestAutoNumbering:
         assert again.json()["invoice_number"] == "ABC/0001"
         assert _ship(admin, _flow(admin)).json()["invoice_number"] == "ABC/0002"
 
+    def test_invoice_date_is_set_with_the_number_and_never_moves(self, superadmin_client):
+        """The invoice date comes with the number (first shipment), so numbers and dates run in the same order;
+        `shipped_at` is the latest shipment and moves when the order is shipped again."""
+        _, admin = _make_client(superadmin_client, invoice_prefix="ABC")
+        oid = _flow(admin)
+        before = admin.get(f"{API}/orders/{oid}").json()
+        assert before["invoiced_at"] is None
+        first = _ship(admin, oid).json()
+        assert first["invoiced_at"] and first["invoiced_at"] == first["shipped_at"]
+        admin.post(f"{API}/orders/{oid}/status", json={"status": "in_progress", "note": "ispravka"})
+        again = _ship(admin, oid).json()
+        assert again["invoiced_at"] == first["invoiced_at"]
+        assert again["shipped_at"] >= first["shipped_at"]
+        later = _ship(admin, _flow(admin)).json()
+        assert later["invoice_number"] == "ABC/0002" and later["invoiced_at"] >= first["invoiced_at"]
+
+    def test_manual_number_gets_an_invoice_date_too(self, superadmin_client):
+        _, admin = _make_client(superadmin_client, invoice_numbering="manual")
+        r = _ship(admin, _flow(admin), invoice_number="M-1")
+        assert r.status_code == 200 and r.json()["invoiced_at"]
+
 
 class TestManualNumbering:
     def test_manual_requires_unique_number(self, superadmin_client):

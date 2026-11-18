@@ -4,9 +4,10 @@ import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
 import { localizedDetail } from "@/lib/errors";
-import { isCountUnit, unitOf, useUnits } from "@/lib/units";
+import { displaySymbol, isCountUnit, unitOf, useUnits } from "@/lib/units";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ImportModal } from "@/components/ImportModal";
+import { formatMoney } from "@/lib/format";
 
 type Product = {
   id: string;
@@ -514,7 +515,7 @@ export default function ProductsPage() {
                       .filter((u) => u.active || u.code === form.unit)
                       .map((u) => (
                         <option key={u.code} value={u.code}>
-                          {lang === "en" ? u.name_en : u.name_sr} ({u.symbol})
+                          {lang === "en" ? u.name_en : u.name_sr} ({displaySymbol(u.symbol)})
                         </option>
                       ))}
                   </select>
@@ -633,18 +634,15 @@ export default function ProductsPage() {
           <table className="w-full text-left text-sm">
             <thead className="border-b border-border text-xs uppercase text-muted">
               <tr>
-                <th className="px-4 py-3">{t("image")}</th>
-                <th className="px-4 py-3">{t("name")}</th>
-                <th className="px-4 py-3">{t("manufacturer")}</th>
-                {hasWarehouse && <th className="px-4 py-3">{t("barcode")}</th>}
-                {hasWarehouse && <th className="px-4 py-3">{t("packageBarcode")}</th>}
-                <th className="px-4 py-3">{t("productPrice")}</th>
-                <th className="px-4 py-3">{t("defaultDiscount")}</th>
-                <th className="px-4 py-3">{t("additionalDiscountOptions")}</th>
-                <th className="px-4 py-3">{t("vat")}</th>
-                <th className="px-4 py-3">{t("packaging")}</th>
-                {isSuperAdmin && <th className="px-4 py-3">{t("client")}</th>}
-                <th className="px-4 py-3" />
+                <th className="px-3 py-3">{t("image")}</th>
+                <th className="px-3 py-3">{t("name")} / {t("manufacturer")}</th>
+                {hasWarehouse && <th className="px-3 py-3">{t("barcode")}</th>}
+                <th className="px-3 py-3">{t("productPrice")}</th>
+                <th className="px-3 py-3">{t("productDiscounts")}</th>
+                <th className="px-3 py-3">{t("vat")}</th>
+                <th className="px-3 py-3">{t("packaging")}</th>
+                {isSuperAdmin && <th className="px-3 py-3">{t("client")}</th>}
+                <th className="sticky-actions px-3 py-3" />
               </tr>
             </thead>
             <tbody>
@@ -658,32 +656,44 @@ export default function ProductsPage() {
                       ) : null}
                     </div>
                   </td>
-                  <td className="px-4 py-3 font-semibold text-onSurface">
+                  <td className="min-w-36 px-3 py-3 font-semibold text-onSurface">
                     {p.name}
                     {p.active === false && (
                       <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs font-semibold text-muted">
                         {t("productInactive")}
                       </span>
                     )}
+                    {p.manufacturer && <span className="block text-xs font-normal text-muted">{p.manufacturer}</span>}
                   </td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{p.manufacturer || "-"}</td>
-                  {hasWarehouse && <td className="px-4 py-3 text-onSurfaceSecondary">{p.barcode || "-"}</td>}
-                  {hasWarehouse && <td className="px-4 py-3 text-onSurfaceSecondary">{p.package_barcode || "-"}</td>}
-                  <td className="px-4 py-3 text-onSurfaceSecondary">
-                    {(p.price_no_vat ?? 0).toFixed(2)}
-                    {p.unit && p.unit !== "kom" && ` / ${unitOf(units, p.unit).symbol}`}
+                  {hasWarehouse && (
+                    <td className="px-3 py-3 text-onSurfaceSecondary">
+                      {p.barcode || "-"}
+                      {p.package_barcode && (
+                        <span className="block text-xs text-muted">
+                          {t("packageBarcode")}: {p.package_barcode}
+                        </span>
+                      )}
+                    </td>
+                  )}
+                  <td className="whitespace-nowrap px-3 py-3 text-onSurfaceSecondary">
+                    {formatMoney(p.price_no_vat)}
+                    {p.unit && p.unit !== "kom" && ` / ${displaySymbol(unitOf(units, p.unit).symbol)}`}
                   </td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{p.discount ?? 0}%</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{(p.additional_discounts && p.additional_discounts.length ? p.additional_discounts : [0]).map((d) => `${d}%`).join(", ")}</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">{p.vat_rate ?? 0}%</td>
-                  <td className="px-4 py-3 text-onSurfaceSecondary">
+                  <td className="px-3 py-3 text-onSurfaceSecondary">
+                    {p.discount ?? 0}%
+                    <span className="block text-xs text-muted">
+                      {t("productDiscountExtra")}: {(p.additional_discounts && p.additional_discounts.length ? p.additional_discounts : [0]).map((d) => `${d}%`).join(", ")}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-onSurfaceSecondary">{p.vat_rate ?? 0}%</td>
+                  <td className="px-3 py-3 text-onSurfaceSecondary">
                     {(p.pieces_per_package ?? 0)}/{(p.boxes_per_transport ?? 0)}
                   </td>
-                  {isSuperAdmin && <td className="px-4 py-3 text-onSurfaceSecondary">{clientName(p.client_id)}</td>}
-                  <td className="px-4 py-3 text-right">
+                  {isSuperAdmin && <td className="px-3 py-3 text-onSurfaceSecondary">{clientName(p.client_id)}</td>}
+                  <td className="sticky-actions whitespace-nowrap px-3 py-3 text-right">
                     <button
                       onClick={() => openEditForm(p)}
-                      className="mr-3 font-semibold text-brand hover:underline"
+                      className="mr-3 font-semibold text-brand hover:underline xl:mr-3 max-xl:mb-1 max-xl:mr-0 max-xl:block max-xl:w-full max-xl:text-right"
                     >
                       {t("edit")}
                     </button>

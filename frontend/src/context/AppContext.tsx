@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { Animated, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { storage } from "@/src/utils/storage";
+import { setUnitsLang } from "@/src/utils/units";
 import { Lang, translations, TranslationKey } from "@/src/i18n";
 import { colors, radius, spacing, font } from "@/src/theme";
 
@@ -23,6 +24,7 @@ const LANG_KEY = "easyorder_lang";
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLangState] = useState<Lang>("sr");
+  setUnitsLang(lang); // unit symbols follow the screen language (kom -> pcs)
   const [toast, setToast] = useState<string | null>(null);
   const opacity = useRef(new Animated.Value(0)).current;
   const insets = useSafeAreaInsets();

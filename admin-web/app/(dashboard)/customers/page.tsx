@@ -295,7 +295,7 @@ export default function CustomersPage() {
                 <th className="px-4 py-3">{t("phone")}</th>
                 <th className="px-4 py-3">{t("invoiceData")}</th>
                 {isSuperAdmin && <th className="px-4 py-3">{t("client")}</th>}
-                <th className="px-4 py-3" />
+                <th className="sticky-actions px-4 py-3" />
               </tr>
             </thead>
             <tbody>
@@ -318,7 +318,7 @@ export default function CustomersPage() {
                     )}
                   </td>
                   {isSuperAdmin && <td className="px-4 py-3 text-onSurfaceSecondary">{clientName(c.client_id)}</td>}
-                  <td className="space-x-4 px-4 py-3">
+                  <td className="sticky-actions space-x-4 px-4 py-3">
                     <button onClick={() => openEdit(c)} className="font-semibold text-brand hover:underline">
                       {t("edit")}
                     </button>

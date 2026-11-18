@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { Field, FieldGroup } from "@/components/FormField";
 import { errorDetail } from "@/lib/orders";
-import { formatQty, formatQtyWithUnit, isCountUnit, parseQty, qtyInputValue, unitOf, useUnits } from "@/lib/units";
+import { displaySymbol, formatQty, formatQtyWithUnit, isCountUnit, parseQty, qtyInputValue, unitOf, useUnits } from "@/lib/units";
+import { formatDate, formatDateTime } from "@/lib/format";
 
 type Product = {
   id: string;
@@ -186,7 +187,7 @@ export default function StockPage() {
         : false;
 
   const writeOff = async (item: ExpiringItem) => {
-    if (!window.confirm(`${item.product_name} (${item.expiry_date}): ${t("stockWriteOffConfirm")}`)) return;
+    if (!window.confirm(`${item.product_name} (${formatDate(item.expiry_date)}): ${t("stockWriteOffConfirm")}`)) return;
     const res = await fetch(`/api/stock/batches/${item.batch_id}/writeoff`, { method: "POST", body: "{}" });
     if (res.ok) await Promise.all([load(), loadExpiring()]);
   };
@@ -217,7 +218,7 @@ export default function StockPage() {
                 <tr key={item.batch_id} className="border-t border-border">
                   <td className="py-2 font-semibold text-onSurface">{item.product_name}</td>
                   <td className="py-2 text-right">{formatQtyWithUnit(item.qty, unitOf(units, products.find((p) => p.id === item.product_id)?.unit))}</td>
-                  <td className="py-2 text-right">{item.expiry_date}</td>
+                  <td className="py-2 text-right">{formatDate(item.expiry_date)}</td>
                   <td className="py-2 text-right">
                     <span className={`rounded-full px-2 py-0.5 font-bold ${levelClass(item.level)}`}>
                       {item.days_left < 0 ? t("stockLevelExpired") : `${item.days_left} ${t("stockExpiringDays")}`}
@@ -252,7 +253,7 @@ export default function StockPage() {
               <th className={`${th} text-right`}>{t("stockReserved")}</th>
               <th className={`${th} text-right`}>{t("stockAvailable")}</th>
               <th className={`${th} text-right`}>{t("stockNextExpiry")}</th>
-              <th className={`${th} text-right`}>{t("actions")}</th>
+              <th className={`${th} sticky-actions text-right`}>{t("actions")}</th>
             </tr>
           </thead>
           <tbody>
@@ -287,17 +288,19 @@ export default function StockPage() {
                     ""
                   )}
                 </td>
-                <td className="whitespace-nowrap px-4 py-3 text-right">
-                  {(["receipt", "count", "history"] as const).map((kind) => (
-                    <button
-                      key={kind}
-                      type="button"
-                      onClick={() => open(kind, p)}
-                      className="ml-2 rounded-md border border-brand px-3 py-1.5 text-sm font-semibold text-brand hover:bg-brandSecondary"
-                    >
-                      {kind === "receipt" ? t("stockReceipt") : kind === "count" ? t("stockCount") : t("stockHistory")}
-                    </button>
-                  ))}
+                <td className="sticky-actions px-3 py-3 text-right">
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {(["receipt", "count", "history"] as const).map((kind) => (
+                      <button
+                        key={kind}
+                        type="button"
+                        onClick={() => open(kind, p)}
+                        className="whitespace-nowrap rounded-md border border-brand px-2.5 py-1 text-sm font-semibold text-brand hover:bg-brandSecondary"
+                      >
+                        {kind === "receipt" ? t("stockReceipt") : kind === "count" ? t("stockCount") : t("stockHistory")}
+                      </button>
+                    ))}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -334,7 +337,7 @@ export default function StockPage() {
                 <tbody>
                   {movements.map((m) => (
                     <tr key={m.id} className="border-b border-border last:border-0">
-                      <td className="px-2 py-2">{new Date(m.created_at).toLocaleString()}</td>
+                      <td className="px-2 py-2">{formatDateTime(m.created_at)}</td>
                       <td className="px-2 py-2">{t(TYPE_KEYS[m.type] ?? "stockReceiptType")}</td>
                       <td className={`px-2 py-2 text-right font-semibold ${m.delta < 0 ? "text-error" : "text-success"}`}>
                         {m.delta > 0 ? `+${formatQty(m.delta, pu)}` : formatQty(m.delta, pu)}
@@ -402,7 +405,7 @@ export default function StockPage() {
                     onChange={(e) => setQty(e.target.value)}
                     className={`${input} flex-1`}
                   />
-                  {!countUnit && <span className="self-center text-sm font-semibold text-onSurface">{pu.symbol}</span>}
+                  {!countUnit && <span className="self-center text-sm font-semibold text-onSurface">{displaySymbol(pu.symbol)}</span>}
                   {panel.kind === "receipt" && countUnit && (
                     <select value={unit} onChange={(e) => setUnit(e.target.value as "pieces" | "transport")} className={input}>
                       <option value="pieces">{t("stockUnitPieces")}</option>

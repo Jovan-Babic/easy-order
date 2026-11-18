@@ -1,5 +1,6 @@
 // Types + helpers for payments and debts (PLAN_SUPERADMIN.md, phase C).
 import type { TranslationKey } from "@/lib/i18n";
+import { formatMoney } from "@/lib/format";
 
 export type PaymentStatus = "expected" | "received" | "canceled";
 export type PaymentMethod = "bank" | "card" | "cash" | "other";
@@ -56,8 +57,7 @@ export const PAYMENT_STATUS_STYLES: Record<PaymentStatus, string> = {
   canceled: "bg-surfaceTertiary text-muted",
 };
 
-export const money = (value: number, currency = "RSD") =>
-  `${value.toLocaleString("sr-RS", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+export const money = (value: number, currency = "RSD") => formatMoney(value, currency);
 
 export const todayIso = () => new Date().toISOString().slice(0, 10);
 

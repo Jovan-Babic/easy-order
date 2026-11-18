@@ -5,10 +5,24 @@ import { useEffect, useState } from "react";
 import { api, Unit } from "@/src/api";
 
 export const PIECE: Unit = {
-  code: "kom", name_sr: "komad", name_en: "piece", symbol: "kom", group: "count", base_code: "kom", factor: 1, active: true,
+  code: "kom", name_sr: "komad", name_en: "piece", symbol: "kom", symbol_en: "pcs", group: "count", base_code: "kom", factor: 1, active: true,
 };
 
 let cache: Unit[] | null = null;
+
+// The screen language for unit symbols; set by AppProvider, so the helpers need no hook.
+let unitsLang: "sr" | "en" = "sr";
+export function setUnitsLang(lang: "sr" | "en") {
+  unitsLang = lang;
+}
+
+/** The symbol to show: on English screens the unit's `symbol_en` (kom -> pcs), else the stored symbol. */
+export function displaySymbol(symbol?: string | null): string {
+  const s = symbol || "kom";
+  if (unitsLang !== "en") return s;
+  const unit = (cache ?? [PIECE]).find((u) => u.symbol === s);
+  return unit?.symbol_en || (s === "kom" ? "pcs" : s);
+}
 let pending: Promise<Unit[]> | null = null;
 
 async function fetchUnits(): Promise<Unit[]> {
@@ -68,7 +82,7 @@ export function formatQty(base: number | null | undefined, unit: Pick<Unit, "fac
 }
 
 export const formatQtyWithUnit = (base: number | null | undefined, unit: Pick<Unit, "factor" | "symbol">) =>
-  base === null || base === undefined ? "" : `${formatQty(base, unit)} ${unit.symbol}`;
+  base === null || base === undefined ? "" : `${formatQty(base, unit)} ${displaySymbol(unit.symbol)}`;
 
 /** "3,5 kg"; pieces stay a bare number. */
 export const lineQtyLabel = (base: number, item: { unit_symbol?: string; unit_factor?: number }) => {
@@ -86,4 +100,4 @@ export function cleanQtyInput(value: string, unit: Pick<Unit, "group">): string 
 
 /** " / kg" for a line sold by weight, volume or length; nothing for pieces. */
 export const perUnit = (item: { unit_symbol?: string }) =>
-  item.unit_symbol && item.unit_symbol !== "kom" ? ` / ${item.unit_symbol}` : "";
+  item.unit_symbol && item.unit_symbol !== "kom" ? ` / ${displaySymbol(item.unit_symbol)}` : "";

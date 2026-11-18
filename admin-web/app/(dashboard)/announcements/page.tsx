@@ -5,6 +5,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Modal, input, link, primary, secondary, useSubmit } from "@/components/SubscriptionDialogs";
 import { TranslationKey, useLanguage } from "@/lib/i18n";
 import { detailOf } from "@/lib/subscriptions";
+import { formatDateTime } from "@/lib/format";
 
 type Announcement = {
   id: string;
@@ -94,8 +95,8 @@ export default function AnnouncementsPage() {
                     {a.message_sr && a.message_en && <p className="text-xs text-muted">{a.message_en}</p>}
                     <p className="mt-1 text-xs text-muted">
                       {audience(a)}
-                      {a.starts_at ? ` · ${t("annStarts")} ${a.starts_at}` : ""}
-                      {a.ends_at ? ` · ${t("annEnds")} ${a.ends_at}` : ""}
+                      {a.starts_at ? ` · ${t("annStarts")} ${formatDateTime(a.starts_at)}` : ""}
+                      {a.ends_at ? ` · ${t("annEnds")} ${formatDateTime(a.ends_at)}` : ""}
                     </p>
                   </td>
                   <td className="px-4 py-3">

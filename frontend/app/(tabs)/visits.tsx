@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
+import { formatDate } from "@/src/utils/format";
 import {
   ActivityIndicator, Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, RefreshControl, ScrollView,
   StyleSheet, Text, TextInput, View,
@@ -24,7 +25,7 @@ const mondayOf = (s: string) => {
   const date = new Date(y, m - 1, d);
   return iso(new Date(y, m - 1, d - ((date.getDay() + 6) % 7)));
 };
-const dmy = (s: string | null) => (s ? s.split("-").reverse().join(".") + "." : "");
+const dmy = (s: string | null) => formatDate(s);
 const WEEKDAY: Record<"sr" | "en", string[]> = {
   sr: ["Ponedeljak", "Utorak", "Sreda", "Četvrtak", "Petak", "Subota", "Nedelja"],
   en: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],

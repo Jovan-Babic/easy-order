@@ -10,6 +10,7 @@ export type Unit = {
   name_sr: string;
   name_en: string;
   symbol: string;
+  symbol_en?: string | null; // English screens (kom -> pcs); empty = same as `symbol`
   group: string;
   base_code: string;
   factor: number;
@@ -18,7 +19,7 @@ export type Unit = {
 };
 
 export const PIECE: Unit = {
-  code: "kom", name_sr: "komad", name_en: "piece", symbol: "kom", group: "count", base_code: "kom", factor: 1, active: true,
+  code: "kom", name_sr: "komad", name_en: "piece", symbol: "kom", symbol_en: "pcs", group: "count", base_code: "kom", factor: 1, active: true,
 };
 
 // Built-ins, used until /api/units answers (or when it fails).
@@ -42,6 +43,20 @@ async function fetchUnits(): Promise<Unit[]> {
       });
   }
   return pending;
+}
+
+// The screen language for unit symbols; set by LanguageProvider, so the helpers below need no hook.
+let unitsLang: "sr" | "en" = "sr";
+export function setUnitsLang(lang: "sr" | "en") {
+  unitsLang = lang;
+}
+
+/** The symbol to show: on English screens the unit's `symbol_en` (kom -> pcs), else the stored symbol. */
+export function displaySymbol(symbol?: string | null): string {
+  const s = symbol || "kom";
+  if (unitsLang !== "en") return s;
+  const unit = (cache ?? FALLBACK_UNITS).find((u) => u.symbol === s);
+  return unit?.symbol_en || (s === "kom" ? "pcs" : s);
 }
 
 export function resetUnitsCache() {
@@ -71,7 +86,7 @@ export function formatQty(base: number | null | undefined, unit: Pick<Unit, "fac
 }
 
 export const formatQtyWithUnit = (base: number | null | undefined, unit: Pick<Unit, "factor" | "symbol">) =>
-  base === null || base === undefined ? "" : `${formatQty(base, unit)} ${unit.symbol}`;
+  base === null || base === undefined ? "" : `${formatQty(base, unit)} ${displaySymbol(unit.symbol)}`;
 
 // Text typed in the product's unit -> whole base units; null when empty, negative or too fine (0,0005 kg).
 export function parseQty(text: string, unit: Pick<Unit, "factor">): number | null {

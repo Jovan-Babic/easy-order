@@ -50,6 +50,17 @@ class TestUnitCatalog:
         assert units["kg"]["base_code"] == "g" and units["kg"]["factor"] == 1000
         assert units["m"]["base_code"] == "mm" and units["cm"]["factor"] == 10
         assert units["kom"]["group"] == "count"
+        assert units["kom"]["symbol_en"] == "pcs"  # English screens show pcs instead of kom
+
+    def test_english_symbol_can_be_set_and_cleared(self, superadmin_client):
+        code = _code()
+        body = {"code": code, "name_sr": "paket", "name_en": "pack", "symbol": "pak", "group": "mass", "base_code": "g", "factor": 7}
+        r = superadmin_client.post(f"{API}/units", json={**body, "symbol_en": "pk"})
+        assert r.status_code == 200 and r.json()["symbol_en"] == "pk"
+        r = superadmin_client.put(f"{API}/units/{code}", json={"symbol": "pak"})
+        assert r.json()["symbol_en"] == "pk"  # not sent = kept
+        r = superadmin_client.put(f"{API}/units/{code}", json={"symbol_en": ""})
+        assert r.json()["symbol_en"] == ""  # empty = the same symbol on English screens
 
     def test_only_superadmin_manages(self, api_client, superadmin_client):
         body = {"code": _code(), "name_sr": "x", "name_en": "x", "symbol": "x", "group": "mass", "base_code": "g", "factor": 5}
