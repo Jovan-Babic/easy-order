@@ -1,5 +1,6 @@
 "use client";
 
+import { last12MonthsStart } from "@/lib/format";
 import { useCallback, useEffect, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -18,7 +19,7 @@ const STATUSES: OrderStatus[] = ["new", "in_progress", "shipped", "rejected", "c
 
 export default function ReportsPage() {
   const { t } = useLanguage();
-  const [fromDate, setFromDate] = useState("");
+  const [fromDate, setFromDate] = useState(last12MonthsStart); // not every order ever placed by default
   const [toDate, setToDate] = useState("");
   const [report, setReport] = useState<Report | null>(null);
 

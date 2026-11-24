@@ -247,7 +247,7 @@ Pri pakovanju vam se pored artikla sa rokom prikazuje **Uzmi prvo rok** (najrani
 
 ## 8. Istorija
 
-Kartica **Istorija** (dole desno) prikazuje sve porudžbine firme, najnovije na vrhu.
+Kartica **Istorija** (dole desno) prikazuje porudžbine firme, najnovije na vrhu. Učitava se poslednjih 30, a dugme **Učitaj još** na dnu liste dodaje sledećih 30.
 
 ![Istorija](slike/magacin/11-istorija.png)
 

@@ -159,6 +159,7 @@ async def lifespan(app: FastAPI):
         [("client_id", 1), ("user_id", 1), ("period_type", 1), ("period", 1), ("metric", 1)], unique=True
     )
     await db.orders.create_index("client_id")
+    await db.orders.create_index([("client_id", 1), ("created_at", -1)])  # the paged list, newest first
     await db.orders.create_index([("client_id", 1), ("status", 1), ("created_at", -1)])
     await db.orders.create_index([("client_id", 1), ("created_by_user_id", 1), ("created_at", -1)])
     try:
@@ -6394,13 +6395,20 @@ async def list_orders(
     created_by_user_id: Optional[str] = None,
     from_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     to_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    q: Optional[str] = Query(None, max_length=100, description="part of the customer's name or of the invoice number"),
     limit: Optional[int] = Query(None, ge=1, le=500),
     skip: int = Query(0, ge=0),
+    response: Response = None,
     current_user: User = Depends(get_current_user),
 ):
+    """Newest first. With `limit` (a page; `skip` = how many to pass over) the header `X-Total-Count` carries
+    the number of orders that match, so a client can page; without it every match comes back, as before."""
     query = _order_scope_query(current_user)
     if customer_id:
         query = {**query, "customer_id": customer_id}
+    if q and q.strip():
+        pattern = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query = {**query, "$and": [{"$or": [{"customer_name": pattern}, {"invoice_number": pattern}]}]}
     if status:
         query = {**query, "status": {"$in": status}}
     # Ignored for operators: they are already limited to their own orders.
@@ -6416,6 +6424,8 @@ async def list_orders(
     cursor = db.orders.find(query, {"_id": 0}).sort("created_at", -1).skip(skip)
     if limit:
         cursor = cursor.limit(limit)
+        if response is not None:
+            response.headers["X-Total-Count"] = str(await db.orders.count_documents(query))
     docs = await cursor.to_list(None)
     if portal and current_user.role == Role.SUPERADMIN:
         # One query for all client names instead of one per order.
@@ -6983,13 +6993,16 @@ async def guide_image(slug: str, name: str):
 _STATS_EXCLUDED_STATUSES = ("canceled", "rejected")
 
 
-async def _compute_client_stats(client_id: str) -> ClientStats:
+async def _compute_client_stats(client_id: str, created_range: Optional[Dict[str, str]] = None) -> ClientStats:
+    """Orders and sales of a client, for all time or for a `created_at` range; customers and products are
+    the size of the catalog either way."""
     client = await db.clients.find_one({"id": client_id}, {"_id": 0})
     client_name = client["name"] if client else "Unknown"
     # Canceled and rejected orders never became sales.
-    orders = await db.orders.find(
-        {"client_id": client_id, "status": {"$nin": list(_STATS_EXCLUDED_STATUSES)}}, {"_id": 0}
-    ).to_list(None)
+    order_query: Dict[str, Any] = {"client_id": client_id, "status": {"$nin": list(_STATS_EXCLUDED_STATUSES)}}
+    if created_range:
+        order_query["created_at"] = created_range
+    orders = await db.orders.find(order_query, {"_id": 0}).to_list(None)
     customer_count = await db.customers.count_documents({"client_id": client_id})
     product_count = await db.products.count_documents({"client_id": client_id})
 
@@ -8205,10 +8218,19 @@ async def orders_report(
 
 
 @api_router.get("/stats/overview", response_model=StatsResponse)
-async def stats_overview(current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN))):
+async def stats_overview(
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    current_user: User = Depends(require_roles(Role.SUPERADMIN, Role.ADMIN)),
+):
+    created_range: Dict[str, str] = {}
+    if from_date:
+        created_range["$gte"] = day_start_utc(_parse_date(from_date, "from_date").date())
+    if to_date:
+        created_range["$lt"] = day_start_utc(_parse_date(to_date, "to_date").date() + timedelta(days=1))
     if current_user.role == Role.SUPERADMIN:
         client_docs = await db.clients.find({}, {"_id": 0, "id": 1}).to_list(None)
-        by_client = [await _compute_client_stats(c["id"]) for c in client_docs]
+        by_client = [await _compute_client_stats(c["id"], created_range) for c in client_docs]
         totals = ClientStats(
             client_id="",
             client_name="All Clients",
@@ -8221,7 +8243,7 @@ async def stats_overview(current_user: User = Depends(require_roles(Role.SUPERAD
         )
         return StatsResponse(scope="global", totals=totals, by_client=by_client)
 
-    stats = await _compute_client_stats(current_user.client_id)
+    stats = await _compute_client_stats(current_user.client_id, created_range)
     return StatsResponse(scope="client", totals=stats, by_client=[stats])
 
 
@@ -9379,4 +9401,5 @@ app.add_middleware(
     allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count"],
 )

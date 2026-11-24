@@ -41,3 +41,10 @@ export function formatMoneyShort(value: number, lang: "sr" | "en" = "sr"): strin
   const n = (value / div).toLocaleString(lang === "sr" ? "sr-RS" : "en-US", { maximumFractionDigits: 1 });
   return div === 1 ? n : lang === "sr" ? `${n} ${sr}` : `${n}${en}`;
 }
+
+/** First day of the month eleven months back, as YYYY-MM-DD: the default start of a "last 12 months" period
+ *  (twelve calendar months, this one included), so a page never loads every order ever placed by default. */
+export function last12MonthsStart(now = new Date()): string {
+  const d = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`;
+}

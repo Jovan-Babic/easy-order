@@ -59,7 +59,7 @@ Posle prijave otvara se **Kontrolna tabla** sa pregledom prometa firme. Levo je 
 
 ![Kontrolna tabla](slike/admin/03-kontrolna-tabla.png)
 
-1. **Od datuma / Do datuma** – ograničite pregled na period. Prazno znači ceo period.
+1. **Od datuma / Do datuma** – ograničite pregled na period. Stranica se otvara sa poslednjih 12 meseci; **Svi datumi** prikazuje ceo period, a **Poslednjih 12 meseci** vraća na početni prikaz.
 2. **Brojevi na vrhu** – narudžbine, kupci, proizvodi, prihod (sa PDV-om), prosečna porudžbina i aktivni kupci.
 3. **Promet kroz vreme** – po mesecima, **neto** (bez PDV-a) i **ukupno sa PDV-om**. Dodir na tačku otvara detalje meseca.
 4. **Prodaja artikala** – najprodavaniji artikli (**Top 10** ili **Svi proizvodi**). Dodir na stubić otvara detalje artikla.
@@ -127,7 +127,7 @@ Za dodatne naloge obratite se Easy Order podršci. Dodatni nalozi povećavaju li
 
 ## 5. Proizvodi
 
-Na stranici **Proizvodi** vodite katalog koji komercijalisti vide u aplikaciji.
+Na stranici **Proizvodi** vodite katalog koji komercijalisti vide u aplikaciji. Polje **Pretraga** iznad tabele traži po nazivu, proizvođaču i barkodu. Kad ima više od 50 proizvoda, ispod tabele su dugmad **Prethodna** i **Sledeća**.
 
 ![Proizvodi](slike/admin/09-proizvodi.png)
 
@@ -181,7 +181,7 @@ Kako se artikal prepoznaje: prvo po **barkodu**, a ako ga nema, po **tačnom naz
 
 ## 6. Kupci
 
-Na stranici **Kupci** vodite spisak kupaca koje komercijalisti biraju pri porudžbini.
+Na stranici **Kupci** vodite spisak kupaca koje komercijalisti biraju pri porudžbini. Polje **Pretraga** iznad tabele traži po nazivu, PIB-u, adresi, emailu i telefonu.
 
 ![Kupci](slike/admin/13-kupci.png)
 
@@ -203,11 +203,11 @@ Novi kupac se odmah pojavljuje komercijalistima.
 
 ## 7. Narudžbine
 
-Stranica **Narudžbine** prikazuje sve porudžbine firme, najnovije prve.
+Stranica **Narudžbine** prikazuje sve porudžbine firme, najnovije prve, po 50 na strani. Ispod tabele piše koliko ih ukupno ima, uz dugmad **Prethodna** i **Sledeća**.
 
 ![Narudžbine](slike/admin/14-narudzbine.png)
 
-1. **Filteri**: status (<!-- modul: warehouse -->Nova, U pripremi, Poslato, Odbijeno, Otkazano<!-- /modul --><!-- modul: !warehouse -->Nova, Otkazano<!-- /modul -->) i period (**Od** / **Do**).
+1. **Filteri**: status (<!-- modul: warehouse -->Nova, U pripremi, Poslato, Odbijeno, Otkazano<!-- /modul --><!-- modul: !warehouse -->Nova, Otkazano<!-- /modul -->) i period (**Od** / **Do**). Polje **Kupac ili broj fakture** traži porudžbinu po delu naziva kupca ili broja fakture, u svim stranama odjednom.
 2. **Tabela**: kupac, status, **Broj fakture** (dodeljuje se kad se porudžbina pošalje), broj stavki, ukupan iznos, ko je kreirao i datum.
 3. **Detalji** – otvara fakturu i otpremnicu.
 4. **Obriši** – brisanje porudžbine. Moguće je samo dok je porudžbina **Nova**.
@@ -287,7 +287,7 @@ U meniju je **Magacin**<!-- modul: stock --> i **Stanje**<!-- /modul -->. Admini
 
 ![Izveštaji](slike/admin/16-izvestaji.png)
 
-1. **Od / Do** – period (po datumu kreiranja porudžbine). Pored je prosečno vreme od porudžbine do slanja u satima.
+1. **Od / Do** – period (po datumu kreiranja porudžbine). Stranica se otvara sa poslednjih 12 meseci. Pored je prosečno vreme od porudžbine do slanja u satima.
 2. **Po statusu** – koliko porudžbina je u svakom statusu i njihov ukupan iznos.
 3. **Po komercijalisti** – koliko je ko napravio porudžbina, koliko je poslato, odbijeno i otkazano.
 4. **Po magacioneru** – koliko je ko poslao i odbio porudžbina.

@@ -5,7 +5,7 @@ import { ByClientChart } from "@/components/ByClientChart";
 import { DashboardAnalytics, DashboardStats } from "@/components/DashboardAnalytics";
 import { StatCard } from "@/components/StatCard";
 import { SuperadminDashboard } from "@/components/SuperadminDashboard";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, last12MonthsStart } from "@/lib/format";
 import { useLanguage } from "@/lib/i18n";
 import { useSession } from "@/lib/session-provider";
 
@@ -36,7 +36,8 @@ function ClientDashboard() {
   const { t } = useLanguage();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [dashboard, setDashboard] = useState<DashboardStats | null>(null);
-  const [fromDate, setFromDate] = useState("");
+  // Opens on the last 12 months, not on every order ever placed; "all dates" is one click away.
+  const [fromDate, setFromDate] = useState(last12MonthsStart);
   const [toDate, setToDate] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -46,7 +47,7 @@ function ClientDashboard() {
     if (toDate) params.set("to_date", toDate);
     setLoading(true);
     Promise.all([
-      fetch("/api/stats/overview"),
+      fetch(`/api/stats/overview${params.toString() ? `?${params.toString()}` : ""}`),
       fetch(`/api/stats/dashboard${params.toString() ? `?${params.toString()}` : ""}`),
     ])
       .then(async ([overviewResponse, dashboardResponse]) => {
@@ -83,7 +84,17 @@ function ClientDashboard() {
           {t("dashToDate")}
           <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} className="rounded-md border border-border px-3 py-2 text-sm font-normal text-onSurface" />
         </label>
-        {(fromDate || toDate) && <button type="button" onClick={() => { setFromDate(""); setToDate(""); }} className="rounded-md border border-border px-3 py-2 text-sm font-semibold text-onSurfaceSecondary hover:bg-surfaceTertiary">{t("dashAllDates")}</button>}
+        {(fromDate !== last12MonthsStart() || toDate) && (
+          <button type="button" onClick={() => { setFromDate(last12MonthsStart()); setToDate(""); }} className="rounded-md border border-border px-3 py-2 text-sm font-semibold text-onSurfaceSecondary hover:bg-surfaceTertiary">
+            {t("dashLast12")}
+          </button>
+        )}
+        {(fromDate || toDate) && (
+          <button type="button" onClick={() => { setFromDate(""); setToDate(""); }} className="rounded-md border border-border px-3 py-2 text-sm font-semibold text-onSurfaceSecondary hover:bg-surfaceTertiary">
+            {t("dashAllDates")}
+          </button>
+        )}
+        {fromDate === last12MonthsStart() && !toDate && <p className="pb-2 text-xs text-muted">{t("dashLast12")}</p>}
       </div>
 
       <div className="mb-8 grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-6">

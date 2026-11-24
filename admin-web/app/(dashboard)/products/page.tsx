@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Pager, matchesSearch, pageOf } from "@/components/Pager";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
 import { localizedDetail } from "@/lib/errors";
@@ -111,6 +112,8 @@ export default function ProductsPage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [pendingDelete, setPendingDelete] = useState<Product | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [search, setSearch] = useState("");
+  const [pageNo, setPageNo] = useState(0);
   // A newly picked image stays local until "Save"; nothing is uploaded before that.
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -331,6 +334,9 @@ export default function ProductsPage() {
       return { ...prev, additional_discounts: next };
     });
   };
+
+  const matching = products.filter((p) => matchesSearch(search, [p.name, p.manufacturer, p.barcode, p.package_barcode]));
+  const shown = pageOf(matching, pageNo);
 
   return (
     <div>
@@ -627,6 +633,19 @@ export default function ProductsPage() {
         </div>
       )}
 
+      {!loading && (
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPageNo(0);
+          }}
+          placeholder={t("listSearch")}
+          aria-label={t("listSearch")}
+          className="mb-4 w-full max-w-sm rounded-md border border-border bg-surfaceSecondary px-3 py-2 text-sm"
+        />
+      )}
       {loading ? (
         <p className="text-muted">{t("loading")}</p>
       ) : (
@@ -646,7 +665,7 @@ export default function ProductsPage() {
               </tr>
             </thead>
             <tbody>
-              {products.map((p) => (
+              {shown.visible.map((p) => (
                 <tr key={p.id} className="border-b border-border last:border-0">
                   <td className="px-4 py-3">
                     <div className="h-10 w-10 overflow-hidden rounded-md bg-surface">
@@ -707,6 +726,7 @@ export default function ProductsPage() {
           </table>
         </div>
       )}
+      {!loading && <Pager page={shown.page} total={matching.length} onPage={setPageNo} />}
       {pendingDelete && (
         <ConfirmDialog itemName={pendingDelete.name} onCancel={() => setPendingDelete(null)} onConfirm={remove} />
       )}

@@ -429,10 +429,13 @@ export const api = {
   visitNow: (customerId: string, note?: string) =>
     req<Visit>("/visits", { method: "POST", body: JSON.stringify({ customer_id: customerId, note }) }),
   getGuide: (role?: Guide["role"]) => req<Guide>(`/guide${role ? `?role=${role}` : ""}`),
-  listOrders: (opts?: { customerId?: string; status?: OrderStatus[] }) => {
+  // Newest first. With `limit` only that many come back (`skip` = how many to pass over); without it, all.
+  listOrders: (opts?: { customerId?: string; status?: OrderStatus[]; limit?: number; skip?: number }) => {
     const qs = new URLSearchParams();
     if (opts?.customerId) qs.set("customer_id", opts.customerId);
     (opts?.status ?? []).forEach((s) => qs.append("status", s));
+    if (opts?.limit) qs.set("limit", String(opts.limit));
+    if (opts?.skip) qs.set("skip", String(opts.skip));
     const q = qs.toString();
     return req<Order[]>(`/orders${q ? `?${q}` : ""}`);
   },
