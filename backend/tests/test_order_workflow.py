@@ -257,6 +257,22 @@ class TestQuantityLimit:
         body["items"] = [{"product_id": S.product["id"], "ordered_qty": 600_000}] * 2
         assert S.op.post(f"{API}/orders", json=body).status_code == 400
 
+    def test_limit_is_in_the_products_unit(self, api_client):
+        """1 000 000 of the product's unit: for a product sold by the kilogram that is 10^9 grams, not one tonne."""
+        kg = api_client.post(f"{API}/products", json={"name": "TEST_WF_kg", "price_no_vat": 1, "unit": "kg"}).json()
+        line = lambda grams: {"customer_id": S.customer["id"], "items": [{"product_id": kg["id"], "ordered_qty": grams}]}  # noqa: E731
+        two_tonnes = S.op.post(f"{API}/orders", json=line(2_000_000))  # 2 000 kg: was refused before
+        assert two_tonnes.status_code == 200, two_tonnes.text
+        S.orders.append(two_tonnes.json()["id"])
+        assert S.op.post(f"{API}/orders", json=line(1_000_000_001)).status_code == 400  # over 1 000 000 kg
+        # the same limit for a stock receipt and a count
+        assert S.wh.post(f"{API}/stock/receipts", json={"items": [{"product_id": kg["id"], "qty": 2_000_000}]}).status_code == 200
+        assert S.wh.post(f"{API}/stock/receipts", json={"items": [{"product_id": kg["id"], "qty": 1_000_000_001}]}).status_code == 400
+        assert S.wh.post(f"{API}/stock/adjustments", json={"product_id": kg["id"], "counted_qty": 1_000_000_001, "note": "x"}).status_code == 400
+        # a product counted in pieces keeps 1 000 000
+        r = S.wh.post(f"{API}/stock/receipts", json={"items": [{"product_id": S.product["id"], "qty": 1_000_001}]})
+        assert r.status_code == 400 and "too large" in r.json()["detail"]
+
     def test_edit_cannot_exceed_it_either(self):
         order = _new_order(S.op)
         r = S.op.put(f"{API}/orders/{order['id']}", json={

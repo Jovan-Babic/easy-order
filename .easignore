@@ -9,9 +9,8 @@ backend/
 .claude/
 .emergent/
 .pytest_cache/
-memory/
-tests/
-test_reports/
+landing/
+docs/
 
 # Repository-level generated output
 **/.next/
