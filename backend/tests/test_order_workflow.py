@@ -213,3 +213,53 @@ class TestEditNewOrder:
         o = _new_order(S.op)
         assert S.op.put(f"{API}/orders/{o['id']}", json={"customer_id": S.customer["id"], "items": []}).status_code == 400
         assert self._edit(S.op, o["id"], 0).status_code == 400
+
+
+class TestReopenedByAdmin:
+    """An admin moves a shipped order back to "in progress" for a correction: the warehouse must be able to
+    go on with it (it used to be locked to the admin)."""
+
+    def test_reopened_order_goes_back_to_its_packer(self, api_client):
+        order = _new_order(S.op)
+        assert _pick(S.wh, order["id"], 10).status_code == 200  # the first pick takes the order
+        assert _status(S.wh, order["id"], "shipped").status_code == 200
+        back = _status(api_client, order["id"], "in_progress", "ispravka količine")
+        assert back.status_code == 200 and back.json()["assigned_to_name"] == "TEST wf-wh"
+        assert _pick(S.wh, order["id"], 8).status_code == 200
+        again = _status(S.wh, order["id"], "shipped")
+        assert again.status_code == 200 and again.json()["items"][0]["picked_qty"] == 8
+
+    def test_reopened_order_of_a_gone_packer_is_free_to_take(self, api_client):
+        gone_id, gone = _invite(api_client, "warehouse", "wf-gone")
+        order = _new_order(S.op)
+        assert _pick(gone, order["id"], 10).status_code == 200
+        assert _status(gone, order["id"], "shipped").status_code == 200
+        user = next(u for u in api_client.get(f"{API}/users").json() if u["id"] == gone_id)
+        r = api_client.put(f"{API}/users/{gone_id}", json={"name": user["name"], "email": user["email"], "role": "warehouse", "active": False})
+        assert r.status_code == 200, r.text
+        back = _status(api_client, order["id"], "in_progress", "ispravka")
+        assert back.status_code == 200 and back.json()["assigned_to_user_id"] is None
+        taken = _pick(S.wh, order["id"], 9)  # whoever packs first takes it
+        assert taken.status_code == 200 and taken.json()["assigned_to_name"] == "TEST wf-wh"
+
+    def test_admin_taking_a_new_order_still_holds_it(self, api_client):
+        order = _new_order(S.op)
+        r = _status(api_client, order["id"], "in_progress")
+        assert r.status_code == 200 and r.json()["assigned_to_user_id"] == api_client.get(f"{API}/auth/me").json()["id"]
+
+
+class TestQuantityLimit:
+    def test_absurd_quantity_is_refused(self):
+        body = {"customer_id": S.customer["id"], "items": [{"product_id": S.product["id"], "ordered_qty": 1_000_001}]}
+        r = S.op.post(f"{API}/orders", json=body)
+        assert r.status_code == 400 and "too large" in r.json()["detail"]
+        # two lines of the same product are added up before the check
+        body["items"] = [{"product_id": S.product["id"], "ordered_qty": 600_000}] * 2
+        assert S.op.post(f"{API}/orders", json=body).status_code == 400
+
+    def test_edit_cannot_exceed_it_either(self):
+        order = _new_order(S.op)
+        r = S.op.put(f"{API}/orders/{order['id']}", json={
+            "customer_id": S.customer["id"], "items": [{"product_id": S.product["id"], "ordered_qty": 10**12}],
+        })
+        assert r.status_code == 400

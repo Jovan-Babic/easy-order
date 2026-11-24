@@ -229,6 +229,30 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Timestamps are stored in UTC; "a day" (today, a date filter, a month of a report or a target) is a day in
+# Serbia. Without this an order placed at 00:30 local time would count for the day (or month) before.
+try:
+    from zoneinfo import ZoneInfo
+
+    LOCAL_TZ: Any = ZoneInfo("Europe/Belgrade")
+except Exception:  # no tz database on the machine: UTC+1 is right in winter, one hour off in summer
+    LOCAL_TZ = timezone(timedelta(hours=1))
+
+
+def local_today() -> date:
+    return datetime.now(LOCAL_TZ).date()
+
+
+def day_start_utc(day: date) -> str:
+    """Local midnight at the start of `day` as a UTC ISO string, comparable with stored `created_at` values."""
+    return datetime(day.year, day.month, day.day, tzinfo=LOCAL_TZ).astimezone(timezone.utc).isoformat()
+
+
+def local_date_of(iso: str) -> date:
+    """The local calendar day of a stored UTC timestamp."""
+    return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(LOCAL_TZ).date()
+
+
 # ---------------- Auth / role models ----------------
 class Role(str, Enum):
     SUPERADMIN = "superadmin"
@@ -1010,6 +1034,10 @@ class OrderItemInput(BaseModel):
     ordered_qty: int
     discount: Optional[float] = None  # must be one of product.discounts; None = product default
     additional_discount: Optional[float] = None  # must be one of product.additional_discounts
+
+
+# Largest quantity on one order line, in base units - the same limit a stock receipt line has.
+MAX_LINE_QTY = 1_000_000
 
 
 class OrderInput(BaseModel):
@@ -6380,9 +6408,9 @@ async def list_orders(
         query = {**query, "created_by_user_id": created_by_user_id}
     date_range = {}
     if from_date:
-        date_range["$gte"] = _parse_date(from_date, "from_date").isoformat()
+        date_range["$gte"] = day_start_utc(_parse_date(from_date, "from_date").date())
     if to_date:
-        date_range["$lt"] = (_parse_date(to_date, "to_date") + timedelta(days=1)).isoformat()
+        date_range["$lt"] = day_start_utc(_parse_date(to_date, "to_date").date() + timedelta(days=1))
     if date_range:
         query = {**query, "created_at": date_range}
     cursor = db.orders.find(query, {"_id": 0}).sort("created_at", -1).skip(skip)
@@ -6450,6 +6478,9 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
             raise HTTPException(status_code=400, detail=f"Product not found: {line.product_id}")
         if line.ordered_qty <= 0:
             raise HTTPException(status_code=400, detail=f"Quantity must be positive for {product['name']}")
+        if line.ordered_qty > MAX_LINE_QTY:
+            # A typo (a barcode scanned into the quantity field) must not become a real order.
+            raise HTTPException(status_code=400, detail=f"Quantity is too large for {product['name']}")
         if product.get("active", True) is False:
             raise HTTPException(status_code=400, detail=f"Product is not available: {product['name']}")
         # Snapshot from the stored product - never from the payload - so a
@@ -6685,8 +6716,19 @@ async def change_order_status(
         update.update(await _assign_invoice_number(order, inp.invoice_number))
         claimed_seq = update.get("invoice_seq")
     if target == OrderStatus.IN_PROGRESS.value:
-        update["assigned_to_user_id"] = current_user.id
-        update["assigned_to_name"] = current_user.name
+        if current == OrderStatus.NEW.value:
+            update["assigned_to_user_id"] = current_user.id
+            update["assigned_to_name"] = current_user.name
+        else:
+            # An admin reopening a shipped / rejected / canceled order: it goes back to the worker who packed it
+            # (they know what is in the box), not to the admin - otherwise the warehouse could not touch it.
+            # If that worker is gone, nobody holds it and the first one to pack takes it.
+            holder_id = order.get("assigned_to_user_id")
+            holder = await db.users.find_one(
+                {"id": holder_id, "client_id": order["client_id"], "active": {"$ne": False}}, {"_id": 0, "id": 1, "name": 1},
+            ) if holder_id else None
+            update["assigned_to_user_id"] = holder["id"] if holder else None
+            update["assigned_to_name"] = holder["name"] if holder else None
     elif target == OrderStatus.NEW.value:
         update["assigned_to_user_id"] = None
         update["assigned_to_name"] = None
@@ -6791,6 +6833,9 @@ async def _try_update_picked(order: dict, order_id: str, inp: "PickedItemsInput"
             assigned_to_name=current_user.name,
         )
         push = {"status_history": _history_entry(current_user, current, OrderStatus.IN_PROGRESS.value, None)}
+    elif not order.get("assigned_to_user_id"):
+        # In progress but held by nobody (reopened by an admin after its packer left): whoever packs takes it.
+        update.update(assigned_to_user_id=current_user.id, assigned_to_name=current_user.name)
     # Conditional on the status and on the items revision: two workers packing at once never overwrite each other.
     result = await db.orders.update_one(
         {"id": order_id, "status": current, "items_rev": rev if rev is not None else {"$exists": False}},
@@ -7025,7 +7070,7 @@ class StockBatch(BaseModel):
 
 
 def _today() -> date:
-    return datetime.now(timezone.utc).date()
+    return local_today()
 
 
 def _normalize_expiry(value: Optional[str], required: bool = False) -> Optional[str]:
@@ -7733,7 +7778,7 @@ async def focus_report(
         raise HTTPException(status_code=400, detail="to_date is before from_date")
     query = {
         "client_id": cid,
-        "created_at": {"$gte": start.isoformat(), "$lt": (end + timedelta(days=1)).isoformat()},
+        "created_at": {"$gte": day_start_utc(start), "$lt": day_start_utc(end + timedelta(days=1))},
         "status": {"$nin": [OrderStatus.CANCELED.value, OrderStatus.REJECTED.value]},
         "items.focus": True,
     }
@@ -7901,7 +7946,7 @@ async def _target_achieved(client_id: str, user_ids: List[str], start: date, end
     query = {
         "client_id": client_id,
         "created_by_user_id": {"$in": user_ids},
-        "created_at": {"$gte": start.isoformat(), "$lt": end.isoformat()},
+        "created_at": {"$gte": day_start_utc(start), "$lt": day_start_utc(end)},
         "status": {"$nin": [OrderStatus.CANCELED.value, OrderStatus.REJECTED.value]},
     }
     async for order in db.orders.find(query, {"_id": 0, "created_by_user_id": 1, "customer_id": 1, "status": 1, "items": 1}):
@@ -8105,9 +8150,9 @@ async def orders_report(
         query = {"client_id": client_id}
     date_range = {}
     if from_date:
-        date_range["$gte"] = _parse_date(from_date, "from_date").isoformat()
+        date_range["$gte"] = day_start_utc(_parse_date(from_date, "from_date").date())
     if to_date:
-        date_range["$lt"] = (_parse_date(to_date, "to_date") + timedelta(days=1)).isoformat()
+        date_range["$lt"] = day_start_utc(_parse_date(to_date, "to_date").date() + timedelta(days=1))
     if date_range:
         query["created_at"] = date_range
     orders = await db.orders.find(query, {"_id": 0}).to_list(None)
@@ -8184,9 +8229,10 @@ def _parse_dashboard_date(value: Optional[str], field_name: str) -> Optional[dat
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        day = datetime.strptime(value, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid {field_name}; use YYYY-MM-DD")
+    return datetime(day.year, day.month, day.day, tzinfo=LOCAL_TZ)  # local midnight
 
 
 @api_router.get("/stats/dashboard", response_model=DashboardStatsResponse)
@@ -8205,10 +8251,11 @@ async def stats_dashboard(
     # and avoids loading every order ever placed. The loop below re-checks
     # with real datetimes for any legacy format.
     created_range: Dict[str, str] = {}
+    end_next = day_start_utc(end.date() + timedelta(days=1)) if end else None  # first moment after the last day
     if start:
-        created_range["$gte"] = start.isoformat()
-    if end:
-        created_range["$lt"] = (end + timedelta(days=1)).isoformat()
+        created_range["$gte"] = day_start_utc(start.date())
+    if end_next:
+        created_range["$lt"] = end_next
     order_query = {**query, "created_at": created_range} if created_range else query
     orders = await db.orders.find(order_query, {"_id": 0}).sort("created_at", -1).to_list(None)
     filtered_orders = []
@@ -8219,7 +8266,7 @@ async def stats_dashboard(
             continue
         if start and created_at < start:
             continue
-        if end and created_at >= end + timedelta(days=1):
+        if end_next and created_at >= datetime.fromisoformat(end_next):
             continue
         if order.get("status") in _STATS_EXCLUDED_STATUSES:
             continue
@@ -8237,7 +8284,7 @@ async def stats_dashboard(
         total_net += totals["subtotal"]
         total_vat += totals["vat"]
         total_items += len(order.get("items", []))
-        period = order["created_at"][:7]
+        period = local_date_of(order["created_at"]).strftime("%Y-%m")  # the month it was placed in, local time
         revenue = revenue_rows.setdefault(period, {"period": period, "order_count": 0, "total_net": 0.0, "total_vat": 0.0})
         revenue["order_count"] += 1
         revenue["total_net"] += totals["subtotal"]
@@ -8397,7 +8444,8 @@ async def seed_data():
         await db.users.insert_one({**raw, "_id": superadmin.id})
 
 
-app = FastAPI(lifespan=lifespan)
+# The interactive API docs list every endpoint: fine for development, not published in production.
+app = FastAPI(lifespan=lifespan, **({"docs_url": None, "redoc_url": None, "openapi_url": None} if IS_PRODUCTION else {}))
 # ---------------- Visits (module `visits`, plan .claude/DOCS/PLAN_OBILASCI.md, phase V1) ----------------
 # A sales rep's plan of shops to visit (or call): customers carry a visit frequency, a channel and a zone;
 # `visits` hold the planned and done visits. Customers are shared between reps (nobody "owns" one): a customer
@@ -8891,12 +8939,7 @@ def _integration_secret() -> str:
 
 
 def _belgrade_today() -> date:
-    try:
-        from zoneinfo import ZoneInfo
-
-        return datetime.now(ZoneInfo("Europe/Belgrade")).date()
-    except Exception:  # no tz database: UTC+1 is close enough for a date
-        return (datetime.now(timezone.utc) + timedelta(hours=1)).date()
+    return local_today()
 
 
 def _sef_target_client_id(user: User, client_id: Optional[str]) -> str:
