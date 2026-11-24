@@ -41,6 +41,11 @@ export default function InvoiceScreen() {
   const [customerAddress, setCustomerAddress] = useState<string>("");
 
   const load = useCallback(async () => {
+    if (!id) {
+      // Opened without an order (a bare link): there is nothing to show.
+      router.replace("/history");
+      return;
+    }
     try {
       setLoading(true);
       const o = await api.getOrder(id);
@@ -54,7 +59,7 @@ export default function InvoiceScreen() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, router]);
 
   useEffect(() => {
     load();

@@ -102,6 +102,11 @@ export default function CustomersPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    // The same shop entered twice splits its orders in two: ask before making a second one with the same name.
+    const name = form.name.trim().toLowerCase();
+    const clientOf = (c: Customer) => (isSuperAdmin ? c.client_id : "");
+    const twin = customers.find((c) => c.id !== editingId && c.name.trim().toLowerCase() === name && clientOf(c) === (isSuperAdmin ? form.client_id : ""));
+    if (twin && !window.confirm(t("customerDuplicate").replace("{name}", twin.name))) return;
     setSaving(true);
     try {
       const payload: Record<string, unknown> = {

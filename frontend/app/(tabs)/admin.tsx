@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Linking,
@@ -271,6 +272,17 @@ export default function AdminScreen() {
       name: res.assets[0].fileName || `product-${Date.now()}.jpg`,
       type: res.assets[0].mimeType || "image/jpeg",
     });
+  };
+
+  // The same shop entered twice splits its orders in two: ask before making a second customer with that name.
+  const saveChecked = () => {
+    const name = (form.name || "").trim().toLowerCase();
+    const twin = tab === "customers" && customers.some((c) => c.id !== editing?.id && c.name.trim().toLowerCase() === name);
+    if (!twin) return save();
+    Alert.alert(t("customerDuplicateTitle"), t("customerDuplicate"), [
+      { text: t("cancel"), style: "cancel" },
+      { text: t("saveAnyway"), onPress: () => save() },
+    ]);
   };
 
   const save = async () => {
@@ -689,7 +701,7 @@ export default function AdminScreen() {
               )}
 
               <View style={{ height: spacing.md }} />
-              <Button title={t("save")} icon="checkmark" onPress={save} loading={saving} disabled={!form.name?.trim()} testID="form-save-button" />
+              <Button title={t("save")} icon="checkmark" onPress={saveChecked} loading={saving} disabled={!form.name?.trim()} testID="form-save-button" />
               <View style={{ height: spacing.sm }} />
               <Button title={t("cancel")} variant="ghost" onPress={closeForm} testID="form-cancel-button" />
             </ScrollView>

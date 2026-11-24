@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLanguage } from "@/lib/i18n";
+import { useSession } from "@/lib/session-provider";
 import { Field, FieldGroup } from "@/components/FormField";
 import { errorDetail } from "@/lib/orders";
 import { displaySymbol, formatQty, formatQtyWithUnit, isCountUnit, parseQty, qtyInputValue, unitOf, useUnits } from "@/lib/units";
@@ -60,6 +61,7 @@ type Panel = { kind: "receipt" | "count" | "history"; product: Product };
 
 export default function StockPage() {
   const { t } = useLanguage();
+  const isSuperAdmin = useSession().role === "superadmin";
   const units = useUnits();
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
@@ -83,8 +85,9 @@ export default function StockPage() {
     }
   }, []);
 
-  // Not available to the superadmin (403): the banner just stays hidden.
+  // Not available to the superadmin (the backend answers 403): not asked for at all, the banner stays hidden.
   const loadExpiring = useCallback(async () => {
+    if (isSuperAdmin) return;
     try {
       const res = await fetch("/api/stock/expiring");
       setExpiring(res.ok ? ((await res.json()) as Expiring) : null);
