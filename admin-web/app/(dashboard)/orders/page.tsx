@@ -6,6 +6,7 @@ import { useSession } from "@/lib/session-provider";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EinvoiceModal } from "@/components/EinvoiceModal";
 import { OrderPrintModal } from "@/components/OrderPrintModal";
+import { PAGE_SIZE, Pager } from "@/components/Pager";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Order, OrderStatus, STATUS_LABEL_KEYS, money } from "@/lib/orders";
 import { formatDate } from "@/lib/format";
@@ -28,20 +29,45 @@ export default function OrdersPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [search, setSearch] = useState(""); // what is sent: the typed text, a moment after the last key
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
 
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchText.trim()), 350);
+    return () => clearTimeout(timer);
+  }, [searchText]);
+
+  // A different filter starts from the first page again.
+  useEffect(() => {
+    setPage(0);
+  }, [statusFilter, fromDate, toDate, search]);
+
+  // One page at a time (PAGE_SIZE orders, newest first); the backend says how many match in all.
   const load = useCallback(async () => {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), skip: String(page * PAGE_SIZE) });
     if (statusFilter) params.set("status", statusFilter);
     if (fromDate) params.set("from_date", fromDate);
     if (toDate) params.set("to_date", toDate);
+    if (search) params.set("q", search);
     try {
       const res = await fetch(`/api/orders?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to load orders");
-      setOrders((await res.json()) as Order[]);
+      const rows = (await res.json()) as Order[];
+      const count = Number(res.headers.get("X-Total-Count") ?? rows.length);
+      // The last order of the last page was deleted: step back instead of showing an empty page.
+      if (rows.length === 0 && page > 0 && count > 0) {
+        setPage(Math.max(0, Math.ceil(count / PAGE_SIZE) - 1));
+        return;
+      }
+      setOrders(rows);
+      setTotal(count);
     } catch {
       setOrders([]);
+      setTotal(0);
     }
-  }, [statusFilter, fromDate, toDate]);
+  }, [statusFilter, fromDate, toDate, search, page]);
 
   useEffect(() => {
     load();
@@ -69,6 +95,14 @@ export default function OrdersPage() {
       <h1 className="mb-6 text-2xl font-extrabold text-onSurface">{t("orders")}</h1>
 
       <div className="no-print mb-4 flex flex-wrap items-end gap-3">
+        <input
+          type="search"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          placeholder={t("ordersSearch")}
+          aria-label={t("ordersSearch")}
+          className={`${field} w-64`}
+        />
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={field}>
           <option value="">{t("allStatuses")}</option>
           {STATUSES.map((s) => (
@@ -151,6 +185,7 @@ export default function OrdersPage() {
           </tbody>
         </table>
       </div>
+      <Pager page={page} total={total} onPage={setPage} />
 
       {selectedOrder && <OrderPrintModal order={selectedOrder} onClose={() => setSelectedOrder(null)} />}
       {einvoiceOrderId && <EinvoiceModal orderId={einvoiceOrderId} onClose={() => setEinvoiceOrderId(null)} />}

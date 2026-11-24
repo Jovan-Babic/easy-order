@@ -252,7 +252,7 @@ Strelica gore levo vraća vas nazad. Istu fakturu kasnije otvarate iz **Istorije
 
 ## 8. Istorija – praćenje porudžbina
 
-Kartica **Istorija** (dole desno) prikazuje sve vaše porudžbine, najnovije na vrhu. Dodirom na porudžbinu otvarate njenu fakturu.
+Kartica **Istorija** (dole desno) prikazuje vaše porudžbine, najnovije na vrhu. Učitava se poslednjih 30, a dugme **Učitaj još** na dnu liste dodaje sledećih 30. Dodirom na porudžbinu otvarate njenu fakturu.
 
 ![Istorija](slike/komercijalista/15-istorija.png)
 

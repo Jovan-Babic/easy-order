@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -20,6 +20,10 @@ import { api, ApiError, Order } from "@/src/api";
 import { StatusBadge } from "@/src/components/StatusBadge";
 import { colors, radius, spacing, font, shadow } from "@/src/theme";
 
+// The history loads a page at a time: the newest orders first, more on "Load more".
+const PAGE = 30;
+const MAX_RELOAD = 500; // the backend's largest page
+
 export default function HistoryScreen() {
   const { t } = useApp();
   const { user } = useAuth();
@@ -28,16 +32,41 @@ export default function HistoryScreen() {
   const safeBottom = Math.max(insets.bottom, 12);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loaded = useRef(0);
 
+  // Coming back to the screen reloads as many orders as were showing, so the list doesn't jump back to the top page.
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const o = await api.listOrders();
+      const want = Math.min(MAX_RELOAD, Math.max(PAGE, loaded.current));
+      const o = await api.listOrders({ limit: want });
+      loaded.current = o.length;
       setOrders(o);
+      setHasMore(o.length === want);
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const loadMore = async () => {
+    if (loadingMore) return;
+    try {
+      setLoadingMore(true);
+      const next = await api.listOrders({ limit: PAGE, skip: orders.length });
+      // A new order placed meanwhile shifts the pages by one: never show the same order twice.
+      const known = new Set(orders.map((o) => o.id));
+      const merged = [...orders, ...next.filter((o) => !known.has(o.id))];
+      loaded.current = merged.length;
+      setOrders(merged);
+      setHasMore(next.length === PAGE);
+    } catch (e) {
+      Alert.alert(t("somethingWentWrong"), e instanceof ApiError ? e.detail : t("networkError"));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const cancelOrder = (order: Order) => {
     Alert.alert(t("cancelOrder"), t("cancelOrderConfirm"), [
@@ -84,6 +113,13 @@ export default function HistoryScreen() {
           data={orders}
           keyExtractor={(o) => o.id}
           contentContainerStyle={{ padding: spacing.lg, paddingBottom: safeBottom + 20 }}
+          ListFooterComponent={
+            hasMore ? (
+              <Pressable testID="history-load-more" onPress={loadMore} disabled={loadingMore} style={styles.moreBtn}>
+                {loadingMore ? <ActivityIndicator color={colors.brand} /> : <Text style={styles.moreText}>{t("loadMore")}</Text>}
+              </Pressable>
+            ) : null
+          }
           renderItem={({ item }) => (
             <View style={styles.card}>
               <Pressable
@@ -139,6 +175,18 @@ export default function HistoryScreen() {
 }
 
 const styles = StyleSheet.create({
+  moreBtn: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: spacing.md,
+    marginTop: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceSecondary,
+    minHeight: 48,
+  },
+  moreText: { fontSize: font.base, fontWeight: "700", color: colors.brand },
   container: { flex: 1, backgroundColor: colors.surface },
   header: {
     backgroundColor: colors.surfaceSecondary,

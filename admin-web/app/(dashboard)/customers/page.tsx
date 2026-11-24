@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useSession } from "@/lib/session-provider";
 import { useLanguage } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { Pager, matchesSearch, pageOf } from "@/components/Pager";
 import { Field, fieldInput } from "@/components/FormField";
 import { ImportModal } from "@/components/ImportModal";
 import { localizedDetail } from "@/lib/errors";
@@ -42,6 +43,8 @@ export default function CustomersPage() {
   const { t } = useLanguage();
 
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [search, setSearch] = useState("");
+  const [pageNo, setPageNo] = useState(0);
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -163,6 +166,9 @@ export default function CustomersPage() {
     await load();
   };
 
+  const matching = customers.filter((c) => matchesSearch(search, [c.name, c.pib, c.address, c.street, c.city, c.email, c.phone]));
+  const shown = pageOf(matching, pageNo);
+
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
@@ -282,6 +288,19 @@ export default function CustomersPage() {
       )}
 
       {error && !showForm && <p className="mb-3 text-sm text-error">{error}</p>}
+      {!loading && (
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPageNo(0);
+          }}
+          placeholder={t("listSearch")}
+          aria-label={t("listSearch")}
+          className="mb-4 w-full max-w-sm rounded-md border border-border bg-surfaceSecondary px-3 py-2 text-sm"
+        />
+      )}
       {loading ? (
         <p className="text-muted">{t("loading")}</p>
       ) : (
@@ -299,7 +318,7 @@ export default function CustomersPage() {
               </tr>
             </thead>
             <tbody>
-              {customers.map((c) => (
+              {shown.visible.map((c) => (
                 <tr key={c.id} className="border-b border-border last:border-0">
                   <td className="px-4 py-3 font-semibold text-onSurface">
                     {c.name}
@@ -335,6 +354,7 @@ export default function CustomersPage() {
           </table>
         </div>
       )}
+      {!loading && <Pager page={shown.page} total={matching.length} onPage={setPageNo} />}
       {pendingDelete && (
         <ConfirmDialog itemName={pendingDelete.name} onCancel={() => setPendingDelete(null)} onConfirm={remove} />
       )}
