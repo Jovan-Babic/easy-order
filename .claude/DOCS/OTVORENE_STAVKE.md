@@ -21,3 +21,6 @@ Datum: 2026-11-09. Spisak onoga što je odloženo, da se lako nastavi. Detalji s
 - Dostava i grupisanje po zonama (van obima za sada).
 - E-otpremnice (poseban modul, kasnije; plan u `PLAN_SEF_I_ERP.md`).
 - Rad bez signala u mobilnoj aplikaciji (red za slanje van mreže) nije napravljen.
+- **Zavisnosti mobilne aplikacije** (`npm audit`: 1 kritična i 12 visokih prijava, uglavnom u alatima za build): `npm audit fix` menja nativni otisak (fingerprint), pa OTA više ne bi stizao na instalirane aplikacije. Uraditi zajedno sa sledećim izdanjem APK-a (workflow `release-android.yml`), ne kroz OTA.
+- Limit količine po stavci (1.000.000) i limit prijema su u osnovnoj jedinici: 1.000 kg / 1.000 l po stavci. Ako nekom klijentu bude malo, računati ga u jedinici artikla.
+- Korenski `package.json` pokazuje na stari repozitorijum (EAS čita repo od korena, pa nije diran); `.easignore` ne isključuje `landing/` i `docs/`.

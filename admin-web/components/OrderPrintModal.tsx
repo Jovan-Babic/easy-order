@@ -114,6 +114,9 @@ export function OrderPrintModal({
               )}
               <p>{t("orderNumber")}: {order.id.slice(0, 8)}</p>
               <div className="no-print mt-1"><StatusBadge status={order.status} /></div>
+              {order.invoice_number && (order.status === "canceled" || order.status === "rejected") && (
+                <p className="no-print mt-1 max-w-xs text-xs font-semibold text-error">{t("invoiceNumberKept")}</p>
+              )}
             </div>
           </div>
 

@@ -1,4 +1,4 @@
-import { Tabs } from "expo-router";
+import { Redirect, Tabs, useSegments } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Platform, View } from "react-native";
 import { SafeAreaInsetsContext, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -26,6 +26,21 @@ export default function TabsLayout() {
   // (which pad themselves by insets.top) must not add it a second time.
   const bannerShown = useTopNotices().length > 0;
   const safeBottomPadding = Math.max(insets.bottom, Platform.OS === "ios" ? 18 : 8);
+
+  // A hidden tab is still a route (a link or a typed address reaches it): a role that has no business on a
+  // screen is sent to its own start screen. The backend refuses the data anyway; this keeps the screen away too.
+  const screen = (useSegments() as string[])[1] ?? "index";
+  const showProgressTab = user?.role === "operator" && hasModule(user, "targets");
+  const showVisitsTab = user?.role === "operator" && hasModule(user, "visits");
+  const allowed: Record<string, boolean> = {
+    home: isWarehouse,
+    index: !isWarehouse,
+    progress: showProgressTab,
+    visits: showVisitsTab,
+    warehouse: showWarehouseTab,
+    admin: !hideAdminTab,
+  };
+  if (user && allowed[screen] === false) return <Redirect href={isWarehouse ? "/home" : "/"} />;
 
   return (
     <View style={{ flex: 1 }}>
@@ -74,7 +89,7 @@ export default function TabsLayout() {
         name="progress"
         options={{
           title: t("progress"),
-          href: user?.role === "operator" && hasModule(user, "targets") ? undefined : null,
+          href: showProgressTab ? undefined : null,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="trending-up-outline" size={size} color={color} />
           ),
@@ -84,7 +99,7 @@ export default function TabsLayout() {
         name="visits"
         options={{
           title: t("visits"),
-          href: user?.role === "operator" && hasModule(user, "visits") ? undefined : null,
+          href: showVisitsTab ? undefined : null,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="walk-outline" size={size} color={color} />
           ),

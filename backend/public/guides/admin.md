@@ -189,7 +189,7 @@ Na stranici **Kupci** vodite spisak kupaca koje komercijalisti biraju pri porud�
 2. **Ime** (obavezno), **Adresa**, **Email** i **Telefon**.
 3. **PIB** i **Matični broj** – navode se na fakturi<!-- modul: sef --> i potrebni su za slanje e-faktura (SEF)<!-- /modul -->.
    **Ulica i broj**, **Grad**, **Poštanski broj** i **Država** (RS) – adresa za fakturu; slobodno polje **Adresa** ostaje za prikaz.
-4. **Kreiraj kupca**, a za postojećeg kupca **Izmeni** otvara istu formu (**Sačuvaj izmene**). Kolona **Podaci za fakturu** pokazuje da li kupcu išta nedostaje (npr. matični broj ili poštanski broj).
+4. **Kreiraj kupca**, a za postojećeg kupca **Izmeni** otvara istu formu (**Sačuvaj izmene**). Kolona **Podaci za fakturu** pokazuje da li kupcu išta nedostaje (npr. matični broj ili poštanski broj). Ako kupac sa istim nazivom već postoji, portal i aplikacija pitaju da li ipak želite da ga sačuvate – isti kupac unet dva puta deli porudžbine na dva mesta.
 5. **Deaktiviraj** / **Aktiviraj** – neaktivan kupac nestaje komercijalistima i ne može da dobije novu porudžbinu, a stare porudžbine ostaju netaknute.
 6. **Obriši** – briše kupca (traži potvrdu), ali samo ako nema nijednu porudžbinu; inače koristite **Deaktiviraj**.
 

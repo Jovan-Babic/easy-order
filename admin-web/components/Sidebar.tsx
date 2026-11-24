@@ -138,9 +138,10 @@ export function Sidebar({ user }: { user: NavUser }) {
             );
           })}
         </nav>
-        <div className="border-t border-border px-5 py-4">
-          <div className="mb-3">
-            <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted">{t("language")}</label>
+        {/* On a short screen (a laptop at 125 % scaling) the footer shrinks, so the menu keeps most of the height. */}
+        <div className="side-foot border-t border-border px-5 py-4">
+          <div className="side-lang mb-3">
+            <label className="side-short-hide mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted">{t("language")}</label>
             <select
               value={lang}
               onChange={(event) => setLang(event.target.value as Lang)}
@@ -151,8 +152,9 @@ export function Sidebar({ user }: { user: NavUser }) {
             </select>
           </div>
           <p className="truncate text-sm font-semibold text-onSurface">{user.name}</p>
-          <p className="truncate text-xs text-muted">{user.email}</p>
-          <p className="mb-3 text-xs uppercase text-muted">{user.role}</p>
+          <p className="side-short-hide truncate text-xs text-muted">{user.email}</p>
+          <p className="side-role mb-3 text-xs uppercase text-muted">{user.role}</p>
+          <div className="side-actions">
           <Link
             href="/change-password"
             onClick={() => setOpen(false)}
@@ -166,6 +168,7 @@ export function Sidebar({ user }: { user: NavUser }) {
           >
             {t("logout")}
           </button>
+          </div>
         </div>
         </div>
       </aside>
