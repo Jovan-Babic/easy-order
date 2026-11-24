@@ -1,22 +1,16 @@
 {
   "name": "easy-order",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "directories": {
-    "test": "tests"
-  },
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+  "description": "Easy Order: backend/, frontend/ (mobile app), admin-web/ (portal), landing/ (website). Each project has its own package.json; this file only marks the repository root (EAS resolves the repository from here).",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SileZR/Easy-Order.git"
+    "url": "git+https://github.com/Jovan-Babic/easy-order.git"
   },
   "author": "SileZr",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/SileZR/Easy-Order/issues"
+    "url": "https://github.com/Jovan-Babic/easy-order/issues"
   },
-  "homepage": "https://github.com/SileZR/Easy-Order#readme"
+  "homepage": "https://github.com/Jovan-Babic/easy-order#readme",
+  "private": true
 }

@@ -190,8 +190,9 @@ function OrderCatalogScreen() {
       showToast(t("invalidQuantity"));
       return;
     }
-    // Same limit as the backend (base units per line): a barcode typed into the quantity field stops here.
-    if (items.some((i) => i.ordered_qty > 1_000_000)) {
+    // Same limit as the backend (1 000 000 of the product's unit per line): a barcode typed into the quantity
+    // field stops here.
+    if (typed.some((p, i) => items[i].ordered_qty > 1_000_000 * (unitOf(units, p.unit).factor || 1))) {
       showToast(t("quantityTooLarge"));
       return;
     }

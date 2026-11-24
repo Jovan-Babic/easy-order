@@ -1037,8 +1037,22 @@ class OrderItemInput(BaseModel):
     additional_discount: Optional[float] = None  # must be one of product.additional_discounts
 
 
-# Largest quantity on one order line, in base units - the same limit a stock receipt line has.
+# Largest quantity on one line (an order line, a stock receipt, a count), in the PRODUCT'S unit: 1 000 000
+# pieces, kilograms, litres or metres. Quantities travel in base units (g, ml, mm), so the limit in base units is
+# this times the unit's factor (`_max_base_qty`); MAX_BASE_QTY is only what the request models let through.
 MAX_LINE_QTY = 1_000_000
+MAX_BASE_QTY = MAX_LINE_QTY * 1_000_000
+
+
+def _max_base_qty(unit_factor: Optional[int]) -> int:
+    return MAX_LINE_QTY * (unit_factor or 1)
+
+
+async def _require_qty_within_limit(product: dict, *base_quantities: Optional[int]) -> None:
+    """400 when a quantity of this product is more than MAX_LINE_QTY of its unit (a barcode typed into a quantity field)."""
+    unit = await db.units.find_one({"code": product.get("unit") or "kom"}, {"_id": 0, "factor": 1}) or {}
+    if any(q is not None and q > _max_base_qty(unit.get("factor")) for q in base_quantities):
+        raise HTTPException(status_code=400, detail=f"Quantity is too large for {product['name']}")
 
 
 class OrderInput(BaseModel):
@@ -6488,7 +6502,7 @@ async def _resolve_order_lines(client_id: str, inp: "OrderInput") -> tuple[dict,
             raise HTTPException(status_code=400, detail=f"Product not found: {line.product_id}")
         if line.ordered_qty <= 0:
             raise HTTPException(status_code=400, detail=f"Quantity must be positive for {product['name']}")
-        if line.ordered_qty > MAX_LINE_QTY:
+        if line.ordered_qty > _max_base_qty((units.get(product.get("unit") or "kom") or {}).get("factor")):
             # A typo (a barcode scanned into the quantity field) must not become a real order.
             raise HTTPException(status_code=400, detail=f"Quantity is too large for {product['name']}")
         if product.get("active", True) is False:
@@ -6591,7 +6605,7 @@ class StatusChangeInput(BaseModel):
 
 class PickedBatchInput(BaseModel):
     batch_id: str
-    qty: int = Field(gt=0, le=1_000_000)
+    qty: int = Field(gt=0, le=MAX_BASE_QTY)
 
 
 class PickedItemInput(BaseModel):
@@ -7047,7 +7061,7 @@ class StockMovement(BaseModel):
 
 class StockLineInput(BaseModel):
     product_id: str
-    qty: int = Field(gt=0, le=1_000_000)
+    qty: int = Field(gt=0, le=MAX_BASE_QTY)
     # Required for products with expiry tracking (YYYY-MM-DD), ignored otherwise.
     expiry_date: Optional[str] = None
 
@@ -7059,14 +7073,14 @@ class StockReceiptInput(BaseModel):
 
 class BatchCount(BaseModel):
     expiry_date: Optional[str] = None  # None = undated stock
-    counted_qty: int = Field(ge=0, le=1_000_000)
+    counted_qty: int = Field(ge=0, le=MAX_BASE_QTY)
 
 
 class StockAdjustmentInput(BaseModel):
     product_id: str
     # Plain products: counted_qty. Products with expiry tracking: `batches`,
     # the full count per expiry date (batches left out are set to 0).
-    counted_qty: Optional[int] = Field(default=None, ge=0, le=1_000_000)
+    counted_qty: Optional[int] = Field(default=None, ge=0, le=MAX_BASE_QTY)
     batches: Optional[List[BatchCount]] = Field(default=None, max_length=100)
     note: str = Field(min_length=1, max_length=300)
 
@@ -7304,6 +7318,7 @@ async def stock_receipt(inp: StockReceiptInput, current_user: User = Depends(req
     expiries = []
     for line in inp.items:
         product = await get_scoped_or_404("products", line.product_id, current_user)
+        await _require_qty_within_limit(product, line.qty)
         products.append(product)
         expiries.append(
             _normalize_expiry(line.expiry_date, required=True) if product.get("track_expiry") else None
@@ -7345,6 +7360,11 @@ def _validated_count(product: dict, counted: Optional[int], batches: Optional[Li
     return counted
 
 
+def _count_quantities(count) -> List[int]:
+    """The quantities in a validated count: the one number, or one per expiry date."""
+    return [qty for _, qty in count] if isinstance(count, list) else [count]
+
+
 async def _apply_count(product: dict, count, user: Optional[User], note: Optional[str]) -> int:
     if not product.get("track_expiry"):
         return await _set_stock_count(product, count, user, note)
@@ -7363,13 +7383,14 @@ async def _apply_count(product: dict, count, user: Optional[User], note: Optiona
 async def stock_adjustment(inp: StockAdjustmentInput, current_user: User = Depends(require_module(Module.STOCK, Role.SUPERADMIN, Role.ADMIN, Role.WAREHOUSE))):
     product = await get_scoped_or_404("products", inp.product_id, current_user)
     count = _validated_count(product, inp.counted_qty, inp.batches)
+    await _require_qty_within_limit(product, *_count_quantities(count))
     delta = await _apply_count(product, count, current_user, inp.note)
     return {"ok": True, "delta": delta}
 
 
 class StockCountLine(BaseModel):
     product_id: str
-    counted_qty: Optional[int] = Field(default=None, ge=0, le=1_000_000)
+    counted_qty: Optional[int] = Field(default=None, ge=0, le=MAX_BASE_QTY)
     batches: Optional[List[BatchCount]] = Field(default=None, max_length=100)
 
 
@@ -7392,6 +7413,7 @@ async def stock_adjustment_batch(inp: StockBatchAdjustmentInput, current_user: U
         product = await get_scoped_or_404("products", line.product_id, current_user)
         products.append(product)
         counts.append(_validated_count(product, line.counted_qty, line.batches))
+        await _require_qty_within_limit(product, *_count_quantities(counts[-1]))
     deltas = []
     for product, count in zip(products, counts):
         deltas.append(await _apply_count(product, count, current_user, inp.note))

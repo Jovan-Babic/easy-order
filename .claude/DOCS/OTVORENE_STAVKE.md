@@ -21,6 +21,4 @@ Datum: 2026-11-09. Spisak onoga što je odloženo, da se lako nastavi. Detalji s
 - Dostava i grupisanje po zonama (van obima za sada).
 - E-otpremnice (poseban modul, kasnije; plan u `PLAN_SEF_I_ERP.md`).
 - Rad bez signala u mobilnoj aplikaciji (red za slanje van mreže) nije napravljen.
-- **Zavisnosti mobilne aplikacije** (`npm audit`: 1 kritična i 12 visokih prijava, uglavnom u alatima za build): `npm audit fix` menja nativni otisak (fingerprint), pa OTA više ne bi stizao na instalirane aplikacije. Uraditi zajedno sa sledećim izdanjem APK-a (workflow `release-android.yml`), ne kroz OTA.
-- Limit količine po stavci (1.000.000) i limit prijema su u osnovnoj jedinici: 1.000 kg / 1.000 l po stavci. Ako nekom klijentu bude malo, računati ga u jedinici artikla.
-- Korenski `package.json` pokazuje na stari repozitorijum (EAS čita repo od korena, pa nije diran); `.easignore` ne isključuje `landing/` i `docs/`.
+- **Zavisnosti mobilne aplikacije**: ciljano ažurirani paketi koji ne diraju nativni deo (`npm update` za shell-quote, image-size, node-forge, undici i druge; otisak je ostao isti, pa ide kroz OTA). Preostalo (`npm audit`: 7 visokih, bez kritičnih) traži prelazak sa Expo SDK 54 na noviji SDK ili nema ispravku (markdown-it / linkify-it). To je poseban posao: `npx expo install --fix` na računaru koji može da napravi i isproba APK, pa novo izdanje. Sam `npm audit fix` NE koristiti: uvlači expo-router 58 u stablo SDK-a 54 i pravi duple nativne module.
