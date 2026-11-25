@@ -18,26 +18,40 @@ export type Unit = {
   ubl_code?: string | null;
 };
 
-export const PIECE: Unit = {
-  code: "kom", name_sr: "komad", name_en: "piece", symbol: "kom", symbol_en: "pcs", group: "count", base_code: "kom", factor: 1, active: true,
-};
+// The built-in units (backend DEFAULT_UNITS, never changed there): used until GET /units answers, and if it
+// can't be reached. Without them a product sold by the litre would count as pieces (400 l shown as 400000 l).
+const builtin = (code: string, name_sr: string, name_en: string, group: string, base_code: string, factor: number, symbol_en?: string): Unit => ({
+  code, name_sr, name_en, symbol: code, ...(symbol_en ? { symbol_en } : {}), group, base_code, factor, active: true,
+});
+export const BUILTIN_UNITS: Unit[] = [
+  builtin("kom", "komad", "piece", "count", "kom", 1, "pcs"),
+  builtin("g", "gram", "gram", "mass", "g", 1),
+  builtin("kg", "kilogram", "kilogram", "mass", "g", 1000),
+  builtin("t", "tona", "tonne", "mass", "g", 1_000_000),
+  builtin("ml", "mililitar", "millilitre", "volume", "ml", 1),
+  builtin("l", "litar", "litre", "volume", "ml", 1000),
+  builtin("hl", "hektolitar", "hectolitre", "volume", "ml", 100_000),
+  builtin("mm", "milimetar", "millimetre", "length", "mm", 1),
+  builtin("cm", "centimetar", "centimetre", "length", "mm", 10),
+  builtin("m", "metar", "metre", "length", "mm", 1000),
+];
+export const PIECE: Unit = BUILTIN_UNITS[0];
+export const FALLBACK_UNITS: Unit[] = BUILTIN_UNITS;
 
-// Built-ins, used until /api/units answers (or when it fails).
-export const FALLBACK_UNITS: Unit[] = [PIECE];
-
+// Only a list the backend really sent is kept: a failed request must not leave the page with the fallback.
 let cache: Unit[] | null = null;
-let pending: Promise<Unit[]> | null = null;
+let pending: Promise<Unit[] | null> | null = null;
 
-async function fetchUnits(): Promise<Unit[]> {
+async function fetchUnits(): Promise<Unit[] | null> {
   if (cache) return cache;
   if (!pending) {
     pending = fetch("/api/units")
-      .then((res) => (res.ok ? res.json() : FALLBACK_UNITS))
-      .catch(() => FALLBACK_UNITS)
-      .then((list: Unit[]) => {
-        cache = list;
-        return list;
+      .then(async (res) => {
+        if (!res.ok) return null;
+        cache = (await res.json()) as Unit[];
+        return cache;
       })
+      .catch(() => null)
       .finally(() => {
         pending = null;
       });
@@ -63,20 +77,34 @@ export function resetUnitsCache() {
   cache = null;
 }
 
+// The built-in units right away, the backend's list (custom units too) as soon as it answers; a failed
+// request is retried a few times.
 export function useUnits(): Unit[] {
   const [units, setUnits] = useState<Unit[]>(cache ?? FALLBACK_UNITS);
   useEffect(() => {
     let live = true;
-    fetchUnits().then((list) => live && setUnits(list));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = (attempt: number) => {
+      fetchUnits().then((list) => {
+        if (!live) return;
+        if (list) setUnits(list);
+        else if (attempt < 4) timer = setTimeout(() => load(attempt + 1), 2000 * (attempt + 1));
+      });
+    };
+    load(0);
     return () => {
       live = false;
+      if (timer) clearTimeout(timer);
     };
   }, []);
   return units;
 }
 
+// A code missing from the list (a custom unit while the list is still loading) falls back to the built-in
+// one of that code, and only then to a piece.
 export const unitOf = (units: Unit[], code?: string | null): Unit =>
-  units.find((u) => u.code === (code || "kom")) ?? { ...PIECE, code: code || "kom", symbol: code || "kom" };
+  units.find((u) => u.code === (code || "kom")) ??
+  BUILTIN_UNITS.find((u) => u.code === (code || "kom")) ?? { ...PIECE, code: code || "kom", symbol: code || "kom" };
 
 // Whole numbers show without decimals; others with up to 6, trailing zeros trimmed.
 export function formatQty(base: number | null | undefined, unit: Pick<Unit, "factor">): string {
