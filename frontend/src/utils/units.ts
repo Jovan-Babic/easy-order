@@ -4,10 +4,27 @@
 import { useEffect, useState } from "react";
 import { api, Unit } from "@/src/api";
 
-export const PIECE: Unit = {
-  code: "kom", name_sr: "komad", name_en: "piece", symbol: "kom", symbol_en: "pcs", group: "count", base_code: "kom", factor: 1, active: true,
-};
+// The built-in units (backend DEFAULT_UNITS, never changed there): used until GET /units answers, and if it
+// can't be reached. Without them a product sold by the litre would count as pieces (400 l shown as 400000 l).
+const builtin = (code: string, name_sr: string, name_en: string, group: string, base_code: string, factor: number, symbol_en?: string): Unit => ({
+  code, name_sr, name_en, symbol: code, ...(symbol_en ? { symbol_en } : {}), group, base_code, factor, active: true,
+});
+export const BUILTIN_UNITS: Unit[] = [
+  builtin("kom", "komad", "piece", "count", "kom", 1, "pcs"),
+  builtin("g", "gram", "gram", "mass", "g", 1),
+  builtin("kg", "kilogram", "kilogram", "mass", "g", 1000),
+  builtin("t", "tona", "tonne", "mass", "g", 1_000_000),
+  builtin("ml", "mililitar", "millilitre", "volume", "ml", 1),
+  builtin("l", "litar", "litre", "volume", "ml", 1000),
+  builtin("hl", "hektolitar", "hectolitre", "volume", "ml", 100_000),
+  builtin("mm", "milimetar", "millimetre", "length", "mm", 1),
+  builtin("cm", "centimetar", "centimetre", "length", "mm", 10),
+  builtin("m", "metar", "metre", "length", "mm", 1000),
+];
+export const PIECE: Unit = BUILTIN_UNITS[0];
 
+// Only a list the backend really sent is kept: a failed request (no signal, not signed in yet) must not
+// leave the app with the fallback for the rest of the session.
 let cache: Unit[] | null = null;
 
 // The screen language for unit symbols; set by AppProvider, so the helpers need no hook.
@@ -20,21 +37,21 @@ export function setUnitsLang(lang: "sr" | "en") {
 export function displaySymbol(symbol?: string | null): string {
   const s = symbol || "kom";
   if (unitsLang !== "en") return s;
-  const unit = (cache ?? [PIECE]).find((u) => u.symbol === s);
+  const unit = (cache ?? BUILTIN_UNITS).find((u) => u.symbol === s);
   return unit?.symbol_en || (s === "kom" ? "pcs" : s);
 }
-let pending: Promise<Unit[]> | null = null;
+let pending: Promise<Unit[] | null> | null = null;
 
-async function fetchUnits(): Promise<Unit[]> {
+async function fetchUnits(): Promise<Unit[] | null> {
   if (cache) return cache;
   if (!pending) {
     pending = api
       .listUnits()
-      .catch(() => [PIECE])
       .then((list) => {
         cache = list;
         return list;
       })
+      .catch(() => null) // not kept: the next screen (or the retry below) asks again
       .finally(() => {
         pending = null;
       });
@@ -42,20 +59,38 @@ async function fetchUnits(): Promise<Unit[]> {
   return pending;
 }
 
+export function resetUnitsCache() {
+  cache = null;
+}
+
+// The built-in units right away, the backend's list (custom units too) as soon as it answers; a failed
+// request is retried a few times.
 export function useUnits(): Unit[] {
-  const [units, setUnits] = useState<Unit[]>(cache ?? [PIECE]);
+  const [units, setUnits] = useState<Unit[]>(cache ?? BUILTIN_UNITS);
   useEffect(() => {
     let live = true;
-    fetchUnits().then((list) => live && setUnits(list));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = (attempt: number) => {
+      fetchUnits().then((list) => {
+        if (!live) return;
+        if (list) setUnits(list);
+        else if (attempt < 4) timer = setTimeout(() => load(attempt + 1), 2000 * (attempt + 1));
+      });
+    };
+    load(0);
     return () => {
       live = false;
+      if (timer) clearTimeout(timer);
     };
   }, []);
   return units;
 }
 
+// A code missing from the list (a custom unit while the list is still loading) falls back to the built-in
+// one of that code, and only then to a piece.
 export const unitOf = (units: Unit[], code?: string | null): Unit =>
-  units.find((u) => u.code === (code || "kom")) ?? { ...PIECE, code: code || "kom", symbol: code || "kom" };
+  units.find((u) => u.code === (code || "kom")) ??
+  BUILTIN_UNITS.find((u) => u.code === (code || "kom")) ?? { ...PIECE, code: code || "kom", symbol: code || "kom" };
 
 export const isCountUnit = (unit: Pick<Unit, "group">) => unit.group === "count";
 
